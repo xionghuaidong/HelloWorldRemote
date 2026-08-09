@@ -260,88 +260,69 @@ on findAddButton(settingsProcess, targetOutline)
     return missing value
 end findAddButton
 
-on findOpenButton(settingsProcess)
+on findSheetButton(settingsProcess, desiredTitle)
     tell application "System Events"
-        repeat with settingsWindow in windows of settingsProcess
-            try
-                if exists button "Open" of settingsWindow then
-                    return button "Open" of settingsWindow
-                end if
-            end try
-
-            try
-                repeat with settingsSheet in sheets of settingsWindow
-                    if exists button "Open" of settingsSheet then
-                        return button "Open" of settingsSheet
-                    end if
-                end repeat
-            end try
-        end repeat
-    end tell
-
-    return missing value
-end findOpenButton
-
-on fileChooserDiagnostics(settingsProcess)
-    tell application "System Events"
-        set diagnosticMessages to {}
         set settingsWindows to windows of settingsProcess
-        set end of diagnosticMessages to "SETTINGS_WINDOWS=" & (count of settingsWindows)
 
         repeat with settingsWindow in settingsWindows
             set actualWindow to contents of settingsWindow
-            set windowName to my attributeText(actualWindow, "AXTitle")
-            set windowSubrole to my attributeText(actualWindow, "AXSubrole")
-            set end of diagnosticMessages to "WINDOW title=[" & windowName & "] subrole=[" & windowSubrole & "]"
-
-            try
-                set directButtons to buttons of actualWindow
-                repeat with directButton in directButtons
-                    set actualButton to contents of directButton
-                    set end of diagnosticMessages to "WINDOW_BUTTON title=[" & my attributeText(actualButton, "AXTitle") & "] description=[" & my attributeText(actualButton, "AXDescription") & "]"
-                end repeat
-            end try
 
             try
                 set windowSheets to sheets of actualWindow
-                set end of diagnosticMessages to "WINDOW_SHEETS=" & (count of windowSheets)
 
                 repeat with settingsSheet in windowSheets
                     set actualSheet to contents of settingsSheet
                     set sheetItems to entire contents of actualSheet
-                    set end of diagnosticMessages to "SHEET_ELEMENTS=" & (count of sheetItems)
-                    set diagnosticItemCount to 0
 
                     repeat with uiItem in sheetItems
                         try
-                            set itemRole to role of uiItem as text
+                            if (role of uiItem as text) is "AXButton" then
+                                set buttonTitle to my attributeText(uiItem, "AXTitle")
 
-                            if itemRole is "AXButton" or itemRole is "AXTextField" or itemRole is "AXStaticText" or itemRole is "AXOutline" or itemRole is "AXRow" then
-                                set end of diagnosticMessages to itemRole & " title=[" & my attributeText(uiItem, "AXTitle") & "] description=[" & my attributeText(uiItem, "AXDescription") & "] value=[" & my attributeText(uiItem, "AXValue") & "] identifier=[" & my attributeText(uiItem, "AXIdentifier") & "]"
-                                set diagnosticItemCount to diagnosticItemCount + 1
-
-                                if diagnosticItemCount is greater than or equal to 100 then exit repeat
+                                ignoring case
+                                    if buttonTitle is desiredTitle then return contents of uiItem
+                                end ignoring
                             end if
                         end try
                     end repeat
                 end repeat
             end try
         end repeat
+    end tell
 
-        set visibleProcessNames to {}
+    return missing value
+end findSheetButton
 
-        repeat with candidateProcess in application processes
+on authorizationPasswordIsPresent(settingsProcess)
+    tell application "System Events"
+        repeat with settingsWindow in windows of settingsProcess
             try
-                if (count of windows of candidateProcess) is greater than 0 then
-                    set end of visibleProcessNames to name of candidateProcess as text
-                end if
+                repeat with settingsSheet in sheets of settingsWindow
+                    set sheetItems to entire contents of settingsSheet
+
+                    repeat with uiItem in sheetItems
+                        try
+                            set itemRole to role of uiItem as text
+                            set itemTitle to my attributeText(uiItem, "AXTitle")
+                            set itemDescription to my attributeText(uiItem, "AXDescription")
+
+                            if itemRole is "AXTextField" or itemRole is "AXSecureTextField" then
+                                ignoring case
+                                    if itemTitle is "Password" or itemDescription is "Password" then
+                                        set passwordValue to my attributeText(uiItem, "AXValue")
+                                        return passwordValue is not ""
+                                    end if
+                                end ignoring
+                            end if
+                        end try
+                    end repeat
+                end repeat
             end try
         end repeat
-
-        set end of diagnosticMessages to "PROCESSES_WITH_WINDOWS=" & my joinText(visibleProcessNames)
-        return my joinText(diagnosticMessages)
     end tell
-end fileChooserDiagnostics
+
+    return false
+end authorizationPasswordIsPresent
 
 on joinText(textValues)
     set savedDelimiters to AppleScript's text item delimiters
@@ -421,7 +402,35 @@ tell application "System Events"
 
         my progressMessage("add button identified")
         perform action "AXPress" of addButton
-        delay 2
+        delay 1
+
+        set modifySettingsButton to my findSheetButton(settingsProcess, "Modify Settings")
+
+        if modifySettingsButton is not missing value then
+            my progressMessage("administrator authorization sheet identified")
+
+            if my authorizationPasswordIsPresent(settingsProcess) is false then
+                error "Administrator authorization is required, but its password field is empty"
+            end if
+
+            perform action "AXPress" of modifySettingsButton
+            my progressMessage("administrator authorization submitted")
+        end if
+
+        set openButton to missing value
+
+        repeat 40 times
+            set openButton to my findSheetButton(settingsProcess, "Open")
+
+            if openButton is not missing value then exit repeat
+            delay 0.5
+        end repeat
+
+        if openButton is missing value then
+            error "The file chooser did not appear after administrator authorization"
+        end if
+
+        my progressMessage("file chooser ready")
 
         -- Use the standard macOS file chooser's Go to Folder command.
         keystroke "g" using {command down, shift down}
@@ -431,30 +440,27 @@ tell application "System Events"
         key code 36
         delay 2
 
-        error "FILE_CHOOSER_DIAGNOSTIC: " & my fileChooserDiagnostics(settingsProcess)
-
-        set openButton to my findOpenButton(settingsProcess)
+        set openButton to my findSheetButton(settingsProcess, "Open")
 
         if openButton is missing value then
-            my progressMessage("Open button is not a direct sheet child; using Command-O")
-            keystroke "o" using {command down}
-        else
-            my progressMessage("file chooser Open button identified")
-            perform action "AXPress" of openButton
+            error "The file chooser lost its Open button after selecting UURemote.app"
         end if
 
+        my progressMessage("file chooser Open button identified")
+        perform action "AXPress" of openButton
         my progressMessage("file chooser submitted UURemote.app")
-        delay 2
+        delay 3
 
-        set targetSwitch to missing value
+        set settingsProcess to application process settingsProcessName
+        set screenCaptureOutline to my getScreenCaptureOutline(settingsProcess)
 
-        repeat 10 times
-            -- The newly added row is unambiguous even if a future release
-            -- changes the localized bundle display name.
-            set targetSwitch to my findNewSwitch(screenCaptureOutline, previousTitles)
-            if targetSwitch is not missing value then exit repeat
-            delay 1
-        end repeat
+        if screenCaptureOutline is missing value then
+            error "The screen-capture list disappeared after adding UURemote"
+        end if
+
+        -- The newly added row is unambiguous even if a future release
+        -- changes the localized bundle display name.
+        set targetSwitch to my findNewSwitch(screenCaptureOutline, previousTitles)
     end if
 
     if targetSwitch is missing value then
