@@ -289,38 +289,30 @@ on findAddButton(settingsProcess, targetOutline)
     return missing value
 end findAddButton
 
-on findSheetButton(settingsProcess, desiredTitle)
+on findProcessButton(settingsProcess, desiredTitle)
     tell application "System Events"
         set settingsWindows to windows of settingsProcess
 
         repeat with settingsWindow in settingsWindows
             set actualWindow to contents of settingsWindow
+            set windowItems to entire contents of actualWindow
 
-            try
-                set windowSheets to sheets of actualWindow
+            repeat with uiItem in windowItems
+                try
+                    if (role of uiItem as text) is "AXButton" then
+                        set buttonTitle to my attributeText(uiItem, "AXTitle")
 
-                repeat with settingsSheet in windowSheets
-                    set actualSheet to contents of settingsSheet
-                    set sheetItems to entire contents of actualSheet
-
-                    repeat with uiItem in sheetItems
-                        try
-                            if (role of uiItem as text) is "AXButton" then
-                                set buttonTitle to my attributeText(uiItem, "AXTitle")
-
-                                ignoring case
-                                    if buttonTitle is desiredTitle then return contents of uiItem
-                                end ignoring
-                            end if
-                        end try
-                    end repeat
-                end repeat
-            end try
+                        ignoring case
+                            if buttonTitle is desiredTitle then return contents of uiItem
+                        end ignoring
+                    end if
+                end try
+            end repeat
         end repeat
     end tell
 
     return missing value
-end findSheetButton
+end findProcessButton
 
 on visibleWindowDiagnostics()
     tell application "System Events"
@@ -437,13 +429,13 @@ on run argv
         set openButton to missing value
 
         repeat 40 times
-            set modifySettingsButton to my findSheetButton(settingsProcess, "Modify Settings")
+            set modifySettingsButton to my findProcessButton(settingsProcess, "Modify Settings")
 
             if modifySettingsButton is not missing value then exit repeat
 
             -- Some managed images have already authorized this settings
             -- change and go straight to the file chooser.
-            set openButton to my findSheetButton(settingsProcess, "Open")
+            set openButton to my findProcessButton(settingsProcess, "Open")
 
             if openButton is not missing value then exit repeat
             delay 0.5
@@ -477,7 +469,7 @@ on run argv
             my progressMessage("administrator password field populated")
             delay 1
 
-            set authorizationSubmitButton to my findSheetButton(settingsProcess, "Modify Settings")
+            set authorizationSubmitButton to my findProcessButton(settingsProcess, "Modify Settings")
 
             if authorizationSubmitButton is missing value then
                 error "The administrator authorization submit button disappeared"
@@ -485,6 +477,8 @@ on run argv
 
             my progressMessage("authorization submit enabled=" & my attributeText(authorizationSubmitButton, "AXEnabled"))
             perform action "AXPress" of authorizationSubmitButton
+            delay 2
+            my progressMessage("windows after authorization submit: " & my visibleWindowDiagnostics())
             my progressMessage("administrator authorization submitted")
         end if
 
@@ -494,7 +488,7 @@ on run argv
 
         if openButton is missing value then
             repeat 40 times
-                set openButton to my findSheetButton(settingsProcess, "Open")
+                set openButton to my findProcessButton(settingsProcess, "Open")
 
                 if openButton is not missing value then exit repeat
                 delay 0.5
@@ -515,7 +509,7 @@ on run argv
         key code 36
         delay 2
 
-        set openButton to my findSheetButton(settingsProcess, "Open")
+        set openButton to my findProcessButton(settingsProcess, "Open")
 
         if openButton is missing value then
             error "The file chooser lost its Open button after selecting UURemote.app"
