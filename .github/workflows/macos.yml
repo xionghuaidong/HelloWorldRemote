@@ -30,12 +30,12 @@ jobs:
             #ls -l /Applications
             ls -l /Applications/UURemote.app/Contents/MacOS/UURemote
             brew install coreutils
-            gtimeout 60s /Applications/UURemote.app/Contents/MacOS/UURemote &
+            gtimeout 60s /Applications/UURemote.app/Contents/MacOS/UURemote 2>&1 &
 
             for ((i=1; i<=120; i++))
             do
                 echo "Waiting deviceId [$i/120] ..."
-                if device_id=$(/Applications/UURemote.app/Contents/Helpers/uuyc-cli assist id)
+                if device_id="$(/Applications/UURemote.app/Contents/Helpers/uuyc-cli assist id)"
                 then
                     if [ -n "$device_id" ]
                     then
@@ -53,7 +53,7 @@ jobs:
             for ((i=1; i<=120; i++))
             do
                 echo "Waiting customCode [$i/120] ..."
-                if output=$(/Applications/UURemote.app/Contents/Helpers/uuyc-cli set-code johnDOE123)
+                if output="$(/Applications/UURemote.app/Contents/Helpers/uuyc-cli assist set-code johnDOE123)"
                 then
                     echo "customCode: $output"
                     break
