@@ -143,7 +143,7 @@ end getAddControls
 
 on diagnosticControls(extensionProcess)
     tell application "System Events"
-        set lines to {}
+        set diagnosticLines to {}
         set allItems to entire contents of extensionProcess
         set lineCount to 0
 
@@ -165,7 +165,7 @@ on diagnosticControls(extensionProcess)
                         set itemSizeText to (item 1 of itemSize as text) & "x" & (item 2 of itemSize as text)
                     end try
 
-                    set end of lines to itemRole & " position=" & itemPositionText & " size=" & itemSizeText & " text=[" & my controlText(uiItem) & "]"
+                    set end of diagnosticLines to itemRole & " position=" & itemPositionText & " size=" & itemSizeText & " text=[" & my controlText(uiItem) & "]"
                     set lineCount to lineCount + 1
 
                     if lineCount is greater than or equal to 40 then
@@ -177,7 +177,7 @@ on diagnosticControls(extensionProcess)
 
         set previousDelimiters to AppleScript's text item delimiters
         set AppleScript's text item delimiters to linefeed
-        set outputText to lines as text
+        set outputText to diagnosticLines as text
         set AppleScript's text item delimiters to previousDelimiters
 
         return outputText
