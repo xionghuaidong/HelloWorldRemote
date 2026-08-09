@@ -247,11 +247,122 @@ jobs:
             # echo "UURemote 已重新启动"
 
 
+            ## console_uid="$(stat -f '%u' /dev/console)"
+
+            ## sudo launchctl asuser "$console_uid" \
+            ##   sudo -u "#$console_uid" \
+            ##   /usr/bin/osascript <<'APPLESCRIPT'
+            ## tell application "System Events"
+            ##     tell process "System Settings"
+            ##         set frontmost to true
+
+            ##         if not (exists window 1) then
+            ##             error "System Settings window not found"
+            ##         end if
+
+            ##         set outputLines to {}
+            ##         set end of outputLines to "WINDOW: " & (name of window 1 as text)
+
+            ##         set wantedRoles to {"AXStaticText", "AXHeading", "AXButton", "AXCheckBox", "AXSwitch", "AXRadioButton", "AXLink"}
+            ##         set allItems to entire contents of window 1
+
+            ##         set end of outputLines to "TOTAL ELEMENTS: " & (count of allItems)
+
+            ##         repeat with uiItem in allItems
+            ##             set itemRole to ""
+            ##             set itemName to ""
+            ##             set itemDescription to ""
+            ##             set itemValue to ""
+
+            ##             try
+            ##                 set itemRole to role of uiItem as text
+            ##             end try
+
+            ##             try
+            ##                 set itemName to name of uiItem as text
+            ##             end try
+
+            ##             try
+            ##                 set itemDescription to description of uiItem as text
+            ##             end try
+
+            ##             try
+            ##                 set itemValue to value of uiItem as text
+            ##             end try
+
+            ##             if wantedRoles contains itemRole then
+            ##                 set end of outputLines to itemRole & " | name=" & itemName & " | description=" & itemDescription & " | value=" & itemValue
+            ##             end if
+            ##         end repeat
+
+            ##         set previousDelimiters to AppleScript's text item delimiters
+            ##         set AppleScript's text item delimiters to linefeed
+            ##         set outputText to outputLines as text
+            ##         set AppleScript's text item delimiters to previousDelimiters
+
+            ##         return outputText
+            ##     end tell
+            ## end tell
+            ## APPLESCRIPT
+
+            APP="/Applications/UURemote.app"
             console_uid="$(stat -f '%u' /dev/console)"
 
-            sudo launchctl asuser "$console_uid" \
-              sudo -u "#$console_uid" \
-              /usr/bin/osascript <<'APPLESCRIPT'
+            run_in_gui() {
+                sudo launchctl asuser "$console_uid" \
+                    sudo -u "#$console_uid" \
+                    "$@"
+            }
+
+            run_in_gui /usr/bin/open \
+              'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture'
+
+            sleep 5
+
+            run_in_gui /usr/bin/osascript <<'APPLESCRIPT'
+            on safeName(uiItem)
+                tell application "System Events"
+                    try
+                        set itemName to name of uiItem
+                        if itemName is not missing value then return itemName as text
+                    end try
+
+                    try
+                        set itemValue to value of uiItem
+                        if itemValue is not missing value then return itemValue as text
+                    end try
+                end tell
+
+                return ""
+            end safeName
+
+            on safeDescription(uiItem)
+                tell application "System Events"
+                    try
+                        set itemDescription to description of uiItem
+                        if itemDescription is not missing value then
+                            return itemDescription as text
+                        end if
+                    end try
+                end tell
+
+                return ""
+            end safeDescription
+
+            on isEnabled(uiItem)
+                tell application "System Events"
+                    try
+                        set itemValue to value of uiItem
+
+                        if itemValue is true then return true
+                        if itemValue is 1 then return true
+                        if (itemValue as text) is "1" then return true
+                    end try
+                end tell
+
+                return false
+            end isEnabled
+
             tell application "System Events"
                 tell process "System Settings"
                     set frontmost to true
@@ -260,49 +371,71 @@ jobs:
                         error "System Settings window not found"
                     end if
 
-                    set outputLines to {}
-                    set end of outputLines to "WINDOW: " & (name of window 1 as text)
-
-                    set wantedRoles to {"AXStaticText", "AXHeading", "AXButton", "AXCheckBox", "AXSwitch", "AXRadioButton", "AXLink"}
                     set allItems to entire contents of window 1
-
-                    set end of outputLines to "TOTAL ELEMENTS: " & (count of allItems)
+                    set visibleText to ""
+                    set switchCandidates to {}
 
                     repeat with uiItem in allItems
-                        set itemRole to ""
-                        set itemName to ""
-                        set itemDescription to ""
-                        set itemValue to ""
-
                         try
                             set itemRole to role of uiItem as text
-                        end try
+                            set itemName to my safeName(uiItem)
+                            set itemDescription to my safeDescription(uiItem)
 
-                        try
-                            set itemName to name of uiItem as text
-                        end try
+                            if itemRole is "AXStaticText" or itemRole is "AXHeading" then
+                                set visibleText to visibleText & " " & itemName
+                            end if
 
-                        try
-                            set itemDescription to description of uiItem as text
+                            if itemRole is "AXCheckBox" or itemRole is "AXSwitch" then
+                                set end of switchCandidates to contents of uiItem
+                            else if itemRole is "AXButton" and itemDescription contains "switch" then
+                                set end of switchCandidates to contents of uiItem
+                            end if
                         end try
-
-                        try
-                            set itemValue to value of uiItem as text
-                        end try
-
-                        if wantedRoles contains itemRole then
-                            set end of outputLines to itemRole & " | name=" & itemName & " | description=" & itemDescription & " | value=" & itemValue
-                        end if
                     end repeat
 
-                    set previousDelimiters to AppleScript's text item delimiters
-                    set AppleScript's text item delimiters to linefeed
-                    set outputText to outputLines as text
-                    set AppleScript's text item delimiters to previousDelimiters
+                    -- 防止在错误的系统设置页面点击其他开关
+                    if visibleText does not contain "Screen" then
+                        error "当前页面不是 Screen & System Audio Recording；页面文字：" & visibleText
+                    end if
 
-                    return outputText
+                    if visibleText does not contain "Recording" then
+                        error "当前页面不是录屏权限页面；页面文字：" & visibleText
+                    end if
+
+                    set switchCount to count of switchCandidates
+
+                    if switchCount is 0 then
+                        error "录屏权限页面没有任何应用开关，UURemote 尚未出现在列表中"
+                    end if
+
+                    if switchCount is not 1 then
+                        error "页面中存在 " & switchCount & " 个应用开关，为避免误操作已停止"
+                    end if
+
+                    set targetSwitch to item 1 of switchCandidates
+                    set targetDescription to my safeDescription(targetSwitch)
+
+                    if my isEnabled(targetSwitch) then
+                        return "唯一的录屏权限开关已经处于开启状态"
+                    end if
+
+                    perform action "AXPress" of targetSwitch
+                    delay 2
+
+                    if my isEnabled(targetSwitch) then
+                        return "唯一的录屏权限开关已成功开启"
+                    end if
+
+                    error "已点击唯一的录屏权限开关，但状态仍未开启，可能出现了认证窗口"
                 end tell
             end tell
             APPLESCRIPT
+
+            # 权限变化后重启 UU
+            run_in_gui /usr/bin/killall UURemote 2>/dev/null || true
+            sleep 2
+            run_in_gui /usr/bin/open "$APP"
+
+            echo "UURemote 已重新启动"
 
             sleep 300
