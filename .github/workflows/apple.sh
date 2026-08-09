@@ -541,20 +541,31 @@ on run argv
 
         my emitScreenshot("file-chooser-selected", screenshotDirectory)
 
-        set openButton to my findProcessButton(settingsProcess, "Open")
+        -- The third Return may submit the application directly. When it does,
+        -- macOS immediately asks to restart the running application.
+        set quitAndReopenButton to my findProcessButton(settingsProcess, "Quit & Reopen")
 
-        if openButton is missing value then
-            error "The file chooser lost its Open button after selecting UURemote.app"
+        if quitAndReopenButton is not missing value then
+            my progressMessage("Quit & Reopen prompt identified")
+            perform action "AXPress" of quitAndReopenButton
+            my progressMessage("Quit & Reopen submitted")
+            delay 3
+        else
+            set openButton to my findProcessButton(settingsProcess, "Open")
+
+            if openButton is missing value then
+                error "Neither Quit & Reopen nor the file chooser Open button appeared after selecting UURemote.app"
+            end if
+
+            if my attributeText(openButton, "AXEnabled") is not "true" then
+                error "The file chooser Open button remained disabled after selecting UURemote.app"
+            end if
+
+            my progressMessage("file chooser Open button identified")
+            perform action "AXPress" of openButton
+            my progressMessage("file chooser submitted UURemote.app")
+            delay 3
         end if
-
-        if my attributeText(openButton, "AXEnabled") is not "true" then
-            error "The file chooser Open button remained disabled after selecting UURemote.app"
-        end if
-
-        my progressMessage("file chooser Open button identified")
-        perform action "AXPress" of openButton
-        my progressMessage("file chooser submitted UURemote.app")
-        delay 3
 
         set settingsProcess to application process settingsProcessName
         set screenCaptureOutline to my getScreenCaptureOutline(settingsProcess)
