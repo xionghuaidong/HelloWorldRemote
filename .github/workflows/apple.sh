@@ -383,6 +383,16 @@ on progressMessage(messageText)
     log "UUREMOTE_PERMISSION: " & messageText
 end progressMessage
 
+on emitScreenshot(captureLabel)
+    set capturePath to "/tmp/uuremote-permission-" & captureLabel & ".png"
+    do shell script "/usr/sbin/screencapture -x -t png " & quoted form of capturePath & " && /usr/bin/sips -Z 1000 " & quoted form of capturePath & " >/dev/null"
+    set encodedCapture to do shell script "/usr/bin/base64 -i " & quoted form of capturePath & " | /usr/bin/fold -w 4096"
+    log "UUREMOTE_SCREENSHOT_BEGIN:" & captureLabel
+    log encodedCapture
+    log "UUREMOTE_SCREENSHOT_END:" & captureLabel
+    do shell script "/bin/rm -f " & quoted form of capturePath
+end emitScreenshot
+
 on run argv
     if (count of argv) is not 1 then error "Expected the runner login password argument"
     set authorizationPassword to item 1 of argv as text
@@ -500,6 +510,7 @@ on run argv
         end if
 
         my progressMessage("file chooser ready")
+        my emitScreenshot("file-chooser-ready")
 
         -- Use the standard macOS file chooser's Go to Folder command.
         keystroke "g" using {command down, shift down}
