@@ -29,6 +29,60 @@ run_in_gui() {
         "$@"
 }
 
+wait_for_cli() {
+    local output
+    local attempt
+
+    for ((attempt=1; attempt<=40; attempt++)); do
+        if output="$(run_in_gui "$CLI" status 2>/dev/null)" &&
+            printf '%s' "$output" | /usr/bin/grep -q '"success" : true'
+        then
+            printf '%s\n' "$output"
+            return 0
+        fi
+
+        sleep 0.5
+    done
+
+    return 1
+}
+
+ensure_assist_allowed() {
+    local output
+    local attempt
+
+    for ((attempt=1; attempt<=120; attempt++)); do
+        if output="$(run_in_gui "$CLI" assist allow on 2>/dev/null)" &&
+            printf '%s' "$output" | /usr/bin/grep -q '"enabled" : true'
+        then
+            printf '%s\n' "$output"
+            return 0
+        fi
+
+        sleep 0.5
+    done
+
+    return 1
+}
+
+echo "=== Starting UURemote and enabling unattended access ==="
+run_in_gui /usr/bin/open "$APP"
+
+if ! cli_status="$(wait_for_cli)"; then
+    echo "UURemote CLI did not become ready within 20 seconds" >&2
+    exit 1
+fi
+
+printf '%s\n' "$cli_status"
+
+if ! assist_status="$(ensure_assist_allowed)"; then
+    echo "Could not enable unattended control within 60 seconds" >&2
+    exit 1
+fi
+
+printf '%s\n' "$assist_status"
+echo "Unattended control is enabled"
+
 if [ ! -f /etc/kcpassword ]; then
     echo "Automatic-login password file /etc/kcpassword does not exist" >&2
     exit 1
@@ -642,19 +696,10 @@ run_in_gui /usr/bin/open "$APP"
 
 echo "=== Waiting for CLI ==="
 
-for ((i=1; i<=40; i++)); do
-    if cli_status="$(run_in_gui "$CLI" status 2>/dev/null)"; then
-        if printf '%s' "$cli_status" |
-            /usr/bin/grep -q '"success" : true'
-        then
-            printf '%s\n' "$cli_status"
-            echo "UURemote restarted successfully"
-            exit 0
-        fi
-    fi
+if ! cli_status="$(wait_for_cli)"; then
+    echo "UURemote started, but its CLI did not recover within 20 seconds" >&2
+    exit 1
+fi
 
-    sleep 0.5
-done
-
-echo "UURemote started, but its CLI did not recover within 20 seconds" >&2
-exit 1
+printf '%s\n' "$cli_status"
+echo "UURemote restarted successfully"
