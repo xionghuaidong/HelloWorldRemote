@@ -26,3 +26,34 @@ jobs:
             } else {
                 Write-Host "Successfully installed $packagePath"
             }
+
+      - name: Launch UUYC
+        shell: pwsh
+        run: |
+            $installRoot = 'C:\Program Files\Netease\GameViewer'
+            $launcherPath = Join-Path $installRoot 'GameViewer.exe'
+            $cliPath = Join-Path $installRoot 'bin\uuyc-cli.exe'
+            $timeoutSeconds = 60
+            Start-Process -FilePath $launcherPath -WorkingDirectory $installRoot
+            $deadline = (Get-Date).AddSeconds($timeoutSeconds)
+            $attempts = 0
+            while (true) {
+                if ((Get-Date) -ge $deadline) {
+                    throw "Wait UUYC timeout after $timeoutSeconds seconds."
+                }
+                Start-Sleep -Milliseconds 500
+                $attempts++
+                $deviceId = @(& $cliPath --device-id 2>&1)
+                if ($LASTEXITCODE -ne 0) {
+                    continue
+                }
+                $customCode = 'johnDOE123'
+                $process = Start-Process -FilePath $cliPath -ArgumentList @('--reset-custom-code', $customCode) -Wait -PassThru
+                if ($process.ExitCode -ne 0) {
+                    continue
+                }
+                Write-Host "deviceId: $deviceId"
+                Write-Host "customCode: $customCode"
+                #Start-Seleep -Seconds 300
+                break
+            }
