@@ -34,12 +34,17 @@ jobs:
             for ((i=1; i<=120; i++))
             do
                 echo "Waiting /Applications/UURemote.app/Contents/MacOS/UURemote ..."
-                device_id=$(/Applications/UURemote.app/Contents/Helpers/uuyc-cli assist id)
-                status=$?
-                if [ "$status" -eq 0 ] && [ -n "$device_id" ]
+                if device_id=$(/Applications/UURemote.app/Contents/Helpers/uuyc-cli assist id)
                 then
-                    echo "deviceId: $device_id"
-                    break
+                    if [ -n "$device_id" ]
+                    then
+                        echo "deviceId: $device_id"
+                        break
+                    fi
+                    echo "设备 ID 为空，500 毫秒后重试" >&2
+                else
+                    status=$?
+                    echo "CLI 失败，退出码 $status，500 毫秒后重试" >&2
                 fi
                 sleep 0.5
             done
