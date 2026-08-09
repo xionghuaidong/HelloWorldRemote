@@ -76,235 +76,6 @@ jobs:
             done
 
 
-            # APP="/Applications/UURemote.app"
-            # console_uid="$(stat -f '%u' /dev/console)"
-
-            # run_in_gui() {
-            #     sudo launchctl asuser "$console_uid" \
-            #         sudo -u "#$console_uid" \
-            #         "$@"
-            # }
-
-            # # 关闭 UU，避免开启权限后出现“退出并重新打开”对话框
-            # run_in_gui /usr/bin/killall UURemote 2>/dev/null || true
-            # sleep 2
-
-            # run_in_gui /usr/bin/open \
-            #   'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture'
-
-            # sleep 5
-
-            # run_in_gui /usr/bin/osascript <<'APPLESCRIPT'
-            # on elementText(uiItem)
-            #     tell application "System Events"
-            #         set combinedText to ""
-
-            #         try
-            #             set combinedText to combinedText & " " & (name of uiItem as text)
-            #         end try
-
-            #         try
-            #             set combinedText to combinedText & " " & (description of uiItem as text)
-            #         end try
-
-            #         try
-            #             set combinedText to combinedText & " " & (help of uiItem as text)
-            #         end try
-
-            #         try
-            #             set itemRole to role of uiItem as text
-            #             if itemRole is "AXStaticText" then
-            #                 set combinedText to combinedText & " " & (value of uiItem as text)
-            #             end if
-            #         end try
-
-            #         return combinedText
-            #     end tell
-            # end elementText
-
-            # on containsUU(uiItem)
-            #     set labelText to my elementText(uiItem)
-
-            #     if labelText contains "UURemote" then return true
-            #     if labelText contains "UU远程" then return true
-            #     if labelText contains "UU 远程" then return true
-            #     if labelText contains "网易UU" then return true
-            #     if labelText contains "UU" then return true
-
-            #     return false
-            # end containsUU
-
-            # on operateSwitch(uiItem)
-            #     tell application "System Events"
-            #         try
-            #             set itemRole to role of uiItem as text
-
-            #             if itemRole is not "AXCheckBox" and itemRole is not "AXSwitch" then
-            #                 return ""
-            #             end if
-
-            #             set oldValue to value of uiItem
-
-            #             if oldValue is true or oldValue is 1 or (oldValue as text) is "1" then
-            #                 return "权限已经开启"
-            #             end if
-
-            #             perform action "AXPress" of uiItem
-            #             delay 2
-
-            #             set newValue to value of uiItem
-
-            #             if newValue is true or newValue is 1 or (newValue as text) is "1" then
-            #                 return "权限已成功开启"
-            #             end if
-
-            #             error "已经点击开关，但状态仍未开启，可能出现了认证或确认窗口"
-            #         end try
-            #     end tell
-
-            #     return ""
-            # end operateSwitch
-
-            # tell application "System Events"
-            #     tell process "System Settings"
-            #         set frontmost to true
-
-            #         if not (exists window 1) then
-            #             error "未找到系统设置窗口"
-            #         end if
-
-            #         set allItems to entire contents of window 1
-            #         set targetLabel to missing value
-
-            #         -- 首先尝试寻找自身带有 UU 名称的开关
-            #         repeat with uiItem in allItems
-            #             try
-            #                 if my containsUU(uiItem) then
-            #                     set toggleResult to my operateSwitch(uiItem)
-
-            #                     if toggleResult is not "" then
-            #                         return toggleResult
-            #                     end if
-
-            #                     if targetLabel is missing value then
-            #                         set targetLabel to contents of uiItem
-            #                     end if
-            #                 end if
-            #             end try
-            #         end repeat
-
-            #         if targetLabel is missing value then
-            #             error "没有在录屏权限页面找到网易 UU 远程"
-            #         end if
-
-            #         -- 如果名称和开关是同一行的不同元素，向上查找所在容器
-            #         set containerRef to parent of targetLabel
-
-            #         repeat with searchDepth from 1 to 4
-            #             try
-            #                 set containerRole to role of containerRef as text
-
-            #                 if containerRole is "AXWindow" or containerRole is "AXScrollArea" then
-            #                     exit repeat
-            #                 end if
-
-            #                 set candidates to entire contents of containerRef
-            #                 set switchesFound to {}
-
-            #                 repeat with candidate in candidates
-            #                     try
-            #                         set candidateRole to role of candidate as text
-
-            #                         if candidateRole is "AXCheckBox" or candidateRole is "AXSwitch" then
-            #                             set end of switchesFound to contents of candidate
-            #                         end if
-            #                     end try
-            #                 end repeat
-
-            #                 if (count of switchesFound) is 1 then
-            #                     set toggleResult to my operateSwitch(item 1 of switchesFound)
-
-            #                     if toggleResult is not "" then
-            #                         return toggleResult
-            #                     end if
-            #                 end if
-
-            #                 set containerRef to parent of containerRef
-            #             on error
-            #                 exit repeat
-            #             end try
-            #         end repeat
-
-            #         error "找到了网易 UU 远程文字，但无法定位对应的权限开关"
-            #     end tell
-            # end tell
-            # APPLESCRIPT
-
-            # sleep 2
-
-            # run_in_gui /usr/bin/open "$APP"
-
-            # echo "UURemote 已重新启动"
-
-
-            ## console_uid="$(stat -f '%u' /dev/console)"
-
-            ## sudo launchctl asuser "$console_uid" \
-            ##   sudo -u "#$console_uid" \
-            ##   /usr/bin/osascript <<'APPLESCRIPT'
-            ## tell application "System Events"
-            ##     tell process "System Settings"
-            ##         set frontmost to true
-
-            ##         if not (exists window 1) then
-            ##             error "System Settings window not found"
-            ##         end if
-
-            ##         set outputLines to {}
-            ##         set end of outputLines to "WINDOW: " & (name of window 1 as text)
-
-            ##         set wantedRoles to {"AXStaticText", "AXHeading", "AXButton", "AXCheckBox", "AXSwitch", "AXRadioButton", "AXLink"}
-            ##         set allItems to entire contents of window 1
-
-            ##         set end of outputLines to "TOTAL ELEMENTS: " & (count of allItems)
-
-            ##         repeat with uiItem in allItems
-            ##             set itemRole to ""
-            ##             set itemName to ""
-            ##             set itemDescription to ""
-            ##             set itemValue to ""
-
-            ##             try
-            ##                 set itemRole to role of uiItem as text
-            ##             end try
-
-            ##             try
-            ##                 set itemName to name of uiItem as text
-            ##             end try
-
-            ##             try
-            ##                 set itemDescription to description of uiItem as text
-            ##             end try
-
-            ##             try
-            ##                 set itemValue to value of uiItem as text
-            ##             end try
-
-            ##             if wantedRoles contains itemRole then
-            ##                 set end of outputLines to itemRole & " | name=" & itemName & " | description=" & itemDescription & " | value=" & itemValue
-            ##             end if
-            ##         end repeat
-
-            ##         set previousDelimiters to AppleScript's text item delimiters
-            ##         set AppleScript's text item delimiters to linefeed
-            ##         set outputText to outputLines as text
-            ##         set AppleScript's text item delimiters to previousDelimiters
-
-            ##         return outputText
-            ##     end tell
-            ## end tell
-            ## APPLESCRIPT
-
             APP="/Applications/UURemote.app"
             console_uid="$(stat -f '%u' /dev/console)"
 
@@ -320,36 +91,43 @@ jobs:
             sleep 5
 
             run_in_gui /usr/bin/osascript <<'APPLESCRIPT'
-            on safeName(uiItem)
+            on attributeText(uiItem, attributeName)
                 tell application "System Events"
                     try
-                        set itemName to name of uiItem
-                        if itemName is not missing value then return itemName as text
-                    end try
+                        set attributeValue to value of attribute attributeName of uiItem
 
-                    try
-                        set itemValue to value of uiItem
-                        if itemValue is not missing value then return itemValue as text
-                    end try
-                end tell
-
-                return ""
-            end safeName
-
-            on safeDescription(uiItem)
-                tell application "System Events"
-                    try
-                        set itemDescription to description of uiItem
-                        if itemDescription is not missing value then
-                            return itemDescription as text
+                        if attributeValue is not missing value then
+                            return attributeValue as text
                         end if
                     end try
                 end tell
 
                 return ""
-            end safeDescription
+            end attributeText
 
-            on isEnabled(uiItem)
+            on isSwitch(uiItem)
+                tell application "System Events"
+                    try
+                        set itemRole to role of uiItem as text
+
+                        if itemRole is "AXCheckBox" or itemRole is "AXSwitch" then
+                            return true
+                        end if
+
+                        if itemRole is "AXButton" then
+                            set itemDescription to my attributeText(uiItem, "AXDescription")
+
+                            if itemDescription contains "switch" then
+                                return true
+                            end if
+                        end if
+                    end try
+                end tell
+
+                return false
+            end isSwitch
+
+            on switchEnabled(uiItem)
                 tell application "System Events"
                     try
                         set itemValue to value of uiItem
@@ -361,7 +139,7 @@ jobs:
                 end tell
 
                 return false
-            end isEnabled
+            end switchEnabled
 
             tell application "System Events"
                 tell process "System Settings"
@@ -373,69 +151,122 @@ jobs:
 
                     set allItems to entire contents of window 1
                     set visibleText to ""
-                    set switchCandidates to {}
+                    set addCandidates to {}
+                    set buttonDump to ""
 
                     repeat with uiItem in allItems
                         try
                             set itemRole to role of uiItem as text
-                            set itemName to my safeName(uiItem)
-                            set itemDescription to my safeDescription(uiItem)
 
                             if itemRole is "AXStaticText" or itemRole is "AXHeading" then
-                                set visibleText to visibleText & " " & itemName
+                                set visibleText to visibleText & " " & my attributeText(uiItem, "AXTitle")
+                                set visibleText to visibleText & " " & my attributeText(uiItem, "AXValue")
                             end if
 
-                            if itemRole is "AXCheckBox" or itemRole is "AXSwitch" then
-                                set end of switchCandidates to contents of uiItem
-                            else if itemRole is "AXButton" and itemDescription contains "switch" then
-                                set end of switchCandidates to contents of uiItem
+                            if itemRole is "AXButton" then
+                                set buttonText to ""
+                                set buttonText to buttonText & " " & my attributeText(uiItem, "AXTitle")
+                                set buttonText to buttonText & " " & my attributeText(uiItem, "AXDescription")
+                                set buttonText to buttonText & " " & my attributeText(uiItem, "AXHelp")
+                                set buttonText to buttonText & " " & my attributeText(uiItem, "AXIdentifier")
+
+                                set buttonDump to buttonDump & linefeed & "[" & buttonText & "]"
+
+                                if buttonText contains "Add" or buttonText contains "add" or buttonText contains "+" then
+                                    set end of addCandidates to contents of uiItem
+                                end if
                             end if
                         end try
                     end repeat
 
-                    -- 防止在错误的系统设置页面点击其他开关
-                    if visibleText does not contain "Screen" then
-                        error "当前页面不是 Screen & System Audio Recording；页面文字：" & visibleText
+                    if visibleText does not contain "Screen" or visibleText does not contain "Recording" then
+                        error "当前不是 Screen & System Audio Recording 页面：" & visibleText
                     end if
 
-                    if visibleText does not contain "Recording" then
-                        error "当前页面不是录屏权限页面；页面文字：" & visibleText
+                    set addCount to count of addCandidates
+
+                    if addCount is 0 then
+                        error "找不到 Add 按钮。页面按钮：" & buttonDump
                     end if
+
+                    if addCount is not 1 then
+                        error "找到 " & addCount & " 个 Add 候选按钮，为避免误操作已停止。页面按钮：" & buttonDump
+                    end if
+
+                    perform action "AXPress" of item 1 of addCandidates
+                    delay 2
+
+                    -- 标准文件选择器：打开“前往文件夹”
+                    keystroke "g" using {command down, shift down}
+                    delay 1
+
+                    keystroke "/Applications/UURemote.app"
+                    delay 1
+
+                    -- 确认路径
+                    key code 36
+                    delay 2
+
+                    -- 点击文件选择器中的 Open
+                    key code 36
+                    delay 4
+
+                    -- 等待应用出现在权限列表
+                    set switchCandidates to {}
+
+                    repeat 30 times
+                        set switchCandidates to {}
+                        set refreshedItems to entire contents of window 1
+
+                        repeat with uiItem in refreshedItems
+                            if my isSwitch(uiItem) then
+                                set end of switchCandidates to contents of uiItem
+                            end if
+                        end repeat
+
+                        if (count of switchCandidates) is greater than 0 then
+                            exit repeat
+                        end if
+
+                        delay 0.5
+                    end repeat
 
                     set switchCount to count of switchCandidates
 
                     if switchCount is 0 then
-                        error "录屏权限页面没有任何应用开关，UURemote 尚未出现在列表中"
+                        error "已完成文件选择，但 UURemote 仍未出现在权限列表"
                     end if
 
                     if switchCount is not 1 then
-                        error "页面中存在 " & switchCount & " 个应用开关，为避免误操作已停止"
+                        error "添加后发现 " & switchCount & " 个权限开关，为避免误操作已停止"
                     end if
 
                     set targetSwitch to item 1 of switchCandidates
-                    set targetDescription to my safeDescription(targetSwitch)
 
-                    if my isEnabled(targetSwitch) then
-                        return "唯一的录屏权限开关已经处于开启状态"
+                    -- 先结束 UU，避免出现“Quit & Reopen”确认框
+                    do shell script "/usr/bin/killall UURemote >/dev/null 2>&1 || true"
+                    delay 1
+
+                    if my switchEnabled(targetSwitch) then
+                        return "UURemote 已加入列表，录屏权限已经开启"
                     end if
 
                     perform action "AXPress" of targetSwitch
                     delay 2
 
-                    if my isEnabled(targetSwitch) then
-                        return "唯一的录屏权限开关已成功开启"
+                    if my switchEnabled(targetSwitch) then
+                        return "UURemote 已加入列表并成功开启录屏权限"
                     end if
 
-                    error "已点击唯一的录屏权限开关，但状态仍未开启，可能出现了认证窗口"
+                    error "UURemote 已加入列表，但点击后权限仍未开启，可能出现了认证窗口"
                 end tell
             end tell
             APPLESCRIPT
 
-            # 权限变化后重启 UU
-            run_in_gui /usr/bin/killall UURemote 2>/dev/null || true
             sleep 2
             run_in_gui /usr/bin/open "$APP"
 
             echo "UURemote 已重新启动"
+
 
             sleep 300
