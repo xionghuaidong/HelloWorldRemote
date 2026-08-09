@@ -140,18 +140,7 @@ end getScreenCaptureOutline
 
 on getOutlineRows(targetOutline)
     tell application "System Events"
-        set outlineRows to {}
-        set outlineItems to entire contents of targetOutline
-
-        repeat with uiItem in outlineItems
-            try
-                if (role of uiItem as text) is "AXRow" then
-                    set end of outlineRows to contents of uiItem
-                end if
-            end try
-        end repeat
-
-        return outlineRows
+        return rows of targetOutline
     end tell
 end getOutlineRows
 
@@ -305,7 +294,12 @@ on stopTargetProcesses()
     do shell script "/usr/bin/pkill -f '/Applications/UURemote.app/' >/dev/null 2>&1 || true"
 end stopTargetProcesses
 
+on progressMessage(messageText)
+    log "UUREMOTE_PERMISSION: " & messageText
+end progressMessage
+
 tell application "System Events"
+    my progressMessage("waiting for the primary screen-capture outline")
     set settingsReady to false
     set screenCaptureOutline to missing value
 
@@ -327,16 +321,20 @@ tell application "System Events"
         error "Screen & System Audio Recording list did not become ready within 30 seconds"
     end if
 
+    set initialRows to my getOutlineRows(screenCaptureOutline)
+    my progressMessage("primary outline ready; rows=" & (count of initialRows))
     set targetSwitch to my findTargetSwitch(screenCaptureOutline)
 
     if targetSwitch is missing value then
         set previousTitles to my getRowTitles(screenCaptureOutline)
+        my progressMessage("UURemote row absent; existing rows=" & my joinText(previousTitles))
         set addButton to my findAddButton(settingsProcess, screenCaptureOutline)
 
         if addButton is missing value then
             error "Could not identify the add button. Rows: " & my outlineDiagnostics(screenCaptureOutline)
         end if
 
+        my progressMessage("add button identified")
         perform action "AXPress" of addButton
         delay 2
 
@@ -348,27 +346,20 @@ tell application "System Events"
         key code 36
         delay 2
         key code 36
+        my progressMessage("file chooser submitted UURemote.app")
 
         set targetSwitch to missing value
 
         repeat 80 times
-            if exists application process settingsProcessName then
-                set settingsProcess to application process settingsProcessName
-                set screenCaptureOutline to my getScreenCaptureOutline(settingsProcess)
+            set targetSwitch to my findTargetSwitch(screenCaptureOutline)
 
-                if screenCaptureOutline is not missing value then
-                    set targetSwitch to my findTargetSwitch(screenCaptureOutline)
-
-                    -- Bundle display names can change between releases. If
-                    -- necessary, use the one row added by this file chooser.
-                    if targetSwitch is missing value then
-                        set targetSwitch to my findNewSwitch(screenCaptureOutline, previousTitles)
-                    end if
-
-                    if targetSwitch is not missing value then exit repeat
-                end if
+            -- Bundle display names can change between releases. If
+            -- necessary, use the one row added by this file chooser.
+            if targetSwitch is missing value then
+                set targetSwitch to my findNewSwitch(screenCaptureOutline, previousTitles)
             end if
 
+            if targetSwitch is not missing value then exit repeat
             delay 0.25
         end repeat
     end if
@@ -377,16 +368,21 @@ tell application "System Events"
         error "UURemote was not added to the permission list. Rows: " & my outlineDiagnostics(screenCaptureOutline)
     end if
 
+    my progressMessage("UURemote switch identified")
+
     if my switchIsEnabled(targetSwitch) then
         return "UURemote Screen & System Audio Recording permission is already enabled"
     end if
 
+    my progressMessage("stopping UURemote processes before toggling permission")
     my stopTargetProcesses()
     delay 1
     perform action "AXPress" of targetSwitch
+    my progressMessage("permission switch pressed")
 
     repeat 40 times
         if my switchIsEnabled(targetSwitch) then
+            my progressMessage("permission switch is on")
             return "UURemote Screen & System Audio Recording permission enabled"
         end if
 
