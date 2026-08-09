@@ -347,30 +347,19 @@ on findAddButton(settingsProcess, targetOutline)
     return missing value
 end findAddButton
 
-on findProcessButton(settingsProcess, desiredTitle)
+on processHasWindowTitle(settingsProcess, desiredTitle)
     tell application "System Events"
         set settingsWindows to windows of settingsProcess
 
         repeat with settingsWindow in settingsWindows
-            set actualWindow to contents of settingsWindow
-            set windowItems to entire contents of actualWindow
-
-            repeat with uiItem in windowItems
-                try
-                    if (role of uiItem as text) is "AXButton" then
-                        set buttonTitle to my attributeText(uiItem, "AXTitle")
-
-                        ignoring case
-                            if buttonTitle is desiredTitle then return contents of uiItem
-                        end ignoring
-                    end if
-                end try
-            end repeat
+            ignoring case
+                if my attributeText(settingsWindow, "AXTitle") is desiredTitle then return true
+            end ignoring
         end repeat
     end tell
 
-    return missing value
-end findProcessButton
+    return false
+end processHasWindowTitle
 
 on visibleWindowDiagnostics()
     tell application "System Events"
@@ -531,32 +520,15 @@ on ensurePermission(permissionURL, permissionWindowTitle, permissionLabel, scree
 
         my progressMessage(permissionLabel & ": add button identified")
         perform action "AXPress" of addButton
-        set modifySettingsButton to missing value
-        set openButton to missing value
+        delay 2
+        set fileChooserReady to my processHasWindowTitle(settingsProcess, "Open")
 
-        repeat 40 times
-            set modifySettingsButton to my findProcessButton(settingsProcess, "Modify Settings")
-
-            if modifySettingsButton is not missing value then exit repeat
-
-            -- Some managed images have already authorized this settings
-            -- change and go straight to the file chooser.
-            set openButton to my findProcessButton(settingsProcess, "Open")
-
-            if openButton is not missing value then exit repeat
-            delay 0.5
-        end repeat
-
-        if modifySettingsButton is not missing value then
-            my progressMessage(permissionLabel & ": administrator authorization sheet identified")
+        if fileChooserReady is false then
+            my progressMessage(permissionLabel & ": submitting the default Modify Settings confirmation")
             try
                 set frontmost of settingsProcess to true
             end try
-
-            -- The first sheet is only a confirmation sheet. Pressing Modify
-            -- Settings opens the separate system authentication dialog. This
-            -- order and timing matches actions/runner-images' official helper.
-            click modifySettingsButton
+            key code 36
             delay 5
             my progressMessage(permissionLabel & ": windows after Modify Settings: " & my visibleWindowDiagnostics())
 
@@ -574,35 +546,21 @@ on ensurePermission(permissionURL, permissionWindowTitle, permissionLabel, scree
 
             my progressMessage(permissionLabel & ": administrator password field populated")
             delay 1
+            key code 36
+            my progressMessage(permissionLabel & ": administrator authorization submitted with the default button")
+        end if
 
-            set authorizationSubmitButton to my findProcessButton(settingsProcess, "Modify Settings")
-
-            if authorizationSubmitButton is missing value then
-                error permissionLabel & ": the administrator authorization submit button disappeared"
+        repeat 80 times
+            if my processHasWindowTitle(settingsProcess, "Open") then
+                set fileChooserReady to true
+                exit repeat
             end if
 
-            my progressMessage(permissionLabel & ": authorization submit enabled=" & my attributeText(authorizationSubmitButton, "AXEnabled"))
-            perform action "AXPress" of authorizationSubmitButton
-            delay 2
-            my progressMessage(permissionLabel & ": windows after authorization submit: " & my visibleWindowDiagnostics())
-            my progressMessage(permissionLabel & ": administrator authorization submitted")
-        end if
+            delay 0.25
+        end repeat
 
-        if modifySettingsButton is missing value and openButton is missing value then
-            error permissionLabel & ": neither administrator authorization nor the file chooser appeared"
-        end if
-
-        if openButton is missing value then
-            repeat 40 times
-                set openButton to my findProcessButton(settingsProcess, "Open")
-
-                if openButton is not missing value then exit repeat
-                delay 0.5
-            end repeat
-        end if
-
-        if openButton is missing value then
-            error permissionLabel & ": the file chooser did not appear after administrator authorization"
+        if fileChooserReady is false then
+            error permissionLabel & ": the file chooser did not appear after administrator authorization. Windows: " & my visibleWindowDiagnostics()
         end if
 
         my progressMessage(permissionLabel & ": file chooser ready")
@@ -631,34 +589,25 @@ on ensurePermission(permissionURL, permissionWindowTitle, permissionLabel, scree
 
         my emitScreenshot(screenshotPrefix & "-file-chooser-selected", screenshotDirectory)
 
-        -- The third Return may submit the application directly. When it does,
-        -- macOS immediately asks to restart the running application.
-        set quitAndReopenButton to my findProcessButton(settingsProcess, "Quit & Reopen")
-
-        if quitAndReopenButton is not missing value then
-            my progressMessage(permissionLabel & ": Quit & Reopen prompt identified")
-            perform action "AXPress" of quitAndReopenButton
-            my progressMessage(permissionLabel & ": Quit & Reopen submitted")
-            delay 3
-        else
-            set openButton to my findProcessButton(settingsProcess, "Open")
-
-            if openButton is missing value then
-                error permissionLabel & ": neither Quit & Reopen nor the file chooser Open button appeared after selecting UURemote.app"
-            end if
-
-            if my attributeText(openButton, "AXEnabled") is not "true" then
-                error permissionLabel & ": the file chooser Open button remained disabled after selecting UURemote.app"
-            end if
-
-            my progressMessage(permissionLabel & ": file chooser Open button identified")
-            perform action "AXPress" of openButton
-            my progressMessage(permissionLabel & ": file chooser submitted UURemote.app")
-            delay 3
-        end if
+        -- Focus is now on the selected application in the file chooser.
+        -- Submit the default Open button, then accept a possible default
+        -- Quit & Reopen prompt. Extra Return is harmless when no prompt exists.
+        key code 36
+        my progressMessage(permissionLabel & ": submitted the selected UURemote.app with the default Open button")
+        delay 2
+        key code 36
+        my progressMessage(permissionLabel & ": accepted the default post-add confirmation, if present")
+        delay 3
 
         set settingsProcess to application process settingsProcessName
-        set permissionOutline to my getPermissionOutline(settingsProcess)
+        set permissionOutline to missing value
+
+        repeat 40 times
+            set permissionOutline to my getPermissionOutline(settingsProcess)
+
+            if permissionOutline is not missing value then exit repeat
+            delay 0.25
+        end repeat
 
         if permissionOutline is missing value then
             error permissionLabel & ": the permission list disappeared after adding UURemote"
