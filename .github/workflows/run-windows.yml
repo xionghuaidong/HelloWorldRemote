@@ -1,4 +1,4 @@
-name: Run UUYC
+name: Run Windows
 
 on:
   workflow_dispatch:
@@ -7,14 +7,14 @@ permissions:
   contents: write
 
 jobs:
-  compile:
+  run-windows:
     runs-on: windows-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Install UUYC
+      - name: Install GameViewer
         shell: pwsh
         run: |
             $packageUrl = "https://a56.gdl.netease.com/UURemote_Setup_4.36.0.9155_0806201117_gwqd.exe"
@@ -27,7 +27,7 @@ jobs:
                 Write-Host "Successfully installed $packagePath"
             }
 
-      - name: Launch UUYC
+      - name: Launch GameViewer
         shell: pwsh
         run: |
             $installRoot = 'C:\Program Files\Netease\GameViewer'
@@ -41,7 +41,7 @@ jobs:
             while ($true) {
                 Write-Host "Waiting $launcherPath ..."
                 if ((Get-Date) -ge $deadline) {
-                    throw "Wait UUYC timeout after $timeoutSeconds seconds."
+                    throw "Wait GameViewer timed out after $timeoutSeconds seconds"
                 }
                 Start-Sleep -Milliseconds 500
                 $attempts++
@@ -57,6 +57,7 @@ jobs:
                 }
                 Write-Host "customCode: $customCode"
                 Write-Host "Waiting connections ..."
-                Start-Sleep -Seconds 21000
+                #Start-Sleep -Seconds 21000
+                Start-Sleep -Seconds 300
                 break
             }
