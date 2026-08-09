@@ -293,37 +293,6 @@ on findSheetButton(settingsProcess, desiredTitle)
     return missing value
 end findSheetButton
 
-on authorizationPasswordIsPresent(settingsProcess)
-    tell application "System Events"
-        repeat with settingsWindow in windows of settingsProcess
-            try
-                repeat with settingsSheet in sheets of settingsWindow
-                    set sheetItems to entire contents of settingsSheet
-
-                    repeat with uiItem in sheetItems
-                        try
-                            set itemRole to role of uiItem as text
-                            set itemTitle to my attributeText(uiItem, "AXTitle")
-                            set itemDescription to my attributeText(uiItem, "AXDescription")
-
-                            if itemRole is "AXTextField" or itemRole is "AXSecureTextField" then
-                                ignoring case
-                                    if itemTitle is "Password" or itemDescription is "Password" then
-                                        set passwordValue to my attributeText(uiItem, "AXValue")
-                                        return passwordValue is not ""
-                                    end if
-                                end ignoring
-                            end if
-                        end try
-                    end repeat
-                end repeat
-            end try
-        end repeat
-    end tell
-
-    return false
-end authorizationPasswordIsPresent
-
 on joinText(textValues)
     set savedDelimiters to AppleScript's text item delimiters
     set AppleScript's text item delimiters to ", "
@@ -408,11 +377,6 @@ tell application "System Events"
 
         if modifySettingsButton is not missing value then
             my progressMessage("administrator authorization sheet identified")
-
-            if my authorizationPasswordIsPresent(settingsProcess) is false then
-                error "Administrator authorization is required, but its password field is empty"
-            end if
-
             perform action "AXPress" of modifySettingsButton
             my progressMessage("administrator authorization submitted")
         end if
