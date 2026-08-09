@@ -4,13 +4,18 @@ set -euo pipefail
 APP="/Applications/UURemote.app"
 CLI="$APP/Contents/Helpers/uuyc-cli"
 PREF_URL='x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture'
+EXTENSION_PROCESS="SecurityPrivacyExtension"
+
 console_uid="$(stat -f '%u' /dev/console)"
 
-echo "=== macOS ==="
+echo "=== Environment ==="
 /usr/bin/sw_vers
+echo "Console UID: $console_uid"
 
-echo "=== Console session ==="
-echo "UID: $console_uid"
+if [ ! -d "$APP" ]; then
+    echo "UURemote 不存在：$APP" >&2
+    exit 1
+fi
 
 if ! sudo launchctl print "gui/$console_uid" >/dev/null 2>&1; then
     echo "图形桌面会话 gui/$console_uid 不存在" >&2
@@ -23,16 +28,19 @@ run_in_gui() {
         "$@"
 }
 
-echo "=== Opening Screen & System Audio Recording ==="
+echo "=== Opening permission page ==="
 
 run_in_gui /usr/bin/open -a "System Settings"
 sleep 1
 run_in_gui /usr/bin/open "$PREF_URL"
-sleep 3
+sleep 4
 
-echo "=== UI elements in right/lower content area ==="
+echo "=== Adding UURemote and enabling permission ==="
 
 run_in_gui /usr/bin/osascript <<'APPLESCRIPT'
+property extensionProcessName : "SecurityPrivacyExtension"
+property targetApplicationPath : "/Applications/UURemote.app"
+
 on attributeText(uiItem, attributeName)
     tell application "System Events"
         try
@@ -47,154 +55,260 @@ on attributeText(uiItem, attributeName)
     return ""
 end attributeText
 
-tell application "System Events"
-    set settingsReady to false
+on controlText(uiItem)
+    set combinedText to ""
+    set combinedText to combinedText & " " & my attributeText(uiItem, "AXTitle")
+    set combinedText to combinedText & " " & my attributeText(uiItem, "AXDescription")
+    set combinedText to combinedText & " " & my attributeText(uiItem, "AXHelp")
+    set combinedText to combinedText & " " & my attributeText(uiItem, "AXIdentifier")
+    set combinedText to combinedText & " " & my attributeText(uiItem, "AXRoleDescription")
+    set combinedText to combinedText & " " & my attributeText(uiItem, "AXValue")
+    return combinedText
+end controlText
 
-    repeat 60 times
-        if exists application process "System Settings" then
-            tell application process "System Settings"
-                if exists window 1 then
-                    set settingsReady to true
-                    exit repeat
+on isSwitchControl(uiItem)
+    tell application "System Events"
+        try
+            set itemRole to role of uiItem as text
+
+            if itemRole is "AXCheckBox" or itemRole is "AXSwitch" then
+                return true
+            end if
+
+            if itemRole is "AXButton" then
+                set itemText to my controlText(uiItem)
+
+                if itemText contains "switch" or itemText contains "Switch" then
+                    return true
                 end if
-            end tell
+            end if
+        end try
+    end tell
+
+    return false
+end isSwitchControl
+
+on switchIsEnabled(uiItem)
+    tell application "System Events"
+        try
+            set itemValue to value of uiItem
+
+            if itemValue is true then return true
+            if itemValue is 1 then return true
+            if (itemValue as text) is "1" then return true
+            if (itemValue as text) is "true" then return true
+        end try
+    end tell
+
+    return false
+end switchIsEnabled
+
+on getSwitches(extensionProcess)
+    tell application "System Events"
+        set switchControls to {}
+        set allItems to entire contents of extensionProcess
+
+        repeat with uiItem in allItems
+            if my isSwitchControl(uiItem) then
+                set end of switchControls to contents of uiItem
+            end if
+        end repeat
+
+        return switchControls
+    end tell
+end getSwitches
+
+on getAddControls(extensionProcess)
+    tell application "System Events"
+        set addControls to {}
+        set allItems to entire contents of extensionProcess
+
+        repeat with uiItem in allItems
+            try
+                set itemRole to role of uiItem as text
+
+                if itemRole is "AXButton" or itemRole is "AXMenuButton" or itemRole is "AXPopUpButton" then
+                    set itemText to my controlText(uiItem)
+
+                    if itemText contains "Add" or itemText contains "add" or itemText contains "+" then
+                        set end of addControls to contents of uiItem
+                    end if
+                end if
+            end try
+        end repeat
+
+        return addControls
+    end tell
+end getAddControls
+
+on diagnosticControls(extensionProcess)
+    tell application "System Events"
+        set lines to {}
+        set allItems to entire contents of extensionProcess
+        set lineCount to 0
+
+        repeat with uiItem in allItems
+            try
+                set itemRole to role of uiItem as text
+
+                if itemRole is "AXButton" or itemRole is "AXMenuButton" or itemRole is "AXPopUpButton" or itemRole is "AXCheckBox" or itemRole is "AXSwitch" then
+                    set itemPositionText to ""
+                    set itemSizeText to ""
+
+                    try
+                        set itemPosition to position of uiItem
+                        set itemPositionText to (item 1 of itemPosition as text) & "," & (item 2 of itemPosition as text)
+                    end try
+
+                    try
+                        set itemSize to size of uiItem
+                        set itemSizeText to (item 1 of itemSize as text) & "x" & (item 2 of itemSize as text)
+                    end try
+
+                    set end of lines to itemRole & " position=" & itemPositionText & " size=" & itemSizeText & " text=[" & my controlText(uiItem) & "]"
+                    set lineCount to lineCount + 1
+
+                    if lineCount is greater than or equal to 40 then
+                        exit repeat
+                    end if
+                end if
+            end try
+        end repeat
+
+        set previousDelimiters to AppleScript's text item delimiters
+        set AppleScript's text item delimiters to linefeed
+        set outputText to lines as text
+        set AppleScript's text item delimiters to previousDelimiters
+
+        return outputText
+    end tell
+end diagnosticControls
+
+tell application "System Events"
+    set extensionReady to false
+
+    -- 等待权限设置扩展进程启动
+    repeat 80 times
+        if exists application process extensionProcessName then
+            set extensionReady to true
+            exit repeat
         end if
 
         delay 0.25
     end repeat
 
-    if settingsReady is false then
-        error "System Settings window not found after 15 seconds"
+    if extensionReady is false then
+        set processNames to name of every application process
+        error "等待 20 秒后仍未找到 " & extensionProcessName & "。GUI 进程：" & (processNames as text)
     end if
 
-    tell application process "System Settings"
-        set outputLines to {}
-        set allItems to entire contents of window 1
+    set extensionProcess to application process extensionProcessName
+    set existingSwitches to my getSwitches(extensionProcess)
+    set existingSwitchCount to count of existingSwitches
 
-        set end of outputLines to "WINDOW=[" & (name of window 1 as text) & "]"
-        set end of outputLines to "TOTAL ELEMENTS=" & (count of allItems)
-        set elementNumber to 0
+    if existingSwitchCount is greater than 1 then
+        error "权限页面当前已有 " & existingSwitchCount & " 个开关，为避免误操作已停止。" & linefeed & my diagnosticControls(extensionProcess)
+    end if
 
-        repeat with uiItem in allItems
-            try
-                set itemPosition to position of uiItem
-                set itemX to item 1 of itemPosition
-                set itemY to item 2 of itemPosition
+    -- 列表为空时添加 UURemote.app
+    if existingSwitchCount is 0 then
+        set addControls to my getAddControls(extensionProcess)
+        set addCount to count of addControls
 
-                -- 窗口位于 150,57，右侧内容区域大约从 x=370 开始。
-                -- 输出右侧且 y>=300 的所有控件，包含列表和底部工具区。
-                if itemX is greater than or equal to 370 and itemY is greater than or equal to 300 then
-                    set elementNumber to elementNumber + 1
+        if addCount is 0 then
+            error "在 SecurityPrivacyExtension 中仍找不到 Add 控件。" & linefeed & my diagnosticControls(extensionProcess)
+        end if
 
-                    set itemSize to size of uiItem
-                    set itemWidth to item 1 of itemSize
-                    set itemHeight to item 2 of itemSize
+        if addCount is not 1 then
+            error "找到 " & addCount & " 个 Add 控件，为避免误操作已停止。" & linefeed & my diagnosticControls(extensionProcess)
+        end if
 
-                    set itemRole to my attributeText(uiItem, "AXRole")
-                    set itemSubrole to my attributeText(uiItem, "AXSubrole")
-                    set itemTitle to my attributeText(uiItem, "AXTitle")
-                    set itemDescription to my attributeText(uiItem, "AXDescription")
-                    set itemHelp to my attributeText(uiItem, "AXHelp")
-                    set itemIdentifier to my attributeText(uiItem, "AXIdentifier")
-                    set itemRoleDescription to my attributeText(uiItem, "AXRoleDescription")
-                    set itemValue to my attributeText(uiItem, "AXValue")
-                    set itemEnabled to my attributeText(uiItem, "AXEnabled")
+        perform action "AXPress" of item 1 of addControls
+        delay 2
 
-                    set itemLine to "#" & elementNumber
-                    set itemLine to itemLine & " role=[" & itemRole & "]"
-                    set itemLine to itemLine & " subrole=[" & itemSubrole & "]"
-                    set itemLine to itemLine & " position=" & itemX & "," & itemY
-                    set itemLine to itemLine & " size=" & itemWidth & "x" & itemHeight
-                    set itemLine to itemLine & " enabled=[" & itemEnabled & "]"
-                    set itemLine to itemLine & " title=[" & itemTitle & "]"
-                    set itemLine to itemLine & " description=[" & itemDescription & "]"
-                    set itemLine to itemLine & " help=[" & itemHelp & "]"
-                    set itemLine to itemLine & " identifier=[" & itemIdentifier & "]"
-                    set itemLine to itemLine & " roleDescription=[" & itemRoleDescription & "]"
-                    set itemLine to itemLine & " value=[" & itemValue & "]"
+        -- 标准文件选择器：前往指定路径
+        keystroke "g" using {command down, shift down}
+        delay 1
 
-                    set end of outputLines to itemLine
-                end if
-            end try
-        end repeat
+        keystroke targetApplicationPath
+        delay 1
 
-        set end of outputLines to "FILTERED ELEMENT COUNT=" & elementNumber
+        -- 确认路径
+        key code 36
+        delay 2
 
-        set previousDelimiters to AppleScript's text item delimiters
-        set AppleScript's text item delimiters to linefeed
-        set outputText to outputLines as text
-        set AppleScript's text item delimiters to previousDelimiters
+        -- 点击 Open
+        key code 36
+        delay 4
+    end if
 
-        return outputText
-    end tell
+    -- 添加过程中扩展进程可能重载，因此重新取得对象
+    set switchControls to {}
+
+    repeat 40 times
+        if exists application process extensionProcessName then
+            set extensionProcess to application process extensionProcessName
+            set switchControls to my getSwitches(extensionProcess)
+
+            if (count of switchControls) is greater than 0 then
+                exit repeat
+            end if
+        end if
+
+        delay 0.5
+    end repeat
+
+    set switchCount to count of switchControls
+
+    if switchCount is 0 then
+        error "选择 UURemote.app 后仍未出现权限开关。" & linefeed & my diagnosticControls(extensionProcess)
+    end if
+
+    if switchCount is not 1 then
+        error "添加后出现 " & switchCount & " 个权限开关，为避免误操作已停止。" & linefeed & my diagnosticControls(extensionProcess)
+    end if
+
+    set targetSwitch to item 1 of switchControls
+
+    -- 避免系统弹出 Quit & Reopen 对话框
+    do shell script "/usr/bin/killall UURemote >/dev/null 2>&1 || true"
+    delay 1
+
+    if my switchIsEnabled(targetSwitch) then
+        return "UURemote 已在权限列表中，录屏权限已经开启"
+    end if
+
+    perform action "AXPress" of targetSwitch
+    delay 3
+
+    if my switchIsEnabled(targetSwitch) then
+        return "UURemote 录屏权限已成功开启"
+    end if
+
+    error "已经点击 UURemote 权限开关，但状态仍未开启，可能出现了认证窗口"
 end tell
 APPLESCRIPT
 
-echo
-echo "=== UU processes ==="
+echo "=== Restarting UURemote ==="
 
-/bin/ps -axo user=,pid=,command= |
-    /usr/bin/grep -E '[U]URemote|[u]uyc' ||
-    true
+sleep 2
+run_in_gui /usr/bin/open "$APP"
 
-echo
-echo "=== CLI status ==="
+echo "=== Waiting for CLI ==="
 
-if [ -x "$CLI" ]; then
-    run_in_gui "$CLI" status || true
-else
-    echo "CLI not found: $CLI"
-fi
-
-check_binary() {
-    binary="$1"
-
-    echo
-    echo "=== Binary: $binary ==="
-
-    if [ ! -f "$binary" ]; then
-        echo "NOT FOUND"
-        return
+for ((i=1; i<=40; i++)); do
+    if cli_status="$(run_in_gui "$CLI" status 2>/dev/null)"; then
+        if printf '%s' "$cli_status" |
+            /usr/bin/grep -q '"success" : true'
+        then
+            printf '%s\n' "$cli_status"
+            echo "UURemote 已重新启动"
+            exit 0
+        fi
     fi
 
-    /bin/ls -l "$binary"
+    sleep 0.5
+done
 
-    echo "--- Imported permission/capture symbols ---"
-
-    if /usr/bin/nm -u "$binary" 2>/dev/null |
-        /usr/bin/grep -E \
-        'CG(Request|Preflight)ScreenCaptureAccess|ScreenCaptureKit|SCShareableContent|SCScreenshotManager|CGDisplayStream'
-    then
-        :
-    else
-        echo "No matching imported symbols reported by nm"
-    fi
-
-    echo "--- Relevant embedded strings ---"
-
-    /usr/bin/strings -a "$binary" 2>/dev/null |
-        /usr/bin/grep -E \
-        'CGRequestScreenCaptureAccess|CGPreflightScreenCaptureAccess|ScreenCapture|AudioCapture|Accessibility|PermissionCategory|request.*permission|permission.*request' |
-        /usr/bin/head -n 80 ||
-        true
-}
-
-check_binary "$APP/Contents/MacOS/UURemote"
-check_binary "$APP/Contents/MacOS/UURemoteService"
-check_binary "$APP/Contents/MacOS/UURemoteDaemon"
-check_binary "$APP/Contents/XPCServices/UURemoteHelper.xpc/Contents/MacOS/UURemoteHelper"
-check_binary "$APP/Contents/Helpers/UURemoteUpdater.app/Contents/XPCServices/UURemoteHelper.xpc/Contents/MacOS/UURemoteHelper"
-
-echo
-echo "=== Recent TCC records ==="
-
-sudo /usr/bin/log show \
-    --last 30m \
-    --style compact \
-    --info \
-    --debug \
-    --predicate 'subsystem == "com.apple.TCC"' |
-    /usr/bin/grep -Ei \
-    'UURemote|UURemoteHelper|com\.netease\.uuremote|ScreenCapture|AudioCapture|AttributionChain|deny|request' |
-    /usr/bin/tail -n 200 ||
-    true
+echo "UURemote 已启动，但 CLI 在 20 秒内没有恢复" >&2
+exit 1
