@@ -123,11 +123,27 @@ screenshot_dir="${RUNNER_TEMP:-/tmp}/uuremote-permission-screenshots"
 
 run_permission() {
     local permission_kind="$1"
+    local permission_target_path
 
-    run_in_gui /usr/bin/osascript - "$runner_password" "$screenshot_dir" "$permission_kind" <<'APPLESCRIPT'
+    case "$permission_kind" in
+        accessibility)
+            # Keyboard and mouse events are injected by this server process,
+            # not by the UURemote user-interface executable.
+            permission_target_path="$APP/Contents/Helpers/UURemoteServer"
+            ;;
+        screen-capture)
+            permission_target_path="$APP"
+            ;;
+        *)
+            echo "Unsupported permission kind: $permission_kind" >&2
+            return 1
+            ;;
+    esac
+
+    run_in_gui /usr/bin/osascript - "$runner_password" "$screenshot_dir" "$permission_kind" "$permission_target_path" <<'APPLESCRIPT'
 property settingsProcessName : "System Settings"
-property targetApplicationPath : "/Applications/UURemote.app"
-property targetApplicationNames : {"UU远程", "UURemote", "UU Remote", "网易UU远程", "网易 UU 远程"}
+property targetApplicationPath : ""
+property targetApplicationNames : {}
 
 on attributeText(uiItem, attributeName)
     tell application "System Events"
@@ -646,12 +662,14 @@ on ensurePermission(permissionURL, permissionWindowTitle, permissionLabel, scree
 end ensurePermission
 
 on run argv
-    if (count of argv) is not 3 then error "Expected the runner login password, screenshot directory, and permission kind arguments"
+    if (count of argv) is not 4 then error "Expected the runner login password, screenshot directory, permission kind, and permission target path arguments"
     set authorizationPassword to item 1 of argv as text
     set screenshotDirectory to item 2 of argv as text
     set permissionKind to item 3 of argv as text
+    set targetApplicationPath to item 4 of argv as text
 
     if permissionKind is "accessibility" then
+        set targetApplicationNames to {"UURemoteServer", "com.netease.uuremote.server"}
         return my ensurePermission(¬
             "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility", ¬
             "Accessibility", ¬
@@ -660,6 +678,7 @@ on run argv
             authorizationPassword, ¬
             screenshotDirectory)
     else if permissionKind is "screen-capture" then
+        set targetApplicationNames to {"UU远程", "UURemote", "UU Remote", "网易UU远程", "网易 UU 远程"}
         return my ensurePermission(¬
             "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture", ¬
             "Screen & System Audio Recording", ¬
