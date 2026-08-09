@@ -34,7 +34,7 @@ jobs:
             for ((i=1; i<=120; i++))
             do
                 echo "Waiting /Applications/UURemote.app/Contents/MacOS/UURemote ..."
-                device_id=$(/Applications/UURemote.app/Contents/Helpers/uuyc-cli --device-id)
+                device_id=$(/Applications/UURemote.app/Contents/Helpers/uuyc-cli assist id)
                 status=$?
                 if [ "$status" -eq 0 ] && [ -n "$device_id" ]
                 then
