@@ -56,6 +56,7 @@ jobs:
                     continue
                 }
                 Write-Host "customCode: $customCode"
-                #Start-Seleep -Seconds 300
+                Write-Host "Waiting connections ..."
+                Start-Seleep -Seconds 300
                 break
             }
