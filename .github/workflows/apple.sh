@@ -573,28 +573,26 @@ on ensurePermission(permissionURL, permissionWindowTitle, permissionLabel, scree
         delay 2
 
         -- macOS 26 may consume a variable number of Returns while accepting
-        -- autocomplete, navigating to the app, and closing Go to Folder.
-        -- Continue only while the Go to Folder text field keeps focus.
-        repeat with confirmationNumber from 1 to 6
+        -- autocomplete, navigating to the app, and submitting it. Keep going
+        -- until the top-level Open window is actually gone.
+        repeat with submissionNumber from 1 to 12
             key code 36
-            delay 2
+            delay 1
+            set openWindowPresent to my processHasWindowTitle(settingsProcess, "Open")
+            my progressMessage(permissionLabel & ": file chooser submission " & submissionNumber & "; openWindowPresent=" & openWindowPresent)
 
-            set focusedItem to value of attribute "AXFocusedUIElement" of settingsProcess
-            set focusedRole to my attributeText(focusedItem, "AXRole")
-            set focusedDescription to my attributeText(focusedItem, "AXDescription")
-            my progressMessage(permissionLabel & ": Go to Folder confirmation " & confirmationNumber & "; focusedRole=" & focusedRole & "; focusedDescription=[" & focusedDescription & "]")
-
-            if focusedRole is not "AXTextField" then exit repeat
+            if openWindowPresent is false then exit repeat
         end repeat
+
+        if my processHasWindowTitle(settingsProcess, "Open") then
+            error permissionLabel & ": the file chooser remained open after 12 submissions. Windows: " & my visibleWindowDiagnostics()
+        end if
 
         my emitScreenshot(screenshotPrefix & "-file-chooser-selected", screenshotDirectory)
 
-        -- Focus is now on the selected application in the file chooser.
-        -- Submit the default Open button, then accept a possible default
-        -- Quit & Reopen prompt. Extra Return is harmless when no prompt exists.
-        key code 36
-        my progressMessage(permissionLabel & ": submitted the selected UURemote.app with the default Open button")
-        delay 2
+        -- The application has been submitted. Accept a possible default
+        -- Quit & Reopen prompt before traversing the permission list again.
+        delay 1
         key code 36
         my progressMessage(permissionLabel & ": accepted the default post-add confirmation, if present")
         delay 3
