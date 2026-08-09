@@ -282,6 +282,67 @@ on findOpenButton(settingsProcess)
     return missing value
 end findOpenButton
 
+on fileChooserDiagnostics(settingsProcess)
+    tell application "System Events"
+        set diagnosticMessages to {}
+        set settingsWindows to windows of settingsProcess
+        set end of diagnosticMessages to "SETTINGS_WINDOWS=" & (count of settingsWindows)
+
+        repeat with settingsWindow in settingsWindows
+            set actualWindow to contents of settingsWindow
+            set windowName to my attributeText(actualWindow, "AXTitle")
+            set windowSubrole to my attributeText(actualWindow, "AXSubrole")
+            set end of diagnosticMessages to "WINDOW title=[" & windowName & "] subrole=[" & windowSubrole & "]"
+
+            try
+                set directButtons to buttons of actualWindow
+                repeat with directButton in directButtons
+                    set actualButton to contents of directButton
+                    set end of diagnosticMessages to "WINDOW_BUTTON title=[" & my attributeText(actualButton, "AXTitle") & "] description=[" & my attributeText(actualButton, "AXDescription") & "]"
+                end repeat
+            end try
+
+            try
+                set windowSheets to sheets of actualWindow
+                set end of diagnosticMessages to "WINDOW_SHEETS=" & (count of windowSheets)
+
+                repeat with settingsSheet in windowSheets
+                    set actualSheet to contents of settingsSheet
+                    set sheetItems to entire contents of actualSheet
+                    set end of diagnosticMessages to "SHEET_ELEMENTS=" & (count of sheetItems)
+                    set diagnosticItemCount to 0
+
+                    repeat with uiItem in sheetItems
+                        try
+                            set itemRole to role of uiItem as text
+
+                            if itemRole is "AXButton" or itemRole is "AXTextField" or itemRole is "AXStaticText" or itemRole is "AXOutline" or itemRole is "AXRow" then
+                                set end of diagnosticMessages to itemRole & " title=[" & my attributeText(uiItem, "AXTitle") & "] description=[" & my attributeText(uiItem, "AXDescription") & "] value=[" & my attributeText(uiItem, "AXValue") & "] identifier=[" & my attributeText(uiItem, "AXIdentifier") & "]"
+                                set diagnosticItemCount to diagnosticItemCount + 1
+
+                                if diagnosticItemCount is greater than or equal to 100 then exit repeat
+                            end if
+                        end try
+                    end repeat
+                end repeat
+            end try
+        end repeat
+
+        set visibleProcessNames to {}
+
+        repeat with candidateProcess in application processes
+            try
+                if (count of windows of candidateProcess) is greater than 0 then
+                    set end of visibleProcessNames to name of candidateProcess as text
+                end if
+            end try
+        end repeat
+
+        set end of diagnosticMessages to "PROCESSES_WITH_WINDOWS=" & my joinText(visibleProcessNames)
+        return my joinText(diagnosticMessages)
+    end tell
+end fileChooserDiagnostics
+
 on joinText(textValues)
     set savedDelimiters to AppleScript's text item delimiters
     set AppleScript's text item delimiters to ", "
@@ -369,6 +430,8 @@ tell application "System Events"
         delay 1
         key code 36
         delay 2
+
+        error "FILE_CHOOSER_DIAGNOSTIC: " & my fileChooserDiagnostics(settingsProcess)
 
         set openButton to my findOpenButton(settingsProcess)
 
