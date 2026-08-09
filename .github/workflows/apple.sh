@@ -350,6 +350,45 @@ on findAuthorizationPasswordField(settingsProcess)
     return missing value
 end findAuthorizationPasswordField
 
+on authorizationDiagnostics(settingsProcess)
+    tell application "System Events"
+        set diagnosticMessages to {}
+
+        repeat with settingsWindow in windows of settingsProcess
+            try
+                repeat with settingsSheet in sheets of settingsWindow
+                    repeat with uiItem in entire contents of settingsSheet
+                        set itemRole to my attributeText(uiItem, "AXRole")
+                        set itemSubrole to my attributeText(uiItem, "AXSubrole")
+                        set itemTitle to my attributeText(uiItem, "AXTitle")
+                        set itemDescription to my attributeText(uiItem, "AXDescription")
+                        set itemIdentifier to my attributeText(uiItem, "AXIdentifier")
+
+                        if itemRole contains "Text" or itemTitle is not "" or itemDescription is not "" then
+                            set itemPosition to ""
+                            set itemSize to ""
+
+                            try
+                                set positionValue to position of uiItem
+                                set itemPosition to (item 1 of positionValue as text) & "," & (item 2 of positionValue as text)
+                            end try
+
+                            try
+                                set sizeValue to size of uiItem
+                                set itemSize to (item 1 of sizeValue as text) & "x" & (item 2 of sizeValue as text)
+                            end try
+
+                            set end of diagnosticMessages to "role=" & itemRole & "; subrole=" & itemSubrole & "; title=[" & itemTitle & "]; description=[" & itemDescription & "]; identifier=[" & itemIdentifier & "]; position=" & itemPosition & "; size=" & itemSize
+                        end if
+                    end repeat
+                end repeat
+            end try
+        end repeat
+
+        return my joinText(diagnosticMessages)
+    end tell
+end authorizationDiagnostics
+
 on joinText(textValues)
     set savedDelimiters to AppleScript's text item delimiters
     set AppleScript's text item delimiters to ", "
@@ -461,7 +500,7 @@ on run argv
             end repeat
 
             if passwordField is missing value then
-                error "Administrator authorization Password field did not become ready within 20 seconds"
+                error "Administrator authorization Password field did not become ready within 20 seconds. Controls: " & my authorizationDiagnostics(settingsProcess)
             end if
 
             my progressMessage("password control role=" & (role of passwordField as text) & ", description=" & my attributeText(passwordField, "AXDescription"))
