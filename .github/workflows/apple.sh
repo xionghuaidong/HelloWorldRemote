@@ -451,10 +451,17 @@ on run argv
         if modifySettingsButton is not missing value then
             my progressMessage("administrator authorization sheet identified")
 
-            set passwordField to my findAuthorizationPasswordField(settingsProcess)
+            set passwordField to missing value
+
+            repeat 40 times
+                set passwordField to my findAuthorizationPasswordField(settingsProcess)
+
+                if passwordField is not missing value then exit repeat
+                delay 0.5
+            end repeat
 
             if passwordField is missing value then
-                error "Administrator authorization appeared without a Password text field"
+                error "Administrator authorization Password field did not become ready within 20 seconds"
             end if
 
             my progressMessage("password control role=" & (role of passwordField as text) & ", description=" & my attributeText(passwordField, "AXDescription"))
