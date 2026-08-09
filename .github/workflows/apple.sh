@@ -29,6 +29,8 @@ run_in_gui() {
 
 echo "=== Opening Screen & System Audio Recording settings ==="
 
+run_in_gui /usr/bin/killall "System Settings" >/dev/null 2>&1 || true
+sleep 2
 run_in_gui /usr/bin/open -a "System Settings"
 sleep 1
 run_in_gui /usr/bin/open "$PREF_URL"
@@ -260,19 +262,19 @@ end findAddButton
 
 on findOpenButton(settingsProcess)
     tell application "System Events"
-        set allItems to entire contents of settingsProcess
-
-        repeat with uiItem in allItems
+        repeat with settingsWindow in windows of settingsProcess
             try
-                if (role of uiItem as text) is "AXButton" then
-                    set buttonTitle to my attributeText(uiItem, "AXTitle")
-                    set buttonDescription to my attributeText(uiItem, "AXDescription")
-
-                    ignoring case
-                        if buttonTitle is "Open" then return contents of uiItem
-                        if buttonDescription is "Open" then return contents of uiItem
-                    end ignoring
+                if exists button "Open" of settingsWindow then
+                    return button "Open" of settingsWindow
                 end if
+            end try
+
+            try
+                repeat with settingsSheet in sheets of settingsWindow
+                    if exists button "Open" of settingsSheet then
+                        return button "Open" of settingsSheet
+                    end if
+                end repeat
             end try
         end repeat
     end tell
@@ -371,11 +373,13 @@ tell application "System Events"
         set openButton to my findOpenButton(settingsProcess)
 
         if openButton is missing value then
-            error "The file chooser did not expose its Open button"
+            my progressMessage("Open button is not a direct sheet child; using Command-O")
+            keystroke "o" using {command down}
+        else
+            my progressMessage("file chooser Open button identified")
+            perform action "AXPress" of openButton
         end if
 
-        my progressMessage("file chooser Open button identified")
-        perform action "AXPress" of openButton
         my progressMessage("file chooser submitted UURemote.app")
         delay 2
 
