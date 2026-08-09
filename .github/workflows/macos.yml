@@ -25,9 +25,9 @@ jobs:
       - name: Launch GameViewer
         shell: bash
         run: |
-            ls -l /
-            ls -l /Library
-            ls -l /Applications
+            #ls -l /
+            #ls -l /Library
+            #ls -l /Applications
             ls -l /Applications/UURemote.app/Contents/MacOS/UURemote
             timeout 60 /Applications/UURemote.app/Contents/MacOS/UURemote
 
