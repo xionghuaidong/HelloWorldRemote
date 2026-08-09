@@ -100,8 +100,6 @@ jobs:
 
             tell application "System Events"
                 tell process "System Settings"
-                    set frontmost to true
-
                     if not (exists window 1) then
                         error "System Settings window not found"
                     end if
