@@ -127,6 +127,7 @@ jobs:
 
                 if labelText contains "UURemote" then return true
                 if labelText contains "UU远程" then return true
+                if labelText contains "UU 远程" then return true
                 if labelText contains "网易UU" then return true
                 if labelText contains "UU" then return true
 
