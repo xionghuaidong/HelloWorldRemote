@@ -77,6 +77,11 @@ jobs:
 
             .github/workflows/apple.sh
 
+      - name: Verify permission idempotency
+        shell: bash
+        run: |
+            .github/workflows/apple.sh
+
       - name: Upload permission screenshots
         if: always()
         uses: actions/upload-artifact@v4

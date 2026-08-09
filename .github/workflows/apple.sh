@@ -399,10 +399,7 @@ on emitScreenshot(captureLabel, screenshotDirectory)
     set pngPath to screenshotDirectory & "/uuremote-permission-" & captureLabel & ".png"
     set jpegPath to screenshotDirectory & "/uuremote-permission-" & captureLabel & ".jpg"
     do shell script "/usr/sbin/screencapture -x -t png -R" & quoted form of captureRegion & " " & quoted form of pngPath & " && /usr/bin/sips -s format jpeg -s formatOptions 55 " & quoted form of pngPath & " --out " & quoted form of jpegPath & " >/dev/null"
-    set encodedCapture to do shell script "/usr/bin/base64 -i " & quoted form of jpegPath & " | /usr/bin/fold -w 3000 | /usr/bin/sed 's/^/UUREMOTE_SCREENSHOT_DATA:/'"
-    log "UUREMOTE_SCREENSHOT_BEGIN:" & captureLabel
-    log encodedCapture
-    log "UUREMOTE_SCREENSHOT_END:" & captureLabel
+    log "UUREMOTE_SCREENSHOT_SAVED:" & jpegPath
     do shell script "/bin/rm -f " & quoted form of pngPath
 end emitScreenshot
 
