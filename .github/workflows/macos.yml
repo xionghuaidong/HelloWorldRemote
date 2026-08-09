@@ -25,12 +25,19 @@ jobs:
       - name: Launch GameViewer
         shell: bash
         run: |
-            #ls -l /
-            #ls -l /Library
-            #ls -l /Applications
+            console_user="$(stat -f '%Su' /dev/console)"
+            console_uid="$(id -u "$console_user")"
+
+            echo "图形桌面用户：$console_user，UID：$console_uid"
+
+            sudo launchctl asuser "$console_uid" \
+                sudo -u "$console_user" \
+                    /usr/bin/osascript \
+                    -e 'tell application "System Events" to tell process "Finder" to get name of menu bar 1'
+
             ls -l /Applications/UURemote.app/Contents/MacOS/UURemote
             brew install coreutils
-            gtimeout 60s /Applications/UURemote.app/Contents/MacOS/UURemote 2>&1 &
+            gtimeout 60s /Applications/UURemote.app/Contents/MacOS/UURemote >/dev/nul 2>&1 &
 
             for ((i=1; i<=120; i++))
             do
