@@ -1,4 +1,4 @@
-name: Run Windows
+name: Windows
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ permissions:
   contents: write
 
 jobs:
-  run-windows:
+  run:
     runs-on: windows-latest
 
     steps:
