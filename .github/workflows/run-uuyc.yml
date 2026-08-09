@@ -20,4 +20,9 @@ jobs:
             $packageUrl = "https://a56.gdl.netease.com/UURemote_Setup_4.36.0.9155_0806201117_gwqd.exe"
             $packagePath = Join-Path $env:GITHUB_WORKSPACE "uuyc_4.36.0.exe"
             Invoke-WebRequest -Uri $packageUrl -OutFile $packagePath
-            & $packagePath /S
+            $process = Start-Process -FilePath $packagePath -ArgumentList /S -Wait -PassThru
+            if ($process.ExitCode -ne 0) {
+                throw "Fail to install $packagePath"
+            } else {
+                Write-Host "Successfully installed $packagePath"
+            }
