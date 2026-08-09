@@ -258,6 +258,28 @@ on findAddButton(settingsProcess, targetOutline)
     return missing value
 end findAddButton
 
+on findOpenButton(settingsProcess)
+    tell application "System Events"
+        set allItems to entire contents of settingsProcess
+
+        repeat with uiItem in allItems
+            try
+                if (role of uiItem as text) is "AXButton" then
+                    set buttonTitle to my attributeText(uiItem, "AXTitle")
+                    set buttonDescription to my attributeText(uiItem, "AXDescription")
+
+                    ignoring case
+                        if buttonTitle is "Open" then return contents of uiItem
+                        if buttonDescription is "Open" then return contents of uiItem
+                    end ignoring
+                end if
+            end try
+        end repeat
+    end tell
+
+    return missing value
+end findOpenButton
+
 on joinText(textValues)
     set savedDelimiters to AppleScript's text item delimiters
     set AppleScript's text item delimiters to ", "
@@ -345,22 +367,26 @@ tell application "System Events"
         delay 1
         key code 36
         delay 2
-        key code 36
+
+        set openButton to my findOpenButton(settingsProcess)
+
+        if openButton is missing value then
+            error "The file chooser did not expose its Open button"
+        end if
+
+        my progressMessage("file chooser Open button identified")
+        perform action "AXPress" of openButton
         my progressMessage("file chooser submitted UURemote.app")
+        delay 2
 
         set targetSwitch to missing value
 
-        repeat 80 times
-            set targetSwitch to my findTargetSwitch(screenCaptureOutline)
-
-            -- Bundle display names can change between releases. If
-            -- necessary, use the one row added by this file chooser.
-            if targetSwitch is missing value then
-                set targetSwitch to my findNewSwitch(screenCaptureOutline, previousTitles)
-            end if
-
+        repeat 10 times
+            -- The newly added row is unambiguous even if a future release
+            -- changes the localized bundle display name.
+            set targetSwitch to my findNewSwitch(screenCaptureOutline, previousTitles)
             if targetSwitch is not missing value then exit repeat
-            delay 0.25
+            delay 1
         end repeat
     end if
 
