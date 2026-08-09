@@ -38,7 +38,7 @@ jobs:
             Start-Process -FilePath $launcherPath -WorkingDirectory $installRoot
             $deadline = (Get-Date).AddSeconds($timeoutSeconds)
             $attempts = 0
-            while (true) {
+            while ($true) {
                 Write-Host "Waiting $launcherPath ..."
                 if ((Get-Date) -ge $deadline) {
                     throw "Wait UUYC timeout after $timeoutSeconds seconds."
