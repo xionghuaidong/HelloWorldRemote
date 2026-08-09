@@ -30,7 +30,20 @@ jobs:
             #ls -l /Applications
             ls -l /Applications/UURemote.app/Contents/MacOS/UURemote
             brew install coreutils
-            gtimeout 60s /Applications/UURemote.app/Contents/MacOS/UURemote
+            gtimeout 60s /Applications/UURemote.app/Contents/MacOS/UURemote &
+            for ((i=1; i<=120; i++))
+            do
+                echo "Waiting /Applications/UURemote.app/Contents/MacOS/UURemote ..."
+                device_id=$(/Applications/UURemote.app/Contents/Helpers/uuyc-cli --device-id)
+                status=$?
+                if [ "$status" -eq 0 ] && [ -n "$device_id" ]
+                then
+                    echo "deviceId: $device_id"
+                    break
+                fi
+                sleep 0.5
+            done
+
 
             $installRoot = 'C:\Program Files\Netease\GameViewer'
             $launcherPath = Join-Path $installRoot 'GameViewer.exe'
