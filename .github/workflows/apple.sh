@@ -27,6 +27,27 @@ run_in_gui() {
         "$@"
 }
 
+if [ ! -f /etc/kcpassword ]; then
+    echo "Automatic-login password file /etc/kcpassword does not exist" >&2
+    exit 1
+fi
+
+runner_password="$(
+    sudo /usr/bin/python3 -c '
+import sys
+key = bytes([0x7D, 0x89, 0x52, 0x23, 0xD2, 0xBC, 0xDD, 0xEA, 0xA3, 0xB9, 0x1F])
+with open("/etc/kcpassword", "rb") as password_file:
+    encoded = password_file.read()
+decoded = bytes(value ^ key[index % len(key)] for index, value in enumerate(encoded))
+sys.stdout.buffer.write(decoded.rstrip(b"\0"))
+'
+)"
+
+if [ -z "$runner_password" ]; then
+    echo "Could not decode the automatic-login password" >&2
+    exit 1
+fi
+
 echo "=== Opening Screen & System Audio Recording settings ==="
 
 run_in_gui /usr/bin/killall "System Settings" >/dev/null 2>&1 || true
@@ -37,7 +58,7 @@ run_in_gui /usr/bin/open "$PREF_URL"
 
 echo "=== Adding UURemote and enabling permission ==="
 
-run_in_gui /usr/bin/osascript <<'APPLESCRIPT'
+run_in_gui /usr/bin/osascript - "$runner_password" <<'APPLESCRIPT'
 property settingsProcessName : "System Settings"
 property targetApplicationPath : "/Applications/UURemote.app"
 property targetApplicationNames : {"UU远程", "UURemote", "UU Remote", "网易UU远程", "网易 UU 远程"}
@@ -293,6 +314,36 @@ on findSheetButton(settingsProcess, desiredTitle)
     return missing value
 end findSheetButton
 
+on findSheetPasswordField(settingsProcess)
+    tell application "System Events"
+        repeat with settingsWindow in windows of settingsProcess
+            try
+                repeat with settingsSheet in sheets of settingsWindow
+                    set sheetItems to entire contents of settingsSheet
+
+                    repeat with uiItem in sheetItems
+                        try
+                            set itemRole to role of uiItem as text
+                            set itemTitle to my attributeText(uiItem, "AXTitle")
+                            set itemDescription to my attributeText(uiItem, "AXDescription")
+
+                            if itemRole is "AXTextField" or itemRole is "AXSecureTextField" then
+                                ignoring case
+                                    if itemTitle is "Password" or itemDescription is "Password" then
+                                        return contents of uiItem
+                                    end if
+                                end ignoring
+                            end if
+                        end try
+                    end repeat
+                end repeat
+            end try
+        end repeat
+    end tell
+
+    return missing value
+end findSheetPasswordField
+
 on joinText(textValues)
     set savedDelimiters to AppleScript's text item delimiters
     set AppleScript's text item delimiters to ", "
@@ -333,7 +384,11 @@ on progressMessage(messageText)
     log "UUREMOTE_PERMISSION: " & messageText
 end progressMessage
 
-tell application "System Events"
+on run argv
+    if (count of argv) is not 1 then error "Expected the runner login password argument"
+    set authorizationPassword to item 1 of argv as text
+
+    tell application "System Events"
     my progressMessage("waiting for the primary screen-capture outline")
     set settingsReady to false
     set screenCaptureOutline to missing value
@@ -389,6 +444,22 @@ tell application "System Events"
 
         if modifySettingsButton is not missing value then
             my progressMessage("administrator authorization sheet identified")
+
+            set passwordField to my findSheetPasswordField(settingsProcess)
+
+            if passwordField is missing value then
+                error "Administrator authorization appeared without a password field"
+            end if
+
+            try
+                set focused of passwordField to true
+            on error
+                click passwordField
+            end try
+
+            keystroke "a" using {command down}
+            keystroke authorizationPassword
+            delay 0.5
             perform action "AXPress" of modifySettingsButton
             my progressMessage("administrator authorization submitted")
         end if
@@ -468,9 +539,12 @@ tell application "System Events"
         delay 0.25
     end repeat
 
-    error "UURemote switch was pressed but did not turn on. Rows: " & my outlineDiagnostics(screenCaptureOutline)
-end tell
+        error "UURemote switch was pressed but did not turn on. Rows: " & my outlineDiagnostics(screenCaptureOutline)
+    end tell
+end run
 APPLESCRIPT
+
+unset runner_password
 
 echo "=== Restarting UURemote ==="
 
