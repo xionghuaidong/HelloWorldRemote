@@ -322,6 +322,26 @@ on findSheetButton(settingsProcess, desiredTitle)
     return missing value
 end findSheetButton
 
+on findAuthorizationPasswordField(settingsProcess)
+    tell application "System Events"
+        repeat with settingsWindow in windows of settingsProcess
+            try
+                repeat with settingsSheet in sheets of settingsWindow
+                    repeat with uiItem in entire contents of settingsSheet
+                        try
+                            if (role of uiItem as text) is "AXSecureTextField" then
+                                return contents of uiItem
+                            end if
+                        end try
+                    end repeat
+                end repeat
+            end try
+        end repeat
+    end tell
+
+    return missing value
+end findAuthorizationPasswordField
+
 on joinText(textValues)
     set savedDelimiters to AppleScript's text item delimiters
     set AppleScript's text item delimiters to ", "
@@ -422,9 +442,37 @@ on run argv
 
         if modifySettingsButton is not missing value then
             my progressMessage("administrator authorization sheet identified")
+
+            set passwordField to my findAuthorizationPasswordField(settingsProcess)
+
+            if passwordField is missing value then
+                error "Administrator authorization appeared without an AXSecureTextField"
+            end if
+
+            try
+                perform action "AXRaise" of window 1 of settingsProcess
+            end try
+
+            click passwordField
+            delay 0.5
+
+            if my attributeText(passwordField, "AXFocused") is not "true" then
+                try
+                    set focused of passwordField to true
+                end try
+                delay 0.5
+            end if
+
+            if my attributeText(passwordField, "AXFocused") is not "true" then
+                error "The administrator password field could not receive keyboard focus"
+            end if
+
+            my progressMessage("administrator password field focused")
+            keystroke "a" using {command down}
+            key code 51
             keystroke authorizationPassword
-            delay 1
-            key code 36
+            delay 5
+            keystroke return
             my progressMessage("administrator authorization submitted")
         end if
 
