@@ -27,8 +27,8 @@ jobs:
         run: |
             ls -l /
             ls -l /Library
-            ls -l /Library/Applications
-            ls -l /Library/Applications/GameViewer
+            ls -l /Applications
+            ls -l /Applications/GameViewer
 
             $installRoot = 'C:\Program Files\Netease\GameViewer'
             $launcherPath = Join-Path $installRoot 'GameViewer.exe'
