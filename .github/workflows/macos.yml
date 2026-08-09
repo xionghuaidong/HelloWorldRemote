@@ -31,9 +31,10 @@ jobs:
             ls -l /Applications/UURemote.app/Contents/MacOS/UURemote
             brew install coreutils
             gtimeout 60s /Applications/UURemote.app/Contents/MacOS/UURemote &
+
             for ((i=1; i<=120; i++))
             do
-                echo "Waiting /Applications/UURemote.app/Contents/MacOS/UURemote ..."
+                echo "Waiting deviceId [$i/120] ..."
                 if device_id=$(/Applications/UURemote.app/Contents/Helpers/uuyc-cli assist id)
                 then
                     if [ -n "$device_id" ]
@@ -49,35 +50,16 @@ jobs:
                 sleep 0.5
             done
 
-
-            $installRoot = 'C:\Program Files\Netease\GameViewer'
-            $launcherPath = Join-Path $installRoot 'GameViewer.exe'
-            $cliPath = Join-Path $installRoot 'bin\uuyc-cli.exe'
-            $timeoutSeconds = 60
-            Write-Host "Launching $launcherPath ..."
-            Start-Process -FilePath $launcherPath -WorkingDirectory $installRoot
-            $deadline = (Get-Date).AddSeconds($timeoutSeconds)
-            $attempts = 0
-            while ($true) {
-                Write-Host "Waiting $launcherPath ..."
-                if ((Get-Date) -ge $deadline) {
-                    throw "Wait GameViewer timed out after $timeoutSeconds seconds"
-                }
-                Start-Sleep -Milliseconds 500
-                $attempts++
-                $deviceId = @(& $cliPath --device-id 2>&1)
-                if ($LASTEXITCODE -ne 0) {
-                    continue
-                }
-                Write-Host "deviceId: $deviceId"
-                $customCode = 'johnDOE123'
-                $process = Start-Process -FilePath $cliPath -ArgumentList @('--reset-custom-code', $customCode) -Wait -PassThru
-                if ($process.ExitCode -ne 0) {
-                    continue
-                }
-                Write-Host "customCode: $customCode"
-                Write-Host "Waiting connections ..."
-                #Start-Sleep -Seconds 21000
-                Start-Sleep -Seconds 300
-                break
-            }
+            for ((i=1; i<=120; i++))
+            do
+                echo "Waiting customCode [$i/120] ..."
+                if output=$(/Applications/UURemote.app/Contents/Helpers/uuyc-cli set-code johnDOE123)
+                then
+                    echo "customCode: $output"
+                    break
+                else
+                    status=$?
+                    echo "CLI 失败，退出码 $status，500 毫秒后重试" >&2
+                fi
+                sleep 0.5
+            done
