@@ -1,0 +1,58 @@
+name: macOS
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  run:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install GameViewer
+        shell: bash
+        run: |
+            package_url="https://a56.gdl.netease.com/uuyc_4.35.0.pkg"
+            package_path="${GITHUB_WORKSPACE}/uuyc_4.35.0.pkg"
+            curl -L -o ${package_path} ${package_url}
+            /usr/sbin/installer -verboseR -pkg ${package_path} -target /
+
+      - name: Launch GameViewer
+        shell: pwsh
+        run: |
+            $installRoot = 'C:\Program Files\Netease\GameViewer'
+            $launcherPath = Join-Path $installRoot 'GameViewer.exe'
+            $cliPath = Join-Path $installRoot 'bin\uuyc-cli.exe'
+            $timeoutSeconds = 60
+            Write-Host "Launching $launcherPath ..."
+            Start-Process -FilePath $launcherPath -WorkingDirectory $installRoot
+            $deadline = (Get-Date).AddSeconds($timeoutSeconds)
+            $attempts = 0
+            while ($true) {
+                Write-Host "Waiting $launcherPath ..."
+                if ((Get-Date) -ge $deadline) {
+                    throw "Wait GameViewer timed out after $timeoutSeconds seconds"
+                }
+                Start-Sleep -Milliseconds 500
+                $attempts++
+                $deviceId = @(& $cliPath --device-id 2>&1)
+                if ($LASTEXITCODE -ne 0) {
+                    continue
+                }
+                Write-Host "deviceId: $deviceId"
+                $customCode = 'johnDOE123'
+                $process = Start-Process -FilePath $cliPath -ArgumentList @('--reset-custom-code', $customCode) -Wait -PassThru
+                if ($process.ExitCode -ne 0) {
+                    continue
+                }
+                Write-Host "customCode: $customCode"
+                Write-Host "Waiting connections ..."
+                #Start-Sleep -Seconds 21000
+                Start-Sleep -Seconds 300
+                break
+            }
