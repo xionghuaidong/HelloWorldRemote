@@ -53,7 +53,7 @@ jobs:
             for ((i=1; i<=120; i++))
             do
                 echo "Waiting customCode [$i/120] ..."
-                if output="$(/Applications/UURemote.app/Contents/Helpers/uuyc-cli assist set-code johnDOE123)"
+                if output="$(/Applications/UURemote.app/Contents/Helpers/uuyc-cli assist set-code johnDOE123 )"
                 then
                     echo "customCode: $output"
                     break
@@ -63,5 +63,20 @@ jobs:
                 fi
                 sleep 0.5
             done
+
+            for ((i=1; i<=120; i++))
+            do
+                echo "Waiting allow [$i/120] ..."
+                if output="$(/Applications/UURemote.app/Contents/Helpers/uuyc-cli assist allow on)"
+                then
+                    echo "allow: $output"
+                    break
+                else
+                    status="$?"
+                    echo "CLI 失败，退出码 $status，500 毫秒后重试" >&2
+                fi
+                sleep 0.5
+            done
+
 
             sleep 300
