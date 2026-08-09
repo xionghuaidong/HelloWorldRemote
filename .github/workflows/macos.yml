@@ -63,3 +63,5 @@ jobs:
                 fi
                 sleep 0.5
             done
+
+            sleep 300
