@@ -25,15 +25,38 @@ jobs:
       - name: Launch GameViewer
         shell: bash
         run: |
-            console_user="$(stat -f '%Su' /dev/console)"
-            console_uid="$(id -u "$console_user")"
+            console_uid="$(stat -f '%u' /dev/console)"
 
-            echo "图形桌面用户：$console_user，UID：$console_uid"
+            echo "图形桌面 UID: $console_uid"
+
+            if sudo launchctl print "gui/$console_uid" >/dev/null 2>&1; then
+                echo "图形桌面会话存在"
+            else
+                echo "没有可操作的图形桌面会话" >&2
+                exit 1
+            fi
+
 
             sudo launchctl asuser "$console_uid" \
-                sudo -u "$console_user" \
-                    /usr/bin/osascript \
-                    -e 'tell application "System Events" to tell process "Finder" to get name of menu bar 1'
+                sudo -u "#$console_uid" \
+                /usr/bin/open \
+                'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture'
+
+            sleep 5
+
+
+            sudo launchctl asuser "$console_uid" \
+                sudo -u "#$console_uid" \
+                /usr/bin/osascript \
+                -e 'tell application "System Events" to tell process "System Settings" to return count of windows'
+
+
+            sudo launchctl asuser "$console_uid" \
+                sudo -u "#$console_uid" \
+                /usr/bin/osascript \
+                -e 'tell application "System Events" to tell process "System Settings" to return count of UI elements of window 1'
+
+
 
             ls -l /Applications/UURemote.app/Contents/MacOS/UURemote
             brew install coreutils
