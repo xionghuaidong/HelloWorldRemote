@@ -3,7 +3,6 @@ set -euo pipefail
 
 APP="/Applications/UURemote.app"
 CLI="$APP/Contents/Helpers/uuyc-cli"
-PREF_URL='x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture'
 
 console_uid="$(stat -f '%u' /dev/console)"
 console_user="$(stat -f '%Su' /dev/console)"
@@ -110,16 +109,14 @@ if ! /usr/bin/dscl . -authonly "$console_user" "$runner_password"; then
     exit 1
 fi
 
-echo "=== Opening Screen & System Audio Recording settings ==="
+echo "=== Opening Privacy & Security settings ==="
 
 run_in_gui /usr/bin/killall "System Settings" >/dev/null 2>&1 || true
 sleep 2
 run_in_gui /usr/bin/open -a "System Settings"
-sleep 1
-run_in_gui /usr/bin/open "$PREF_URL"
-sleep 5
+sleep 2
 
-echo "=== Adding UURemote and enabling permission ==="
+echo "=== Adding UURemote and enabling privacy permissions ==="
 
 screenshot_dir="${RUNNER_TEMP:-/tmp}/uuremote-permission-screenshots"
 /bin/mkdir -p "$screenshot_dir"
@@ -196,7 +193,7 @@ on listContainsText(textValues, targetText)
     return false
 end listContainsText
 
-on getScreenCaptureOutline(settingsProcess)
+on getPermissionOutline(settingsProcess)
     tell application "System Events"
         set candidateOutline to missing value
         set candidateTop to 1000000
@@ -211,8 +208,8 @@ on getScreenCaptureOutline(settingsProcess)
                     set itemHeight to item 2 of itemSize
                     set itemTop to item 2 of itemPosition
 
-                    -- The Screen & System Audio Recording list is the first
-                    -- wide, non-empty outline in the main settings pane.
+                    -- A privacy permission list is the first wide,
+                    -- non-empty outline in the main settings pane.
                     if itemWidth is greater than or equal to 300 and itemHeight is greater than or equal to 40 then
                         if itemTop is less than candidateTop then
                             set candidateOutline to contents of uiItem
@@ -225,7 +222,7 @@ on getScreenCaptureOutline(settingsProcess)
 
         return candidateOutline
     end tell
-end getScreenCaptureOutline
+end getPermissionOutline
 
 on getOutlineRows(targetOutline)
     tell application "System Events"
@@ -457,13 +454,12 @@ on emitScreenshot(captureLabel, screenshotDirectory)
     do shell script "/bin/rm -f " & quoted form of pngPath
 end emitScreenshot
 
-on run argv
-    if (count of argv) is not 2 then error "Expected the runner login password and screenshot directory arguments"
-    set authorizationPassword to item 1 of argv as text
-    set screenshotDirectory to item 2 of argv as text
+on ensurePermission(permissionURL, permissionWindowTitle, permissionLabel, screenshotPrefix, authorizationPassword, screenshotDirectory)
+    do shell script "/usr/bin/open " & quoted form of permissionURL
+    delay 5
 
     tell application "System Events"
-    my progressMessage("waiting for the Screen & System Audio Recording window")
+    my progressMessage(permissionLabel & ": waiting for the permission window")
     set pageReady to false
 
     repeat 120 times
@@ -471,7 +467,7 @@ on run argv
             set settingsProcess to application process settingsProcessName
 
             if exists window 1 of settingsProcess then
-                if my attributeText(window 1 of settingsProcess, "AXTitle") is "Screen & System Audio Recording" then
+                if my attributeText(window 1 of settingsProcess, "AXTitle") is permissionWindowTitle then
                     set pageReady to true
                     exit repeat
                 end if
@@ -482,17 +478,17 @@ on run argv
     end repeat
 
     if pageReady is false then
-        error "Screen & System Audio Recording window did not become ready within 30 seconds"
+        error permissionLabel & " window did not become ready within 30 seconds"
     end if
 
-    my progressMessage("waiting for the primary screen-capture outline")
+    my progressMessage(permissionLabel & ": waiting for the primary permission outline")
     set settingsReady to false
-    set screenCaptureOutline to missing value
+    set permissionOutline to missing value
 
     repeat 120 times
-        set screenCaptureOutline to my getScreenCaptureOutline(settingsProcess)
+        set permissionOutline to my getPermissionOutline(settingsProcess)
 
-        if screenCaptureOutline is not missing value then
+        if permissionOutline is not missing value then
             set settingsReady to true
             exit repeat
         end if
@@ -501,23 +497,23 @@ on run argv
     end repeat
 
     if settingsReady is false then
-        error "Screen & System Audio Recording list did not become ready within 30 seconds"
+        error permissionLabel & " list did not become ready within 30 seconds"
     end if
 
-    set initialRows to my getOutlineRows(screenCaptureOutline)
-    my progressMessage("primary outline ready; rows=" & (count of initialRows))
-    set targetSwitch to my findTargetSwitch(screenCaptureOutline)
+    set initialRows to my getOutlineRows(permissionOutline)
+    my progressMessage(permissionLabel & ": primary outline ready; rows=" & (count of initialRows))
+    set targetSwitch to my findTargetSwitch(permissionOutline)
 
     if targetSwitch is missing value then
-        set previousTitles to my getRowTitles(screenCaptureOutline)
-        my progressMessage("UURemote row absent; existing rows=" & my joinText(previousTitles))
-        set addButton to my findAddButton(settingsProcess, screenCaptureOutline)
+        set previousTitles to my getRowTitles(permissionOutline)
+        my progressMessage(permissionLabel & ": UURemote row absent; existing rows=" & my joinText(previousTitles))
+        set addButton to my findAddButton(settingsProcess, permissionOutline)
 
         if addButton is missing value then
-            error "Could not identify the add button. Rows: " & my outlineDiagnostics(screenCaptureOutline)
+            error permissionLabel & ": could not identify the add button. Rows: " & my outlineDiagnostics(permissionOutline)
         end if
 
-        my progressMessage("add button identified")
+        my progressMessage(permissionLabel & ": add button identified")
         perform action "AXPress" of addButton
         set modifySettingsButton to missing value
         set openButton to missing value
@@ -536,7 +532,7 @@ on run argv
         end repeat
 
         if modifySettingsButton is not missing value then
-            my progressMessage("administrator authorization sheet identified")
+            my progressMessage(permissionLabel & ": administrator authorization sheet identified")
             try
                 set frontmost of settingsProcess to true
             end try
@@ -546,38 +542,38 @@ on run argv
             -- order and timing matches actions/runner-images' official helper.
             click modifySettingsButton
             delay 5
-            my progressMessage("windows after Modify Settings: " & my visibleWindowDiagnostics())
+            my progressMessage(permissionLabel & ": windows after Modify Settings: " & my visibleWindowDiagnostics())
 
             set authenticationField to value of attribute "AXFocusedUIElement" of settingsProcess
 
             if my attributeText(authenticationField, "AXRole") is not "AXTextField" or my attributeText(authenticationField, "AXDescription") is not "Password" then
-                error "The system authentication password field does not have keyboard focus"
+                error permissionLabel & ": the system authentication password field does not have keyboard focus"
             end if
 
             set value of authenticationField to authorizationPassword
 
             if my attributeText(authenticationField, "AXValue") is "" then
-                error "The system authentication password field remained empty"
+                error permissionLabel & ": the system authentication password field remained empty"
             end if
 
-            my progressMessage("administrator password field populated")
+            my progressMessage(permissionLabel & ": administrator password field populated")
             delay 1
 
             set authorizationSubmitButton to my findProcessButton(settingsProcess, "Modify Settings")
 
             if authorizationSubmitButton is missing value then
-                error "The administrator authorization submit button disappeared"
+                error permissionLabel & ": the administrator authorization submit button disappeared"
             end if
 
-            my progressMessage("authorization submit enabled=" & my attributeText(authorizationSubmitButton, "AXEnabled"))
+            my progressMessage(permissionLabel & ": authorization submit enabled=" & my attributeText(authorizationSubmitButton, "AXEnabled"))
             perform action "AXPress" of authorizationSubmitButton
             delay 2
-            my progressMessage("windows after authorization submit: " & my visibleWindowDiagnostics())
-            my progressMessage("administrator authorization submitted")
+            my progressMessage(permissionLabel & ": windows after authorization submit: " & my visibleWindowDiagnostics())
+            my progressMessage(permissionLabel & ": administrator authorization submitted")
         end if
 
         if modifySettingsButton is missing value and openButton is missing value then
-            error "Neither administrator authorization nor the file chooser appeared"
+            error permissionLabel & ": neither administrator authorization nor the file chooser appeared"
         end if
 
         if openButton is missing value then
@@ -590,11 +586,11 @@ on run argv
         end if
 
         if openButton is missing value then
-            error "The file chooser did not appear after administrator authorization"
+            error permissionLabel & ": the file chooser did not appear after administrator authorization"
         end if
 
-        my progressMessage("file chooser ready")
-        my emitScreenshot("file-chooser-ready", screenshotDirectory)
+        my progressMessage(permissionLabel & ": file chooser ready")
+        my emitScreenshot(screenshotPrefix & "-file-chooser-ready", screenshotDirectory)
 
         -- Use the standard macOS file chooser's Go to Folder command.
         keystroke "g" using {command down, shift down}
@@ -612,78 +608,102 @@ on run argv
             set focusedItem to value of attribute "AXFocusedUIElement" of settingsProcess
             set focusedRole to my attributeText(focusedItem, "AXRole")
             set focusedDescription to my attributeText(focusedItem, "AXDescription")
-            my progressMessage("Go to Folder confirmation " & confirmationNumber & "; focusedRole=" & focusedRole & "; focusedDescription=[" & focusedDescription & "]")
+            my progressMessage(permissionLabel & ": Go to Folder confirmation " & confirmationNumber & "; focusedRole=" & focusedRole & "; focusedDescription=[" & focusedDescription & "]")
 
             if focusedRole is not "AXTextField" then exit repeat
         end repeat
 
-        my emitScreenshot("file-chooser-selected", screenshotDirectory)
+        my emitScreenshot(screenshotPrefix & "-file-chooser-selected", screenshotDirectory)
 
         -- The third Return may submit the application directly. When it does,
         -- macOS immediately asks to restart the running application.
         set quitAndReopenButton to my findProcessButton(settingsProcess, "Quit & Reopen")
 
         if quitAndReopenButton is not missing value then
-            my progressMessage("Quit & Reopen prompt identified")
+            my progressMessage(permissionLabel & ": Quit & Reopen prompt identified")
             perform action "AXPress" of quitAndReopenButton
-            my progressMessage("Quit & Reopen submitted")
+            my progressMessage(permissionLabel & ": Quit & Reopen submitted")
             delay 3
         else
             set openButton to my findProcessButton(settingsProcess, "Open")
 
             if openButton is missing value then
-                error "Neither Quit & Reopen nor the file chooser Open button appeared after selecting UURemote.app"
+                error permissionLabel & ": neither Quit & Reopen nor the file chooser Open button appeared after selecting UURemote.app"
             end if
 
             if my attributeText(openButton, "AXEnabled") is not "true" then
-                error "The file chooser Open button remained disabled after selecting UURemote.app"
+                error permissionLabel & ": the file chooser Open button remained disabled after selecting UURemote.app"
             end if
 
-            my progressMessage("file chooser Open button identified")
+            my progressMessage(permissionLabel & ": file chooser Open button identified")
             perform action "AXPress" of openButton
-            my progressMessage("file chooser submitted UURemote.app")
+            my progressMessage(permissionLabel & ": file chooser submitted UURemote.app")
             delay 3
         end if
 
         set settingsProcess to application process settingsProcessName
-        set screenCaptureOutline to my getScreenCaptureOutline(settingsProcess)
+        set permissionOutline to my getPermissionOutline(settingsProcess)
 
-        if screenCaptureOutline is missing value then
-            error "The screen-capture list disappeared after adding UURemote"
+        if permissionOutline is missing value then
+            error permissionLabel & ": the permission list disappeared after adding UURemote"
         end if
 
         -- The newly added row is unambiguous even if a future release
         -- changes the localized bundle display name.
-        set targetSwitch to my findNewSwitch(screenCaptureOutline, previousTitles)
+        set targetSwitch to my findNewSwitch(permissionOutline, previousTitles)
     end if
 
     if targetSwitch is missing value then
-        error "UURemote was not added to the permission list. Rows: " & my outlineDiagnostics(screenCaptureOutline)
+        error permissionLabel & ": UURemote was not added to the permission list. Rows: " & my outlineDiagnostics(permissionOutline)
     end if
 
-    my progressMessage("UURemote switch identified")
+    my progressMessage(permissionLabel & ": UURemote switch identified")
 
     if my switchIsEnabled(targetSwitch) then
-        return "UURemote Screen & System Audio Recording permission is already enabled"
+        return "UURemote " & permissionLabel & " permission is already enabled"
     end if
 
-    my progressMessage("stopping UURemote processes before toggling permission")
+    my progressMessage(permissionLabel & ": stopping UURemote processes before toggling permission")
     my stopTargetProcesses()
     delay 1
     perform action "AXPress" of targetSwitch
-    my progressMessage("permission switch pressed")
+    my progressMessage(permissionLabel & ": permission switch pressed")
 
     repeat 40 times
         if my switchIsEnabled(targetSwitch) then
-            my progressMessage("permission switch is on")
-            return "UURemote Screen & System Audio Recording permission enabled"
+            my progressMessage(permissionLabel & ": permission switch is on")
+            return "UURemote " & permissionLabel & " permission enabled"
         end if
 
         delay 0.25
     end repeat
 
-        error "UURemote switch was pressed but did not turn on. Rows: " & my outlineDiagnostics(screenCaptureOutline)
+        error permissionLabel & ": UURemote switch was pressed but did not turn on. Rows: " & my outlineDiagnostics(permissionOutline)
     end tell
+end ensurePermission
+
+on run argv
+    if (count of argv) is not 2 then error "Expected the runner login password and screenshot directory arguments"
+    set authorizationPassword to item 1 of argv as text
+    set screenshotDirectory to item 2 of argv as text
+
+    set accessibilityResult to my ensurePermission(¬
+        "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility", ¬
+        "Accessibility", ¬
+        "Accessibility", ¬
+        "accessibility", ¬
+        authorizationPassword, ¬
+        screenshotDirectory)
+
+    set screenCaptureResult to my ensurePermission(¬
+        "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture", ¬
+        "Screen & System Audio Recording", ¬
+        "Screen & System Audio Recording", ¬
+        "screen-capture", ¬
+        authorizationPassword, ¬
+        screenshotDirectory)
+
+    return accessibilityResult & linefeed & screenCaptureResult
 end run
 APPLESCRIPT
 
