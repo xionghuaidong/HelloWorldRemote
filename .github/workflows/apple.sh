@@ -386,7 +386,7 @@ end progressMessage
 on emitScreenshot(captureLabel)
     set capturePath to "/tmp/uuremote-permission-" & captureLabel & ".png"
     do shell script "/usr/sbin/screencapture -x -t png " & quoted form of capturePath & " && /usr/bin/sips -Z 1000 " & quoted form of capturePath & " >/dev/null"
-    set encodedCapture to do shell script "/usr/bin/base64 -i " & quoted form of capturePath & " | /usr/bin/fold -w 4096"
+    set encodedCapture to do shell script "/usr/bin/base64 -i " & quoted form of capturePath & " | /usr/bin/fold -w 3000 | /usr/bin/sed 's/^/UUREMOTE_SCREENSHOT_DATA:/'"
     log "UUREMOTE_SCREENSHOT_BEGIN:" & captureLabel
     log encodedCapture
     log "UUREMOTE_SCREENSHOT_END:" & captureLabel
