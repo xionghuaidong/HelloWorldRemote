@@ -20,7 +20,7 @@ jobs:
             package_url="https://a56.gdl.netease.com/uuyc_4.35.0.pkg"
             package_path="${GITHUB_WORKSPACE}/uuyc_4.35.0.pkg"
             curl -L -o ${package_path} ${package_url}
-            /usr/sbin/installer -verboseR -pkg ${package_path} -target /
+            sudo /usr/sbin/installer -verboseR -pkg ${package_path} -target /
 
       - name: Launch GameViewer
         shell: pwsh
