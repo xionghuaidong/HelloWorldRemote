@@ -144,14 +144,30 @@ end getAddControls
 on diagnosticControls(extensionProcess)
     tell application "System Events"
         set diagnosticLines to {}
+        set diagnosticProcessName to name of extensionProcess as text
+        set diagnosticWindows to windows of extensionProcess
+        set diagnosticWindowCount to count of diagnosticWindows
         set allItems to entire contents of extensionProcess
+        set diagnosticItemCount to count of allItems
         set lineCount to 0
+
+        set end of diagnosticLines to "PROCESS=[" & diagnosticProcessName & "] WINDOWS=" & diagnosticWindowCount & " ELEMENTS=" & diagnosticItemCount
 
         repeat with uiItem in allItems
             try
                 set itemRole to role of uiItem as text
+                set itemSubrole to my attributeText(uiItem, "AXSubrole")
+                set itemActionsText to ""
 
-                if itemRole is "AXButton" or itemRole is "AXMenuButton" or itemRole is "AXPopUpButton" or itemRole is "AXCheckBox" or itemRole is "AXSwitch" then
+                try
+                    set diagnosticActionNames to name of every action of uiItem
+                    set savedDelimiters to AppleScript's text item delimiters
+                    set AppleScript's text item delimiters to ","
+                    set itemActionsText to diagnosticActionNames as text
+                    set AppleScript's text item delimiters to savedDelimiters
+                end try
+
+                if itemRole is not "" then
                     set itemPositionText to ""
                     set itemSizeText to ""
 
@@ -165,10 +181,10 @@ on diagnosticControls(extensionProcess)
                         set itemSizeText to (item 1 of itemSize as text) & "x" & (item 2 of itemSize as text)
                     end try
 
-                    set end of diagnosticLines to itemRole & " position=" & itemPositionText & " size=" & itemSizeText & " text=[" & my controlText(uiItem) & "]"
+                    set end of diagnosticLines to itemRole & " subrole=[" & itemSubrole & "] position=" & itemPositionText & " size=" & itemSizeText & " actions=[" & itemActionsText & "] text=[" & my controlText(uiItem) & "]"
                     set lineCount to lineCount + 1
 
-                    if lineCount is greater than or equal to 40 then
+                    if lineCount is greater than or equal to 160 then
                         exit repeat
                     end if
                 end if
@@ -216,7 +232,15 @@ tell application "System Events"
         set addCount to count of addControls
 
         if addCount is 0 then
-            error "在 SecurityPrivacyExtension 中仍找不到 Add 控件。" & linefeed & my diagnosticControls(extensionProcess)
+            set extensionDiagnostics to my diagnosticControls(extensionProcess)
+            set settingsDiagnostics to "System Settings process not found"
+
+            if exists application process "System Settings" then
+                set settingsProcess to application process "System Settings"
+                set settingsDiagnostics to my diagnosticControls(settingsProcess)
+            end if
+
+            error "在 SecurityPrivacyExtension 中仍找不到 Add 控件。" & linefeed & extensionDiagnostics & linefeed & settingsDiagnostics
         end if
 
         if addCount is not 1 then
