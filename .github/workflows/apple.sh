@@ -530,8 +530,12 @@ on run argv
         delay 1
         keystroke targetApplicationPath
         delay 1
+        -- The first Return accepts the autocomplete suggestion; the second
+        -- confirms the selected application and closes Go to Folder.
         key code 36
-        delay 2
+        delay 1
+        key code 36
+        delay 3
 
         my emitScreenshot("file-chooser-selected", screenshotDirectory)
 
@@ -539,6 +543,10 @@ on run argv
 
         if openButton is missing value then
             error "The file chooser lost its Open button after selecting UURemote.app"
+        end if
+
+        if my attributeText(openButton, "AXEnabled") is not "true" then
+            error "The file chooser Open button remained disabled after selecting UURemote.app"
         end if
 
         my progressMessage("file chooser Open button identified")
