@@ -44,7 +44,7 @@ jobs:
                     fi
                     echo "设备 ID 为空，500 毫秒后重试" >&2
                 else
-                    status=$?
+                    status="$?"
                     echo "CLI 失败，退出码 $status，500 毫秒后重试" >&2
                 fi
                 sleep 0.5
@@ -58,7 +58,7 @@ jobs:
                     echo "customCode: $output"
                     break
                 else
-                    status=$?
+                    status="$?"
                     echo "CLI 失败，退出码 $status，500 毫秒后重试" >&2
                 fi
                 sleep 0.5
