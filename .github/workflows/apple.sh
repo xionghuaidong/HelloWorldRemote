@@ -461,7 +461,20 @@ on run argv
             click modifySettingsButton
             delay 5
             my progressMessage("windows after Modify Settings: " & my visibleWindowDiagnostics())
-            keystroke authorizationPassword
+
+            set authenticationField to value of attribute "AXFocusedUIElement" of settingsProcess
+
+            if my attributeText(authenticationField, "AXRole") is not "AXTextField" or my attributeText(authenticationField, "AXDescription") is not "Password" then
+                error "The system authentication password field does not have keyboard focus"
+            end if
+
+            set value of authenticationField to authorizationPassword
+
+            if my attributeText(authenticationField, "AXValue") is "" then
+                error "The system authentication password field remained empty"
+            end if
+
+            my progressMessage("administrator password field populated")
             delay 5
             keystroke return
             my progressMessage("administrator authorization submitted")
