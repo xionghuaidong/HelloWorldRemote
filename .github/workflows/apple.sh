@@ -63,6 +63,7 @@ sleep 2
 run_in_gui /usr/bin/open -a "System Settings"
 sleep 1
 run_in_gui /usr/bin/open "$PREF_URL"
+sleep 5
 
 echo "=== Adding UURemote and enabling permission ==="
 
@@ -411,19 +412,38 @@ on run argv
     set screenshotDirectory to item 2 of argv as text
 
     tell application "System Events"
+    my progressMessage("waiting for the Screen & System Audio Recording window")
+    set pageReady to false
+
+    repeat 120 times
+        if exists application process settingsProcessName then
+            set settingsProcess to application process settingsProcessName
+
+            if exists window 1 of settingsProcess then
+                if my attributeText(window 1 of settingsProcess, "AXTitle") is "Screen & System Audio Recording" then
+                    set pageReady to true
+                    exit repeat
+                end if
+            end if
+        end if
+
+        delay 0.25
+    end repeat
+
+    if pageReady is false then
+        error "Screen & System Audio Recording window did not become ready within 30 seconds"
+    end if
+
     my progressMessage("waiting for the primary screen-capture outline")
     set settingsReady to false
     set screenCaptureOutline to missing value
 
     repeat 120 times
-        if exists application process settingsProcessName then
-            set settingsProcess to application process settingsProcessName
-            set screenCaptureOutline to my getScreenCaptureOutline(settingsProcess)
+        set screenCaptureOutline to my getScreenCaptureOutline(settingsProcess)
 
-            if screenCaptureOutline is not missing value then
-                set settingsReady to true
-                exit repeat
-            end if
+        if screenCaptureOutline is not missing value then
+            set settingsReady to true
+            exit repeat
         end if
 
         delay 0.25
