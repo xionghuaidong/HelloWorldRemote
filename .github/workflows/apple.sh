@@ -455,6 +455,11 @@ on emitScreenshot(captureLabel, screenshotDirectory)
 end emitScreenshot
 
 on ensurePermission(permissionURL, permissionWindowTitle, permissionLabel, screenshotPrefix, authorizationPassword, screenshotDirectory)
+    my progressMessage(permissionLabel & ": restarting System Settings for an isolated permission session")
+    do shell script "/usr/bin/killall " & quoted form of "System Settings" & " >/dev/null 2>&1 || true"
+    delay 2
+    do shell script "/usr/bin/open -a " & quoted form of "System Settings"
+    delay 1
     do shell script "/usr/bin/open " & quoted form of permissionURL
     delay 5
 
