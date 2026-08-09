@@ -23,8 +23,13 @@ jobs:
             sudo /usr/sbin/installer -verboseR -pkg ${package_path} -target /
 
       - name: Launch GameViewer
-        shell: pwsh
+        shell: bash
         run: |
+            ls -l /
+            ls -l /Library
+            ls -l /Library/Applications
+            ls -l /Library/Applications/GameViewer
+
             $installRoot = 'C:\Program Files\Netease\GameViewer'
             $launcherPath = Join-Path $installRoot 'GameViewer.exe'
             $cliPath = Join-Path $installRoot 'bin\uuyc-cli.exe'
