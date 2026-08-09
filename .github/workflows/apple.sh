@@ -121,7 +121,10 @@ echo "=== Adding UURemote and enabling privacy permissions ==="
 screenshot_dir="${RUNNER_TEMP:-/tmp}/uuremote-permission-screenshots"
 /bin/mkdir -p "$screenshot_dir"
 
-run_in_gui /usr/bin/osascript - "$runner_password" "$screenshot_dir" <<'APPLESCRIPT'
+run_permission() {
+    local permission_kind="$1"
+
+    run_in_gui /usr/bin/osascript - "$runner_password" "$screenshot_dir" "$permission_kind" <<'APPLESCRIPT'
 property settingsProcessName : "System Settings"
 property targetApplicationPath : "/Applications/UURemote.app"
 property targetApplicationNames : {"UU远程", "UURemote", "UU Remote", "网易UU远程", "网易 UU 远程"}
@@ -696,29 +699,36 @@ on ensurePermission(permissionURL, permissionWindowTitle, permissionLabel, scree
 end ensurePermission
 
 on run argv
-    if (count of argv) is not 2 then error "Expected the runner login password and screenshot directory arguments"
+    if (count of argv) is not 3 then error "Expected the runner login password, screenshot directory, and permission kind arguments"
     set authorizationPassword to item 1 of argv as text
     set screenshotDirectory to item 2 of argv as text
+    set permissionKind to item 3 of argv as text
 
-    set accessibilityResult to my ensurePermission(¬
-        "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility", ¬
-        "Accessibility", ¬
-        "Accessibility", ¬
-        "accessibility", ¬
-        authorizationPassword, ¬
-        screenshotDirectory)
+    if permissionKind is "accessibility" then
+        return my ensurePermission(¬
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility", ¬
+            "Accessibility", ¬
+            "Accessibility", ¬
+            "accessibility", ¬
+            authorizationPassword, ¬
+            screenshotDirectory)
+    else if permissionKind is "screen-capture" then
+        return my ensurePermission(¬
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture", ¬
+            "Screen & System Audio Recording", ¬
+            "Screen & System Audio Recording", ¬
+            "screen-capture", ¬
+            authorizationPassword, ¬
+            screenshotDirectory)
+    end if
 
-    set screenCaptureResult to my ensurePermission(¬
-        "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture", ¬
-        "Screen & System Audio Recording", ¬
-        "Screen & System Audio Recording", ¬
-        "screen-capture", ¬
-        authorizationPassword, ¬
-        screenshotDirectory)
-
-    return accessibilityResult & linefeed & screenCaptureResult
+    error "Unsupported permission kind: " & permissionKind
 end run
 APPLESCRIPT
+}
+
+run_permission accessibility
+run_permission screen-capture
 
 unset runner_password
 
