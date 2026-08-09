@@ -1,0 +1,23 @@
+name: Run UUYC
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  compile:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install UUYC
+        shell: pwsh
+        run: |
+            $packageUrl = "https://a56.gdl.netease.com/UURemote_Setup_4.36.0.9155_0806201117_gwqd.exe"
+            $packagePath = Join-Path $env:GITHUB_WORKSPACE "uuyc_4.36.0.exe"
+            Invoke-WebRequest -Uri $packageUrl -OutFile $packagePath
+            & $packagePath /S
