@@ -329,8 +329,16 @@ on findAuthorizationPasswordField(settingsProcess)
                 repeat with settingsSheet in sheets of settingsWindow
                     repeat with uiItem in entire contents of settingsSheet
                         try
-                            if (role of uiItem as text) is "AXSecureTextField" then
-                                return contents of uiItem
+                            set itemRole to role of uiItem as text
+                            set itemTitle to my attributeText(uiItem, "AXTitle")
+                            set itemDescription to my attributeText(uiItem, "AXDescription")
+
+                            if itemRole is "AXTextField" or itemRole is "AXSecureTextField" then
+                                ignoring case
+                                    if itemTitle is "Password" or itemDescription is "Password" then
+                                        return contents of uiItem
+                                    end if
+                                end ignoring
                             end if
                         end try
                     end repeat
@@ -446,8 +454,10 @@ on run argv
             set passwordField to my findAuthorizationPasswordField(settingsProcess)
 
             if passwordField is missing value then
-                error "Administrator authorization appeared without an AXSecureTextField"
+                error "Administrator authorization appeared without a Password text field"
             end if
+
+            my progressMessage("password control role=" & (role of passwordField as text) & ", description=" & my attributeText(passwordField, "AXDescription"))
 
             try
                 perform action "AXRaise" of window 1 of settingsProcess
