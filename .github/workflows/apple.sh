@@ -530,8 +530,10 @@ on run argv
         delay 1
         keystroke targetApplicationPath
         delay 1
-        -- The first Return accepts the autocomplete suggestion; the second
-        -- confirms the selected application and closes Go to Folder.
+        -- macOS 26 uses three stages here: accept the autocomplete result,
+        -- navigate to the application, then close Go to Folder.
+        key code 36
+        delay 1
         key code 36
         delay 1
         key code 36
