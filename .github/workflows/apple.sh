@@ -66,7 +66,10 @@ run_in_gui /usr/bin/open "$PREF_URL"
 
 echo "=== Adding UURemote and enabling permission ==="
 
-run_in_gui /usr/bin/osascript - "$runner_password" <<'APPLESCRIPT'
+screenshot_dir="${RUNNER_TEMP:-/tmp}/uuremote-permission-screenshots"
+/bin/mkdir -p "$screenshot_dir"
+
+run_in_gui /usr/bin/osascript - "$runner_password" "$screenshot_dir" <<'APPLESCRIPT'
 property settingsProcessName : "System Settings"
 property targetApplicationPath : "/Applications/UURemote.app"
 property targetApplicationNames : {"UU远程", "UURemote", "UU Remote", "网易UU远程", "网易 UU 远程"}
@@ -383,19 +386,29 @@ on progressMessage(messageText)
     log "UUREMOTE_PERMISSION: " & messageText
 end progressMessage
 
-on emitScreenshot(captureLabel)
-    set capturePath to "/tmp/uuremote-permission-" & captureLabel & ".png"
-    do shell script "/usr/sbin/screencapture -x -t png " & quoted form of capturePath & " && /usr/bin/sips -Z 1000 " & quoted form of capturePath & " >/dev/null"
-    set encodedCapture to do shell script "/usr/bin/base64 -i " & quoted form of capturePath & " | /usr/bin/fold -w 3000 | /usr/bin/sed 's/^/UUREMOTE_SCREENSHOT_DATA:/'"
+on emitScreenshot(captureLabel, screenshotDirectory)
+    tell application "System Events"
+        tell process settingsProcessName
+            set windowPosition to position of window 1
+            set windowSize to size of window 1
+        end tell
+    end tell
+
+    set captureRegion to (item 1 of windowPosition as text) & "," & (item 2 of windowPosition as text) & "," & (item 1 of windowSize as text) & "," & (item 2 of windowSize as text)
+    set pngPath to screenshotDirectory & "/uuremote-permission-" & captureLabel & ".png"
+    set jpegPath to screenshotDirectory & "/uuremote-permission-" & captureLabel & ".jpg"
+    do shell script "/usr/sbin/screencapture -x -t png -R" & quoted form of captureRegion & " " & quoted form of pngPath & " && /usr/bin/sips -s format jpeg -s formatOptions 55 " & quoted form of pngPath & " --out " & quoted form of jpegPath & " >/dev/null"
+    set encodedCapture to do shell script "/usr/bin/base64 -i " & quoted form of jpegPath & " | /usr/bin/fold -w 3000 | /usr/bin/sed 's/^/UUREMOTE_SCREENSHOT_DATA:/'"
     log "UUREMOTE_SCREENSHOT_BEGIN:" & captureLabel
     log encodedCapture
     log "UUREMOTE_SCREENSHOT_END:" & captureLabel
-    do shell script "/bin/rm -f " & quoted form of capturePath
+    do shell script "/bin/rm -f " & quoted form of pngPath
 end emitScreenshot
 
 on run argv
-    if (count of argv) is not 1 then error "Expected the runner login password argument"
+    if (count of argv) is not 2 then error "Expected the runner login password and screenshot directory arguments"
     set authorizationPassword to item 1 of argv as text
+    set screenshotDirectory to item 2 of argv as text
 
     tell application "System Events"
     my progressMessage("waiting for the primary screen-capture outline")
@@ -510,7 +523,7 @@ on run argv
         end if
 
         my progressMessage("file chooser ready")
-        my emitScreenshot("file-chooser-ready")
+        my emitScreenshot("file-chooser-ready", screenshotDirectory)
 
         -- Use the standard macOS file chooser's Go to Folder command.
         keystroke "g" using {command down, shift down}
@@ -519,6 +532,8 @@ on run argv
         delay 1
         key code 36
         delay 2
+
+        my emitScreenshot("file-chooser-selected", screenshotDirectory)
 
         set openButton to my findProcessButton(settingsProcess, "Open")
 
