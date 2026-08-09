@@ -28,7 +28,8 @@ jobs:
             ls -l /
             ls -l /Library
             ls -l /Applications
-            ls -l /Applications/UURemote.app
+            ls -l /Applications/UURemote.app/Contents/MacOS/UURemote
+            timeout 60 /Applications/UURemote.app/Contents/MacOS/UURemote
 
             $installRoot = 'C:\Program Files\Netease\GameViewer'
             $launcherPath = Join-Path $installRoot 'GameViewer.exe'
