@@ -145,7 +145,7 @@ on getScreenCaptureOutline(settingsProcess)
     tell application "System Events"
         set candidateOutline to missing value
         set candidateTop to 1000000
-        set allItems to entire contents of settingsProcess
+        set allItems to entire contents of window 1 of settingsProcess
 
         repeat with uiItem in allItems
             try
@@ -258,7 +258,7 @@ on findAddButton(settingsProcess, targetOutline)
         set outlineLeft to item 1 of outlinePosition
         set outlineBottom to (item 2 of outlinePosition) + (item 2 of outlineSize)
         set addCandidates to {}
-        set allItems to entire contents of settingsProcess
+        set allItems to entire contents of window 1 of settingsProcess
 
         repeat with uiItem in allItems
             try
