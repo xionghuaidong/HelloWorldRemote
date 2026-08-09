@@ -475,8 +475,16 @@ on run argv
             end if
 
             my progressMessage("administrator password field populated")
-            delay 5
-            keystroke return
+            delay 1
+
+            set authorizationSubmitButton to my findSheetButton(settingsProcess, "Modify Settings")
+
+            if authorizationSubmitButton is missing value then
+                error "The administrator authorization submit button disappeared"
+            end if
+
+            my progressMessage("authorization submit enabled=" & my attributeText(authorizationSubmitButton, "AXEnabled"))
+            perform action "AXPress" of authorizationSubmitButton
             my progressMessage("administrator authorization submitted")
         end if
 
