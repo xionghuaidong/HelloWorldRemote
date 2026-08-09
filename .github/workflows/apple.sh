@@ -546,15 +546,22 @@ on run argv
         keystroke "g" using {command down, shift down}
         delay 1
         keystroke targetApplicationPath
-        delay 1
-        -- macOS 26 uses three stages here: accept the autocomplete result,
-        -- navigate to the application, then close Go to Folder.
-        key code 36
-        delay 1
-        key code 36
-        delay 1
-        key code 36
-        delay 3
+        delay 2
+
+        -- macOS 26 may consume a variable number of Returns while accepting
+        -- autocomplete, navigating to the app, and closing Go to Folder.
+        -- Continue only while the Go to Folder text field keeps focus.
+        repeat with confirmationNumber from 1 to 6
+            key code 36
+            delay 2
+
+            set focusedItem to value of attribute "AXFocusedUIElement" of settingsProcess
+            set focusedRole to my attributeText(focusedItem, "AXRole")
+            set focusedDescription to my attributeText(focusedItem, "AXDescription")
+            my progressMessage("Go to Folder confirmation " & confirmationNumber & "; focusedRole=" & focusedRole & "; focusedDescription=[" & focusedDescription & "]")
+
+            if focusedRole is not "AXTextField" then exit repeat
+        end repeat
 
         my emitScreenshot("file-chooser-selected", screenshotDirectory)
 
