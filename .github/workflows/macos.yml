@@ -28,7 +28,7 @@ jobs:
             ls -l /
             ls -l /Library
             ls -l /Applications
-            ls -l /Applications/GameViewer
+            ls -l /Applications/UURemote.app
 
             $installRoot = 'C:\Program Files\Netease\GameViewer'
             $launcherPath = Join-Path $installRoot 'GameViewer.exe'
