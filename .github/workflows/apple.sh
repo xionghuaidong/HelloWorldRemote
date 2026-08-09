@@ -478,6 +478,14 @@ on ensurePermission(permissionURL, permissionWindowTitle, permissionLabel, scree
     end repeat
 
     if pageReady is false then
+        my progressMessage(permissionLabel & ": permission window timeout; visible windows: " & my visibleWindowDiagnostics())
+
+        try
+            my emitScreenshot(screenshotPrefix & "-page-timeout", screenshotDirectory)
+        on error screenshotError
+            my progressMessage(permissionLabel & ": timeout screenshot failed: " & screenshotError)
+        end try
+
         error permissionLabel & " window did not become ready within 30 seconds"
     end if
 
