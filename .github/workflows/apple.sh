@@ -322,73 +322,6 @@ on findSheetButton(settingsProcess, desiredTitle)
     return missing value
 end findSheetButton
 
-on findAuthorizationPasswordField(settingsProcess)
-    tell application "System Events"
-        repeat with settingsWindow in windows of settingsProcess
-            try
-                repeat with settingsSheet in sheets of settingsWindow
-                    repeat with uiItem in entire contents of settingsSheet
-                        try
-                            set itemRole to role of uiItem as text
-                            set itemTitle to my attributeText(uiItem, "AXTitle")
-                            set itemDescription to my attributeText(uiItem, "AXDescription")
-
-                            if itemRole is "AXTextField" or itemRole is "AXSecureTextField" then
-                                ignoring case
-                                    if itemTitle is "Password" or itemDescription is "Password" then
-                                        return contents of uiItem
-                                    end if
-                                end ignoring
-                            end if
-                        end try
-                    end repeat
-                end repeat
-            end try
-        end repeat
-    end tell
-
-    return missing value
-end findAuthorizationPasswordField
-
-on authorizationDiagnostics(settingsProcess)
-    tell application "System Events"
-        set diagnosticMessages to {}
-
-        repeat with settingsWindow in windows of settingsProcess
-            try
-                repeat with settingsSheet in sheets of settingsWindow
-                    repeat with uiItem in entire contents of settingsSheet
-                        set itemRole to my attributeText(uiItem, "AXRole")
-                        set itemSubrole to my attributeText(uiItem, "AXSubrole")
-                        set itemTitle to my attributeText(uiItem, "AXTitle")
-                        set itemDescription to my attributeText(uiItem, "AXDescription")
-                        set itemIdentifier to my attributeText(uiItem, "AXIdentifier")
-
-                        if itemRole contains "Text" or itemTitle is not "" or itemDescription is not "" then
-                            set itemPosition to ""
-                            set itemSize to ""
-
-                            try
-                                set positionValue to position of uiItem
-                                set itemPosition to (item 1 of positionValue as text) & "," & (item 2 of positionValue as text)
-                            end try
-
-                            try
-                                set sizeValue to size of uiItem
-                                set itemSize to (item 1 of sizeValue as text) & "x" & (item 2 of sizeValue as text)
-                            end try
-
-                            set end of diagnosticMessages to "role=" & itemRole & "; subrole=" & itemSubrole & "; title=[" & itemTitle & "]; description=[" & itemDescription & "]; identifier=[" & itemIdentifier & "]; position=" & itemPosition & "; size=" & itemSize
-                        end if
-                    end repeat
-                end repeat
-            end try
-        end repeat
-
-        return my joinText(diagnosticMessages)
-    end tell
-end authorizationDiagnostics
-
 on joinText(textValues)
     set savedDelimiters to AppleScript's text item delimiters
     set AppleScript's text item delimiters to ", "
@@ -489,43 +422,15 @@ on run argv
 
         if modifySettingsButton is not missing value then
             my progressMessage("administrator authorization sheet identified")
-
-            set passwordField to missing value
-
-            repeat 40 times
-                set passwordField to my findAuthorizationPasswordField(settingsProcess)
-
-                if passwordField is not missing value then exit repeat
-                delay 0.5
-            end repeat
-
-            if passwordField is missing value then
-                error "Administrator authorization Password field did not become ready within 20 seconds. Controls: " & my authorizationDiagnostics(settingsProcess)
-            end if
-
-            my progressMessage("password control role=" & (role of passwordField as text) & ", description=" & my attributeText(passwordField, "AXDescription"))
-
             try
-                perform action "AXRaise" of window 1 of settingsProcess
+                set frontmost of settingsProcess to true
             end try
 
-            click passwordField
-            delay 0.5
-
-            if my attributeText(passwordField, "AXFocused") is not "true" then
-                try
-                    set focused of passwordField to true
-                end try
-                delay 0.5
-            end if
-
-            if my attributeText(passwordField, "AXFocused") is not "true" then
-                error "The administrator password field could not receive keyboard focus"
-            end if
-
-            my progressMessage("administrator password field focused")
-            keystroke "a" using {command down}
-            key code 51
+            -- The first sheet is only a confirmation sheet. Pressing Modify
+            -- Settings opens the separate system authentication dialog. This
+            -- order and timing matches actions/runner-images' official helper.
+            click modifySettingsButton
+            delay 5
             keystroke authorizationPassword
             delay 5
             keystroke return
