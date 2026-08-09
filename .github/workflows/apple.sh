@@ -322,6 +322,35 @@ on findSheetButton(settingsProcess, desiredTitle)
     return missing value
 end findSheetButton
 
+on visibleWindowDiagnostics()
+    tell application "System Events"
+        set diagnosticMessages to {}
+
+        repeat with appProcess in application processes
+            try
+                if visible of appProcess is true and (count of windows of appProcess) is greater than 0 then
+                    set processName to name of appProcess as text
+                    set focusedRole to ""
+                    set focusedDescription to ""
+
+                    try
+                        set focusedItem to value of attribute "AXFocusedUIElement" of appProcess
+                        set focusedRole to my attributeText(focusedItem, "AXRole")
+                        set focusedDescription to my attributeText(focusedItem, "AXDescription")
+                    end try
+
+                    repeat with processWindow in windows of appProcess
+                        set windowTitle to my attributeText(processWindow, "AXTitle")
+                        set end of diagnosticMessages to "process=" & processName & "; window=[" & windowTitle & "]; focusedRole=" & focusedRole & "; focusedDescription=[" & focusedDescription & "]"
+                    end repeat
+                end if
+            end try
+        end repeat
+
+        return my joinText(diagnosticMessages)
+    end tell
+end visibleWindowDiagnostics
+
 on joinText(textValues)
     set savedDelimiters to AppleScript's text item delimiters
     set AppleScript's text item delimiters to ", "
@@ -431,6 +460,7 @@ on run argv
             -- order and timing matches actions/runner-images' official helper.
             click modifySettingsButton
             delay 5
+            my progressMessage("windows after Modify Settings: " & my visibleWindowDiagnostics())
             keystroke authorizationPassword
             delay 5
             keystroke return
