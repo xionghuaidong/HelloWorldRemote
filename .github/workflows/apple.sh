@@ -371,9 +371,21 @@ tell application "System Events"
 
         my progressMessage("add button identified")
         perform action "AXPress" of addButton
-        delay 1
+        set modifySettingsButton to missing value
+        set openButton to missing value
 
-        set modifySettingsButton to my findSheetButton(settingsProcess, "Modify Settings")
+        repeat 40 times
+            set modifySettingsButton to my findSheetButton(settingsProcess, "Modify Settings")
+
+            if modifySettingsButton is not missing value then exit repeat
+
+            -- Some managed images have already authorized this settings
+            -- change and go straight to the file chooser.
+            set openButton to my findSheetButton(settingsProcess, "Open")
+
+            if openButton is not missing value then exit repeat
+            delay 0.5
+        end repeat
 
         if modifySettingsButton is not missing value then
             my progressMessage("administrator authorization sheet identified")
@@ -381,14 +393,18 @@ tell application "System Events"
             my progressMessage("administrator authorization submitted")
         end if
 
-        set openButton to missing value
+        if modifySettingsButton is missing value and openButton is missing value then
+            error "Neither administrator authorization nor the file chooser appeared"
+        end if
 
-        repeat 40 times
-            set openButton to my findSheetButton(settingsProcess, "Open")
+        if openButton is missing value then
+            repeat 40 times
+                set openButton to my findSheetButton(settingsProcess, "Open")
 
-            if openButton is not missing value then exit repeat
-            delay 0.5
-        end repeat
+                if openButton is not missing value then exit repeat
+                delay 0.5
+            end repeat
+        end if
 
         if openButton is missing value then
             error "The file chooser did not appear after administrator authorization"
