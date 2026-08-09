@@ -6,10 +6,12 @@ CLI="$APP/Contents/Helpers/uuyc-cli"
 PREF_URL='x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture'
 
 console_uid="$(stat -f '%u' /dev/console)"
+console_user="$(stat -f '%Su' /dev/console)"
 
 echo "=== Environment ==="
 /usr/bin/sw_vers
 echo "Console UID: $console_uid"
+echo "Console user: $console_user"
 
 if [ ! -d "$APP" ]; then
     echo "UURemote does not exist: $APP" >&2
@@ -45,6 +47,12 @@ sys.stdout.buffer.write(decoded.rstrip(b"\0"))
 
 if [ -z "$runner_password" ]; then
     echo "Could not decode the automatic-login password" >&2
+    exit 1
+fi
+
+if ! /usr/bin/dscl . -authonly "$console_user" "$runner_password"; then
+    echo "The decoded automatic-login password is not valid for $console_user" >&2
+    unset runner_password
     exit 1
 fi
 
@@ -314,36 +322,6 @@ on findSheetButton(settingsProcess, desiredTitle)
     return missing value
 end findSheetButton
 
-on findSheetPasswordField(settingsProcess)
-    tell application "System Events"
-        repeat with settingsWindow in windows of settingsProcess
-            try
-                repeat with settingsSheet in sheets of settingsWindow
-                    set sheetItems to entire contents of settingsSheet
-
-                    repeat with uiItem in sheetItems
-                        try
-                            set itemRole to role of uiItem as text
-                            set itemTitle to my attributeText(uiItem, "AXTitle")
-                            set itemDescription to my attributeText(uiItem, "AXDescription")
-
-                            if itemRole is "AXTextField" or itemRole is "AXSecureTextField" then
-                                ignoring case
-                                    if itemTitle is "Password" or itemDescription is "Password" then
-                                        return contents of uiItem
-                                    end if
-                                end ignoring
-                            end if
-                        end try
-                    end repeat
-                end repeat
-            end try
-        end repeat
-    end tell
-
-    return missing value
-end findSheetPasswordField
-
 on joinText(textValues)
     set savedDelimiters to AppleScript's text item delimiters
     set AppleScript's text item delimiters to ", "
@@ -444,23 +422,9 @@ on run argv
 
         if modifySettingsButton is not missing value then
             my progressMessage("administrator authorization sheet identified")
-
-            set passwordField to my findSheetPasswordField(settingsProcess)
-
-            if passwordField is missing value then
-                error "Administrator authorization appeared without a password field"
-            end if
-
-            try
-                set focused of passwordField to true
-            on error
-                click passwordField
-            end try
-
-            keystroke "a" using {command down}
             keystroke authorizationPassword
-            delay 0.5
-            perform action "AXPress" of modifySettingsButton
+            delay 1
+            key code 36
             my progressMessage("administrator authorization submitted")
         end if
 
