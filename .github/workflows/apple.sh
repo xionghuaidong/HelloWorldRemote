@@ -4,7 +4,6 @@ set -euo pipefail
 APP="/Applications/UURemote.app"
 CLI="$APP/Contents/Helpers/uuyc-cli"
 PREF_URL='x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture'
-EXTENSION_PROCESS="SecurityPrivacyExtension"
 
 console_uid="$(stat -f '%u' /dev/console)"
 
@@ -13,12 +12,12 @@ echo "=== Environment ==="
 echo "Console UID: $console_uid"
 
 if [ ! -d "$APP" ]; then
-    echo "UURemote 不存在：$APP" >&2
+    echo "UURemote does not exist: $APP" >&2
     exit 1
 fi
 
 if ! sudo launchctl print "gui/$console_uid" >/dev/null 2>&1; then
-    echo "图形桌面会话 gui/$console_uid 不存在" >&2
+    echo "GUI session gui/$console_uid does not exist" >&2
     exit 1
 fi
 
@@ -28,18 +27,18 @@ run_in_gui() {
         "$@"
 }
 
-echo "=== Opening permission page ==="
+echo "=== Opening Screen & System Audio Recording settings ==="
 
 run_in_gui /usr/bin/open -a "System Settings"
 sleep 1
 run_in_gui /usr/bin/open "$PREF_URL"
-sleep 4
 
 echo "=== Adding UURemote and enabling permission ==="
 
 run_in_gui /usr/bin/osascript <<'APPLESCRIPT'
-property extensionProcessName : "SecurityPrivacyExtension"
+property settingsProcessName : "System Settings"
 property targetApplicationPath : "/Applications/UURemote.app"
+property targetApplicationNames : {"UU远程", "UURemote", "UU Remote", "网易UU远程", "网易 UU 远程"}
 
 on attributeText(uiItem, attributeName)
     tell application "System Events"
@@ -55,33 +54,15 @@ on attributeText(uiItem, attributeName)
     return ""
 end attributeText
 
-on controlText(uiItem)
-    set combinedText to ""
-    set combinedText to combinedText & " " & my attributeText(uiItem, "AXTitle")
-    set combinedText to combinedText & " " & my attributeText(uiItem, "AXDescription")
-    set combinedText to combinedText & " " & my attributeText(uiItem, "AXHelp")
-    set combinedText to combinedText & " " & my attributeText(uiItem, "AXIdentifier")
-    set combinedText to combinedText & " " & my attributeText(uiItem, "AXRoleDescription")
-    set combinedText to combinedText & " " & my attributeText(uiItem, "AXValue")
-    return combinedText
-end controlText
-
 on isSwitchControl(uiItem)
     tell application "System Events"
         try
             set itemRole to role of uiItem as text
+            set itemSubrole to my attributeText(uiItem, "AXSubrole")
 
-            if itemRole is "AXCheckBox" or itemRole is "AXSwitch" then
-                return true
-            end if
-
-            if itemRole is "AXButton" then
-                set itemText to my controlText(uiItem)
-
-                if itemText contains "switch" or itemText contains "Switch" then
-                    return true
-                end if
-            end if
+            if itemRole is "AXCheckBox" then return true
+            if itemRole is "AXSwitch" then return true
+            if itemSubrole is "AXSwitch" then return true
         end try
     end tell
 
@@ -103,213 +84,316 @@ on switchIsEnabled(uiItem)
     return false
 end switchIsEnabled
 
-on getSwitches(extensionProcess)
+on textMatchesTarget(textValue)
+    ignoring case
+        repeat with candidateName in targetApplicationNames
+            set candidateText to contents of candidateName as text
+
+            if textValue is candidateText then return true
+            if textValue contains candidateText then return true
+        end repeat
+    end ignoring
+
+    return false
+end textMatchesTarget
+
+on listContainsText(textValues, targetText)
+    ignoring case
+        repeat with existingText in textValues
+            if (contents of existingText as text) is targetText then return true
+        end repeat
+    end ignoring
+
+    return false
+end listContainsText
+
+on getScreenCaptureOutline(settingsProcess)
     tell application "System Events"
-        set switchControls to {}
-        set allItems to entire contents of extensionProcess
+        set candidateOutline to missing value
+        set candidateTop to 1000000
+        set allItems to entire contents of settingsProcess
 
         repeat with uiItem in allItems
-            if my isSwitchControl(uiItem) then
-                set end of switchControls to contents of uiItem
+            try
+                if (role of uiItem as text) is "AXOutline" then
+                    set itemPosition to position of uiItem
+                    set itemSize to size of uiItem
+                    set itemWidth to item 1 of itemSize
+                    set itemHeight to item 2 of itemSize
+                    set itemTop to item 2 of itemPosition
+
+                    -- The Screen & System Audio Recording list is the first
+                    -- wide, non-empty outline in the main settings pane.
+                    if itemWidth is greater than or equal to 300 and itemHeight is greater than or equal to 40 then
+                        if itemTop is less than candidateTop then
+                            set candidateOutline to contents of uiItem
+                            set candidateTop to itemTop
+                        end if
+                    end if
+                end if
+            end try
+        end repeat
+
+        return candidateOutline
+    end tell
+end getScreenCaptureOutline
+
+on getOutlineRows(targetOutline)
+    tell application "System Events"
+        set outlineRows to {}
+        set outlineItems to entire contents of targetOutline
+
+        repeat with uiItem in outlineItems
+            try
+                if (role of uiItem as text) is "AXRow" then
+                    set end of outlineRows to contents of uiItem
+                end if
+            end try
+        end repeat
+
+        return outlineRows
+    end tell
+end getOutlineRows
+
+on getRowTitle(targetRow)
+    tell application "System Events"
+        set rowItems to entire contents of targetRow
+
+        repeat with uiItem in rowItems
+            try
+                if (role of uiItem as text) is "AXStaticText" then
+                    set rowTitle to my attributeText(uiItem, "AXValue")
+
+                    if rowTitle is not "" then return rowTitle
+                end if
+            end try
+        end repeat
+    end tell
+
+    return ""
+end getRowTitle
+
+on getRowSwitch(targetRow)
+    tell application "System Events"
+        set rowItems to entire contents of targetRow
+
+        repeat with uiItem in rowItems
+            if my isSwitchControl(uiItem) then return contents of uiItem
+        end repeat
+    end tell
+
+    return missing value
+end getRowSwitch
+
+on getRowTitles(targetOutline)
+    set rowTitles to {}
+    set outlineRows to my getOutlineRows(targetOutline)
+
+    repeat with targetRow in outlineRows
+        set rowTitle to my getRowTitle(contents of targetRow)
+
+        if rowTitle is not "" then set end of rowTitles to rowTitle
+    end repeat
+
+    return rowTitles
+end getRowTitles
+
+on findTargetSwitch(targetOutline)
+    set outlineRows to my getOutlineRows(targetOutline)
+
+    repeat with targetRow in outlineRows
+        set actualRow to contents of targetRow
+        set rowTitle to my getRowTitle(actualRow)
+
+        if my textMatchesTarget(rowTitle) then
+            return my getRowSwitch(actualRow)
+        end if
+    end repeat
+
+    return missing value
+end findTargetSwitch
+
+on findNewSwitch(targetOutline, previousTitles)
+    set outlineRows to my getOutlineRows(targetOutline)
+
+    repeat with targetRow in outlineRows
+        set actualRow to contents of targetRow
+        set rowTitle to my getRowTitle(actualRow)
+
+        if rowTitle is not "" and not my listContainsText(previousTitles, rowTitle) then
+            return my getRowSwitch(actualRow)
+        end if
+    end repeat
+
+    return missing value
+end findNewSwitch
+
+on findAddButton(settingsProcess, targetOutline)
+    tell application "System Events"
+        set outlinePosition to position of targetOutline
+        set outlineSize to size of targetOutline
+        set outlineLeft to item 1 of outlinePosition
+        set outlineBottom to (item 2 of outlinePosition) + (item 2 of outlineSize)
+        set addCandidates to {}
+        set allItems to entire contents of settingsProcess
+
+        repeat with uiItem in allItems
+            try
+                if (role of uiItem as text) is "AXButton" then
+                    set itemPosition to position of uiItem
+                    set itemSize to size of uiItem
+                    set itemLeft to item 1 of itemPosition
+                    set itemTop to item 2 of itemPosition
+                    set itemWidth to item 1 of itemSize
+                    set itemHeight to item 2 of itemSize
+
+                    -- On macOS 26 this plus button is intentionally unlabeled.
+                    -- It is the square AXPress button immediately below the
+                    -- first outline. The adjacent minus button is only 2 px high.
+                    if itemLeft is greater than or equal to outlineLeft and itemLeft is less than or equal to outlineLeft + 25 then
+                        if itemTop is greater than or equal to outlineBottom and itemTop is less than or equal to outlineBottom + 25 then
+                            if itemWidth is greater than or equal to 8 and itemWidth is less than or equal to 20 then
+                                if itemHeight is greater than or equal to 8 and itemHeight is less than or equal to 20 then
+                                    set end of addCandidates to contents of uiItem
+                                end if
+                            end if
+                        end if
+                    end if
+                end if
+            end try
+        end repeat
+
+        if (count of addCandidates) is 1 then return item 1 of addCandidates
+    end tell
+
+    return missing value
+end findAddButton
+
+on joinText(textValues)
+    set savedDelimiters to AppleScript's text item delimiters
+    set AppleScript's text item delimiters to ", "
+    set joinedText to textValues as text
+    set AppleScript's text item delimiters to savedDelimiters
+    return joinedText
+end joinText
+
+on outlineDiagnostics(targetOutline)
+    set diagnosticMessages to {}
+    set outlineRows to my getOutlineRows(targetOutline)
+
+    repeat with targetRow in outlineRows
+        set actualRow to contents of targetRow
+        set rowTitle to my getRowTitle(actualRow)
+        set rowSwitch to my getRowSwitch(actualRow)
+        set switchText to "missing"
+
+        if rowSwitch is not missing value then
+            if my switchIsEnabled(rowSwitch) then
+                set switchText to "on"
+            else
+                set switchText to "off"
             end if
-        end repeat
+        end if
 
-        return switchControls
-    end tell
-end getSwitches
+        set end of diagnosticMessages to "[" & rowTitle & ":" & switchText & "]"
+    end repeat
 
-on getAddControls(extensionProcess)
-    tell application "System Events"
-        set addControls to {}
-        set allItems to entire contents of extensionProcess
+    return my joinText(diagnosticMessages)
+end outlineDiagnostics
 
-        repeat with uiItem in allItems
-            try
-                set itemRole to role of uiItem as text
-
-                if itemRole is "AXButton" or itemRole is "AXMenuButton" or itemRole is "AXPopUpButton" then
-                    set itemText to my controlText(uiItem)
-
-                    if itemText contains "Add" or itemText contains "add" or itemText contains "+" then
-                        set end of addControls to contents of uiItem
-                    end if
-                end if
-            end try
-        end repeat
-
-        return addControls
-    end tell
-end getAddControls
-
-on diagnosticControls(extensionProcess)
-    tell application "System Events"
-        set diagnosticLines to {}
-        set diagnosticProcessName to name of extensionProcess as text
-        set diagnosticWindows to windows of extensionProcess
-        set diagnosticWindowCount to count of diagnosticWindows
-        set allItems to entire contents of extensionProcess
-        set diagnosticItemCount to count of allItems
-        set lineCount to 0
-
-        set end of diagnosticLines to "PROCESS=[" & diagnosticProcessName & "] WINDOWS=" & diagnosticWindowCount & " ELEMENTS=" & diagnosticItemCount
-
-        repeat with uiItem in allItems
-            try
-                set itemRole to role of uiItem as text
-                set itemSubrole to my attributeText(uiItem, "AXSubrole")
-                set itemActionsText to ""
-
-                try
-                    set diagnosticActionNames to name of every action of uiItem
-                    set savedDelimiters to AppleScript's text item delimiters
-                    set AppleScript's text item delimiters to ","
-                    set itemActionsText to diagnosticActionNames as text
-                    set AppleScript's text item delimiters to savedDelimiters
-                end try
-
-                if itemRole is not "" then
-                    set itemPositionText to ""
-                    set itemSizeText to ""
-
-                    try
-                        set itemPosition to position of uiItem
-                        set itemPositionText to (item 1 of itemPosition as text) & "," & (item 2 of itemPosition as text)
-                    end try
-
-                    try
-                        set itemSize to size of uiItem
-                        set itemSizeText to (item 1 of itemSize as text) & "x" & (item 2 of itemSize as text)
-                    end try
-
-                    set end of diagnosticLines to itemRole & " subrole=[" & itemSubrole & "] position=" & itemPositionText & " size=" & itemSizeText & " actions=[" & itemActionsText & "] text=[" & my controlText(uiItem) & "]"
-                    set lineCount to lineCount + 1
-
-                    if lineCount is greater than or equal to 160 then
-                        exit repeat
-                    end if
-                end if
-            end try
-        end repeat
-
-        set previousDelimiters to AppleScript's text item delimiters
-        set AppleScript's text item delimiters to linefeed
-        set outputText to diagnosticLines as text
-        set AppleScript's text item delimiters to previousDelimiters
-
-        return outputText
-    end tell
-end diagnosticControls
+on stopTargetProcesses()
+    do shell script "/usr/bin/pkill -f '/Applications/UURemote.app/' >/dev/null 2>&1 || true"
+end stopTargetProcesses
 
 tell application "System Events"
-    set extensionReady to false
+    set settingsReady to false
+    set screenCaptureOutline to missing value
 
-    -- 等待权限设置扩展进程启动
-    repeat 80 times
-        if exists application process extensionProcessName then
-            set extensionReady to true
-            exit repeat
+    repeat 120 times
+        if exists application process settingsProcessName then
+            set settingsProcess to application process settingsProcessName
+            set screenCaptureOutline to my getScreenCaptureOutline(settingsProcess)
+
+            if screenCaptureOutline is not missing value then
+                set settingsReady to true
+                exit repeat
+            end if
         end if
 
         delay 0.25
     end repeat
 
-    if extensionReady is false then
-        set processNames to name of every application process
-        error "等待 20 秒后仍未找到 " & extensionProcessName & "。GUI 进程：" & (processNames as text)
+    if settingsReady is false then
+        error "Screen & System Audio Recording list did not become ready within 30 seconds"
     end if
 
-    set extensionProcess to application process extensionProcessName
-    set existingSwitches to my getSwitches(extensionProcess)
-    set existingSwitchCount to count of existingSwitches
+    set targetSwitch to my findTargetSwitch(screenCaptureOutline)
 
-    if existingSwitchCount is greater than 1 then
-        error "权限页面当前已有 " & existingSwitchCount & " 个开关，为避免误操作已停止。" & linefeed & my diagnosticControls(extensionProcess)
-    end if
+    if targetSwitch is missing value then
+        set previousTitles to my getRowTitles(screenCaptureOutline)
+        set addButton to my findAddButton(settingsProcess, screenCaptureOutline)
 
-    -- 列表为空时添加 UURemote.app
-    if existingSwitchCount is 0 then
-        set addControls to my getAddControls(extensionProcess)
-        set addCount to count of addControls
-
-        if addCount is 0 then
-            set extensionDiagnostics to my diagnosticControls(extensionProcess)
-            set settingsDiagnostics to "System Settings process not found"
-
-            if exists application process "System Settings" then
-                set settingsProcess to application process "System Settings"
-                set settingsDiagnostics to my diagnosticControls(settingsProcess)
-            end if
-
-            error "在 SecurityPrivacyExtension 中仍找不到 Add 控件。" & linefeed & extensionDiagnostics & linefeed & settingsDiagnostics
+        if addButton is missing value then
+            error "Could not identify the add button. Rows: " & my outlineDiagnostics(screenCaptureOutline)
         end if
 
-        if addCount is not 1 then
-            error "找到 " & addCount & " 个 Add 控件，为避免误操作已停止。" & linefeed & my diagnosticControls(extensionProcess)
-        end if
-
-        perform action "AXPress" of item 1 of addControls
+        perform action "AXPress" of addButton
         delay 2
 
-        -- 标准文件选择器：前往指定路径
+        -- Use the standard macOS file chooser's Go to Folder command.
         keystroke "g" using {command down, shift down}
         delay 1
-
         keystroke targetApplicationPath
         delay 1
-
-        -- 确认路径
         key code 36
         delay 2
-
-        -- 点击 Open
         key code 36
-        delay 4
+
+        set targetSwitch to missing value
+
+        repeat 80 times
+            if exists application process settingsProcessName then
+                set settingsProcess to application process settingsProcessName
+                set screenCaptureOutline to my getScreenCaptureOutline(settingsProcess)
+
+                if screenCaptureOutline is not missing value then
+                    set targetSwitch to my findTargetSwitch(screenCaptureOutline)
+
+                    -- Bundle display names can change between releases. If
+                    -- necessary, use the one row added by this file chooser.
+                    if targetSwitch is missing value then
+                        set targetSwitch to my findNewSwitch(screenCaptureOutline, previousTitles)
+                    end if
+
+                    if targetSwitch is not missing value then exit repeat
+                end if
+            end if
+
+            delay 0.25
+        end repeat
     end if
 
-    -- 添加过程中扩展进程可能重载，因此重新取得对象
-    set switchControls to {}
+    if targetSwitch is missing value then
+        error "UURemote was not added to the permission list. Rows: " & my outlineDiagnostics(screenCaptureOutline)
+    end if
+
+    if my switchIsEnabled(targetSwitch) then
+        return "UURemote Screen & System Audio Recording permission is already enabled"
+    end if
+
+    my stopTargetProcesses()
+    delay 1
+    perform action "AXPress" of targetSwitch
 
     repeat 40 times
-        if exists application process extensionProcessName then
-            set extensionProcess to application process extensionProcessName
-            set switchControls to my getSwitches(extensionProcess)
-
-            if (count of switchControls) is greater than 0 then
-                exit repeat
-            end if
+        if my switchIsEnabled(targetSwitch) then
+            return "UURemote Screen & System Audio Recording permission enabled"
         end if
 
-        delay 0.5
+        delay 0.25
     end repeat
 
-    set switchCount to count of switchControls
-
-    if switchCount is 0 then
-        error "选择 UURemote.app 后仍未出现权限开关。" & linefeed & my diagnosticControls(extensionProcess)
-    end if
-
-    if switchCount is not 1 then
-        error "添加后出现 " & switchCount & " 个权限开关，为避免误操作已停止。" & linefeed & my diagnosticControls(extensionProcess)
-    end if
-
-    set targetSwitch to item 1 of switchControls
-
-    -- 避免系统弹出 Quit & Reopen 对话框
-    do shell script "/usr/bin/killall UURemote >/dev/null 2>&1 || true"
-    delay 1
-
-    if my switchIsEnabled(targetSwitch) then
-        return "UURemote 已在权限列表中，录屏权限已经开启"
-    end if
-
-    perform action "AXPress" of targetSwitch
-    delay 3
-
-    if my switchIsEnabled(targetSwitch) then
-        return "UURemote 录屏权限已成功开启"
-    end if
-
-    error "已经点击 UURemote 权限开关，但状态仍未开启，可能出现了认证窗口"
+    error "UURemote switch was pressed but did not turn on. Rows: " & my outlineDiagnostics(screenCaptureOutline)
 end tell
 APPLESCRIPT
 
@@ -326,7 +410,7 @@ for ((i=1; i<=40; i++)); do
             /usr/bin/grep -q '"success" : true'
         then
             printf '%s\n' "$cli_status"
-            echo "UURemote 已重新启动"
+            echo "UURemote restarted successfully"
             exit 0
         fi
     fi
@@ -334,5 +418,5 @@ for ((i=1; i<=40; i++)); do
     sleep 0.5
 done
 
-echo "UURemote 已启动，但 CLI 在 20 秒内没有恢复" >&2
+echo "UURemote started, but its CLI did not recover within 20 seconds" >&2
 exit 1
