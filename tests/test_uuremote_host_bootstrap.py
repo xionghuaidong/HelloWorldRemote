@@ -83,5 +83,37 @@ class ScriptRoutingAndCodecTests(unittest.TestCase):
         self.assertEqual(completed.stdout.strip(), "kcpassword codec self-test passed")
 
 
+class AccountTransactionContractTests(unittest.TestCase):
+    def test_console_account_is_discovered_without_runner_or_home_shortcuts(self):
+        script = text(SCRIPT_PATH)
+        self.assertIn("resolve_console_account()", script)
+        self.assertIn("stat -f '%Su' /dev/console", script)
+        self.assertIn("NFSHomeDirectory", script)
+        self.assertNotIn('console_user="runner"', script)
+        self.assertNotIn('console_home="$HOME"', script)
+
+    def test_user_transaction_has_verification_and_reverse_rollback(self):
+        script = text(SCRIPT_PATH)
+        for function_name in (
+            "password_authenticates",
+            "user_keychain_unlocks",
+            "configure_console_user",
+            "rollback_console_user_transaction",
+            "write_kcpassword_atomically",
+            "restore_original_kcpassword",
+        ):
+            self.assertIn(f"{function_name}()", script)
+        self.assertIn("user_keychain_changed", script)
+        self.assertIn("user_password_changed", script)
+        self.assertIn("kcpassword_changed", script)
+
+    def test_kcpassword_write_is_atomic_and_protected(self):
+        script = text(SCRIPT_PATH)
+        self.assertIn('chown root:wheel "$kcpassword_temp"', script)
+        self.assertIn('chmod 0600 "$kcpassword_temp"', script)
+        self.assertIn('mv -f "$kcpassword_temp" /etc/kcpassword', script)
+        self.assertIn('decode_kcpassword /etc/kcpassword', script)
+
+
 if __name__ == "__main__":
     unittest.main()

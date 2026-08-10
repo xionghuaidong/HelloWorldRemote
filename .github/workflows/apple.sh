@@ -94,6 +94,311 @@ self_test_kcpassword() {
     echo "kcpassword codec self-test passed"
 }
 
+account_password=""
+old_account_password=""
+old_keychain_password=""
+console_uid=""
+console_user=""
+console_home=""
+user_login_keychain=""
+bootstrap_temp_dir=""
+original_kcpassword_existed=0
+transaction_active=0
+user_keychain_changed=0
+user_password_changed=0
+kcpassword_changed=0
+
+die() {
+    echo "$*" >&2
+    return 1
+}
+
+run_as_console_user() {
+    sudo /bin/launchctl asuser "$console_uid" \
+        sudo -u "#$console_uid" \
+        "$@"
+}
+
+resolve_console_account() {
+    console_uid="$(/usr/bin/stat -f '%u' /dev/console)"
+    console_user="$(/usr/bin/stat -f '%Su' /dev/console)"
+
+    case "$console_uid" in
+        ''|*[!0-9]*)
+            die "Console UID is not numeric: $console_uid"
+            return 1
+            ;;
+    esac
+
+    if [ "$console_uid" -lt 501 ]; then
+        die "Console UID is not a normal graphical user: $console_uid"
+        return 1
+    fi
+
+    case "$console_user" in
+        root|loginwindow|_mbsetupuser|'')
+            die "Console account is not a normal graphical user: $console_user"
+            return 1
+            ;;
+    esac
+
+    console_home="$(
+        /usr/bin/dscl . -read "/Users/$console_user" NFSHomeDirectory |
+            /usr/bin/sed 's/^NFSHomeDirectory: //'
+    )"
+
+    if [ -z "$console_home" ] || [ ! -d "$console_home" ]; then
+        die "Could not resolve a valid home directory for $console_user"
+        return 1
+    fi
+
+    if ! sudo /bin/launchctl print "gui/$console_uid" >/dev/null 2>&1; then
+        die "GUI session gui/$console_uid does not exist"
+        return 1
+    fi
+}
+
+find_user_login_keychain() {
+    if [ -f "$console_home/Library/Keychains/login.keychain-db" ]; then
+        user_login_keychain="$console_home/Library/Keychains/login.keychain-db"
+    elif [ -f "$console_home/Library/Keychains/login.keychain" ]; then
+        user_login_keychain="$console_home/Library/Keychains/login.keychain"
+    else
+        die "The console user's login keychain does not exist"
+        return 1
+    fi
+}
+
+password_authenticates() {
+    /usr/bin/dscl . -authonly "$1" "$2" >/dev/null 2>&1
+}
+
+user_keychain_unlocks() {
+    run_as_console_user /usr/bin/security unlock-keychain \
+        -p "$2" "$1" >/dev/null 2>&1
+}
+
+kcpassword_matches() {
+    local decoded_password
+
+    if ! sudo /usr/bin/test -f /etc/kcpassword; then
+        return 1
+    fi
+
+    if ! decoded_password="$(decode_kcpassword /etc/kcpassword)"; then
+        return 1
+    fi
+
+    [ "$decoded_password" = "$1" ]
+}
+
+begin_bootstrap_transaction() {
+    bootstrap_temp_dir="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/uuremote-bootstrap.XXXXXX")"
+    /bin/chmod 0700 "$bootstrap_temp_dir"
+
+    if sudo /usr/bin/test -f /etc/kcpassword; then
+        original_kcpassword_existed=1
+        sudo /bin/cp -p /etc/kcpassword "$bootstrap_temp_dir/original-kcpassword"
+    else
+        original_kcpassword_existed=0
+    fi
+
+    transaction_active=1
+}
+
+write_kcpassword_atomically() {
+    local encoded_staging
+    local kcpassword_temp
+    local decoded_password
+
+    encoded_staging="$bootstrap_temp_dir/kcpassword.new"
+    printf '%s' "$account_password" | encode_kcpassword "$encoded_staging"
+
+    if ! kcpassword_temp="$(sudo /usr/bin/mktemp /etc/.kcpassword.uuremote.XXXXXX)"; then
+        return 1
+    fi
+
+    if ! sudo /bin/cp "$encoded_staging" "$kcpassword_temp" ||
+        ! sudo /usr/sbin/chown root:wheel "$kcpassword_temp" ||
+        ! sudo /bin/chmod 0600 "$kcpassword_temp" ||
+        ! sudo /bin/mv -f "$kcpassword_temp" /etc/kcpassword
+    then
+        sudo /bin/rm -f -- "$kcpassword_temp"
+        return 1
+    fi
+
+    kcpassword_changed=1
+
+    if ! decoded_password="$(decode_kcpassword /etc/kcpassword)" ||
+        [ "$decoded_password" != "$account_password" ]
+    then
+        unset decoded_password
+        return 1
+    fi
+
+    unset decoded_password
+    echo "/etc/kcpassword verified"
+}
+
+restore_original_kcpassword() {
+    local kcpassword_temp
+
+    if [ "$original_kcpassword_existed" -eq 0 ]; then
+        sudo /bin/rm -f -- /etc/kcpassword
+        return
+    fi
+
+    kcpassword_temp="$(sudo /usr/bin/mktemp /etc/.kcpassword.uuremote.XXXXXX)"
+
+    if ! sudo /bin/cp "$bootstrap_temp_dir/original-kcpassword" "$kcpassword_temp" ||
+        ! sudo /usr/sbin/chown root:wheel "$kcpassword_temp" ||
+        ! sudo /bin/chmod 0600 "$kcpassword_temp" ||
+        ! sudo /bin/mv -f "$kcpassword_temp" /etc/kcpassword
+    then
+        sudo /bin/rm -f -- "$kcpassword_temp"
+        return 1
+    fi
+}
+
+configure_console_user() {
+    local account_already_configured=0
+    local decoded_kcpassword=""
+
+    if [ "$original_kcpassword_existed" -eq 1 ]; then
+        decoded_kcpassword="$(decode_kcpassword "$bootstrap_temp_dir/original-kcpassword")"
+    fi
+
+    if password_authenticates "$console_user" "$account_password"; then
+        account_already_configured=1
+        echo "Console account password already configured"
+    elif [ -n "$decoded_kcpassword" ] &&
+        password_authenticates "$console_user" "$decoded_kcpassword"
+    then
+        old_account_password="$decoded_kcpassword"
+    else
+        echo "Neither the requested password nor decoded kcpassword authenticates $console_user" >&2
+        unset decoded_kcpassword
+        return 1
+    fi
+
+    if user_keychain_unlocks "$user_login_keychain" "$account_password"; then
+        echo "Console login keychain password already configured"
+    else
+        if [ -n "$decoded_kcpassword" ] &&
+            user_keychain_unlocks "$user_login_keychain" "$decoded_kcpassword"
+        then
+            old_keychain_password="$decoded_kcpassword"
+        elif [ -n "$old_account_password" ] &&
+            user_keychain_unlocks "$user_login_keychain" "$old_account_password"
+        then
+            old_keychain_password="$old_account_password"
+        else
+            echo "Could not unlock the console login keychain with a known password" >&2
+            unset decoded_kcpassword
+            return 1
+        fi
+
+        if ! run_as_console_user /usr/bin/security set-keychain-password \
+            -o "$old_keychain_password" -p "$account_password" "$user_login_keychain"
+        then
+            unset decoded_kcpassword
+            return 1
+        fi
+
+        user_keychain_changed=1
+
+        if ! user_keychain_unlocks "$user_login_keychain" "$account_password"; then
+            echo "Console login keychain did not accept the requested password" >&2
+            rollback_console_user_transaction || true
+            unset decoded_kcpassword
+            return 1
+        fi
+    fi
+
+    echo "console login keychain verified"
+
+    if [ "$account_already_configured" -eq 0 ]; then
+        if ! sudo /usr/bin/dscl . -passwd "/Users/$console_user" \
+            "$old_account_password" "$account_password"
+        then
+            rollback_console_user_transaction || true
+            unset decoded_kcpassword
+            return 1
+        fi
+
+        user_password_changed=1
+
+        if ! password_authenticates "$console_user" "$account_password"; then
+            echo "Console account did not accept the requested password" >&2
+            rollback_console_user_transaction || true
+            unset decoded_kcpassword
+            return 1
+        fi
+    fi
+
+    echo "console account password verified"
+
+    if kcpassword_matches "$account_password"; then
+        echo "/etc/kcpassword already configured"
+        echo "/etc/kcpassword verified"
+    elif ! write_kcpassword_atomically; then
+        echo "Could not replace and verify /etc/kcpassword" >&2
+        rollback_console_user_transaction || true
+        unset decoded_kcpassword
+        return 1
+    fi
+
+    unset decoded_kcpassword
+}
+
+rollback_console_user_transaction() {
+    local rollback_failed=0
+
+    if [ "$kcpassword_changed" -eq 1 ]; then
+        if restore_original_kcpassword; then
+            kcpassword_changed=0
+        else
+            echo "Failed to restore /etc/kcpassword" >&2
+            rollback_failed=1
+        fi
+    fi
+
+    if [ "$user_password_changed" -eq 1 ]; then
+        if sudo /usr/bin/dscl . -passwd "/Users/$console_user" \
+            "$account_password" "$old_account_password" &&
+            password_authenticates "$console_user" "$old_account_password"
+        then
+            user_password_changed=0
+        else
+            echo "Failed to restore the console account password" >&2
+            rollback_failed=1
+        fi
+    fi
+
+    if [ "$user_keychain_changed" -eq 1 ]; then
+        if run_as_console_user /usr/bin/security set-keychain-password \
+            -o "$account_password" -p "$old_keychain_password" "$user_login_keychain" &&
+            user_keychain_unlocks "$user_login_keychain" "$old_keychain_password"
+        then
+            user_keychain_changed=0
+        else
+            echo "Failed to restore the console login keychain password" >&2
+            rollback_failed=1
+        fi
+    fi
+
+    return "$rollback_failed"
+}
+
+finish_bootstrap_transaction() {
+    if [ -n "$bootstrap_temp_dir" ] && [ -d "$bootstrap_temp_dir" ]; then
+        sudo /bin/rm -rf -- "$bootstrap_temp_dir"
+    fi
+
+    bootstrap_temp_dir=""
+    transaction_active=0
+}
+
 configure_host() {
     echo "Host bootstrap implementation is incomplete" >&2
     return 1
