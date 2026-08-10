@@ -68,17 +68,22 @@ jobs:
         run: |
             .github/workflows/apple.sh
 
+      - name: Keep runner alive and capture diagnostics
+        if: success()
+        shell: bash
+        run: |
+            for ((sample=1; sample<=20; sample++))
+            do
+                printf -v label 'live-%02d' "$sample"
+                echo "Capturing $label ..."
+                .github/workflows/apple.sh snapshot "$label"
+                sleep 15
+            done
+
       - name: Upload permission screenshots
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: uuremote-permission-screenshots
-          path: ${{ runner.temp }}/uuremote-permission-screenshots/*.jpg
-          if-no-files-found: warn
-
-      - name: Keep runner alive
-        if: success()
-        shell: bash
-        run: |
-            echo "Sleeping ..."
-            sleep 300
+          path: ${{ runner.temp }}/uuremote-permission-screenshots/
+          if-no-files-found: error
