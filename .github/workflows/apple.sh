@@ -126,9 +126,13 @@ run_permission() {
     local permission_target_path
 
     case "$permission_kind" in
-        accessibility)
-            # Keyboard and mouse events are injected by this server process,
-            # not by the UURemote user-interface executable.
+        accessibility-main)
+            # The main process checks and reports the keyboard/mouse
+            # permission state to the remote client.
+            permission_target_path="$APP"
+            ;;
+        accessibility-server)
+            # Keyboard and mouse events are injected by this server process.
             permission_target_path="$APP/Contents/Helpers/UURemoteServer"
             ;;
         screen-capture)
@@ -362,6 +366,56 @@ on findAddButton(settingsProcess, targetOutline)
 
     return missing value
 end findAddButton
+
+on pressSettingsConfirmationButton(settingsProcess, desiredTitles)
+    tell application "System Events"
+        repeat with settingsWindow in windows of settingsProcess
+            set windowTitle to my attributeText(settingsWindow, "AXTitle")
+            set allItems to entire contents of settingsWindow
+
+            repeat with uiItem in allItems
+                try
+                    if (role of uiItem as text) is "AXButton" then
+                        set itemTitle to my attributeText(uiItem, "AXTitle")
+                        set itemDescription to my attributeText(uiItem, "AXDescription")
+
+                        ignoring case
+                            repeat with desiredTitle in desiredTitles
+                                set desiredText to contents of desiredTitle as text
+
+                                if itemTitle is desiredText or itemDescription is desiredText then
+                                    perform action "AXPress" of uiItem
+                                    return "window=[" & windowTitle & "]"
+                                end if
+                            end repeat
+                        end ignoring
+                    end if
+                end try
+            end repeat
+        end repeat
+    end tell
+
+    return ""
+end pressSettingsConfirmationButton
+
+on acceptAllowConfirmation(settingsProcess, permissionLabel)
+    set confirmationOwner to ""
+
+    repeat 40 times
+        set confirmationOwner to my pressSettingsConfirmationButton(settingsProcess, {"Allow", "允许"})
+
+        if confirmationOwner is not "" then
+            my progressMessage(permissionLabel & ": Allow confirmation pressed; " & confirmationOwner)
+            delay 2
+            return true
+        end if
+
+        delay 0.25
+    end repeat
+
+    my progressMessage(permissionLabel & ": no Allow confirmation appeared in System Settings")
+    return false
+end acceptAllowConfirmation
 
 on processHasWindowTitle(settingsProcess, desiredTitle)
     tell application "System Events"
@@ -654,6 +708,10 @@ on ensurePermission(permissionURL, permissionWindowTitle, permissionLabel, scree
     my progressMessage(permissionLabel & ": UURemote switch identified")
 
     if my switchIsEnabled(targetSwitch) then
+        -- Adding an application can turn the switch on before the separate
+        -- Allow confirmation is accepted. Handle a pending dialog before
+        -- returning from the already-on path.
+        my acceptAllowConfirmation(settingsProcess, permissionLabel)
         return "UURemote " & permissionLabel & " permission is already enabled"
     end if
 
@@ -662,6 +720,11 @@ on ensurePermission(permissionURL, permissionWindowTitle, permissionLabel, scree
     delay 1
     perform action "AXPress" of targetSwitch
     my progressMessage(permissionLabel & ": permission switch pressed")
+
+    -- macOS 26 shows a second confirmation after the switch is pressed. The
+    -- switch can already report "on" while this dialog is still waiting, so
+    -- accept it before treating the permission as effective.
+    my acceptAllowConfirmation(settingsProcess, permissionLabel)
 
     repeat 40 times
         if my switchIsEnabled(targetSwitch) then
@@ -683,13 +746,22 @@ on run argv
     set permissionKind to item 3 of argv as text
     set targetApplicationPath to item 4 of argv as text
 
-    if permissionKind is "accessibility" then
+    if permissionKind is "accessibility-main" then
+        set targetApplicationNames to {"UU远程", "UURemote", "UU Remote", "网易UU远程", "网易 UU 远程"}
+        return my ensurePermission(¬
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility", ¬
+            "Accessibility", ¬
+            "Accessibility (UURemote)", ¬
+            "accessibility-main", ¬
+            authorizationPassword, ¬
+            screenshotDirectory)
+    else if permissionKind is "accessibility-server" then
         set targetApplicationNames to {"UURemoteServer", "com.netease.uuremote.server"}
         return my ensurePermission(¬
             "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility", ¬
             "Accessibility", ¬
-            "Accessibility", ¬
-            "accessibility", ¬
+            "Accessibility (UURemoteServer)", ¬
+            "accessibility-server", ¬
             authorizationPassword, ¬
             screenshotDirectory)
     else if permissionKind is "screen-capture" then
@@ -708,7 +780,8 @@ end run
 APPLESCRIPT
 }
 
-run_permission accessibility
+run_permission accessibility-main
+run_permission accessibility-server
 run_permission screen-capture
 
 unset runner_password
