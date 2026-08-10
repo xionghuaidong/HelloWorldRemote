@@ -414,8 +414,34 @@ finish_bootstrap_transaction() {
 }
 
 root_is_disabled() {
-    sudo /usr/bin/dscl . -read /Users/root AuthenticationAuthority 2>/dev/null |
-        /usr/bin/grep -q 'DisabledUser'
+    sudo /usr/bin/dscl -plist . -read /Users/root 2>/dev/null |
+        /usr/bin/python3 -c '
+import plistlib
+import sys
+
+record = plistlib.loads(sys.stdin.buffer.read())
+authentication_authorities = None
+
+for key, value in record.items():
+    if key.endswith("AuthenticationAuthority"):
+        authentication_authorities = value
+        break
+
+# A default disabled root record has no AuthenticationAuthority at all.
+if authentication_authorities is None:
+    raise SystemExit(0)
+
+if isinstance(authentication_authorities, (str, bytes)):
+    authentication_authorities = [authentication_authorities]
+
+for authority in authentication_authorities:
+    if isinstance(authority, bytes):
+        authority = authority.decode("utf-8", errors="replace")
+    if "DisabledUser" in authority:
+        raise SystemExit(0)
+
+raise SystemExit(1)
+'
 }
 
 verify_root_password_hash() {
