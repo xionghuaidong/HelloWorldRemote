@@ -473,6 +473,27 @@ on findAddButton(settingsProcess, targetOutline)
     return missing value
 end findAddButton
 
+on pressExactButtonInProcess(targetProcess, candidateTitles)
+    repeat with processWindow in windows of targetProcess
+        repeat with uiItem in entire contents of processWindow
+            try
+                if my attributeText(uiItem, "AXRole") is "AXButton" then
+                    set itemTitle to my attributeText(uiItem, "AXTitle")
+
+                    repeat with candidateTitle in candidateTitles
+                        if itemTitle is (contents of candidateTitle) then
+                            perform action "AXPress" of uiItem
+                            return itemTitle
+                        end if
+                    end repeat
+                end if
+            end try
+        end repeat
+    end repeat
+
+    return ""
+end pressExactButtonInProcess
+
 on processHasWindowTitle(settingsProcess, desiredTitle)
     tell application "System Events"
         set settingsWindows to windows of settingsProcess
@@ -834,8 +855,13 @@ on ensurePermission(permissionURL, permissionWindowTitle, permissionLabel, scree
         return "UURemote " & permissionLabel & " permission is already enabled"
     end if
 
-    my progressMessage(permissionLabel & ": stopping UURemote processes before toggling permission")
-    my stopTargetProcesses()
+    -- Killing every process inside the app bundle also kills the launch agent.
+    -- launchd immediately relaunches UU Remote in the foreground, interrupting
+    -- the TCC transaction and leaving the row denied. Keep the app stable while
+    -- System Settings commits the switch, then accept its exact restart prompt.
+    try
+        set frontmost of settingsProcess to true
+    end try
     delay 1
     perform action "AXPress" of targetSwitch
     my progressMessage(permissionLabel & ": permission switch pressed")
@@ -845,6 +871,22 @@ on ensurePermission(permissionURL, permissionWindowTitle, permissionLabel, scree
     -- TCC row denied (auth_value=0), so explicitly complete the sheet first.
     delay 2
     my emitScreenshot(screenshotPrefix & "-after-switch-pressed", screenshotDirectory)
+
+    set restartButtonTitle to ""
+    repeat 20 times
+        set restartButtonTitle to my pressExactButtonInProcess(settingsProcess, {"Quit & Reopen", "Quit and Reopen"})
+        if restartButtonTitle is not "" then exit repeat
+        delay 0.25
+    end repeat
+
+    if restartButtonTitle is not "" then
+        my progressMessage(permissionLabel & ": accepted post-toggle button: " & restartButtonTitle)
+        delay 3
+        my emitScreenshot(screenshotPrefix & "-after-quit-and-reopen", screenshotDirectory)
+    else
+        my progressMessage(permissionLabel & ": no Quit & Reopen button appeared after toggling permission")
+    end if
+
     set authenticationField to missing value
 
     repeat 40 times
