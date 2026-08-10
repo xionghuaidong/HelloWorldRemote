@@ -4,8 +4,18 @@ set -euo pipefail
 APP="/Applications/UURemote.app"
 CLI="$APP/Contents/Helpers/uuyc-cli"
 mode="${1:-configure}"
+debug_level="${UUREMOTE_DEBUG:-0}"
 evidence_dir="${RUNNER_TEMP:-/tmp}/uuremote-permission-screenshots"
 diagnostic_log="$evidence_dir/diagnostics.log"
+
+case "$debug_level" in
+    0|1|2|3)
+        ;;
+    *)
+        echo "Invalid UUREMOTE_DEBUG level: $debug_level (expected 0, 1, 2, or 3)" >&2
+        exit 2
+        ;;
+esac
 
 console_uid="$(stat -f '%u' /dev/console)"
 console_user="$(stat -f '%Su' /dev/console)"
@@ -29,6 +39,17 @@ run_in_gui() {
     sudo launchctl asuser "$console_uid" \
         sudo -u "#$console_uid" \
         "$@"
+}
+
+debug_sleep() {
+    local diagnostic_seconds="$1"
+    local fast_seconds="$2"
+
+    if [ "$debug_level" -ge 1 ]; then
+        sleep "$diagnostic_seconds"
+    elif [ "$fast_seconds" != "0" ]; then
+        sleep "$fast_seconds"
+    fi
 }
 
 capture_tcc_database() {
@@ -63,6 +84,11 @@ capture_snapshot() {
     local user_tcc_database
     local executable
 
+    if [ "$debug_level" -eq 0 ]; then
+        echo "Snapshot skipped because UUREMOTE_DEBUG=0"
+        return 0
+    fi
+
     safe_label="$(printf '%s' "$requested_label" | /usr/bin/tr -cd 'A-Za-z0-9._-')"
     if [ -z "$safe_label" ]; then
         safe_label="manual"
@@ -77,7 +103,7 @@ capture_snapshot() {
     case "$safe_label" in
         live-*|final-app*)
             run_in_gui /usr/bin/open "$APP"
-            sleep 1
+            debug_sleep 1 0
             ;;
     esac
 
@@ -219,14 +245,18 @@ fi
 echo "=== Opening Privacy & Security settings ==="
 
 run_in_gui /usr/bin/killall "System Settings" >/dev/null 2>&1 || true
-sleep 2
+debug_sleep 2 0.5
 run_in_gui /usr/bin/open -a "System Settings"
-sleep 2
+debug_sleep 2 0.5
 
 echo "=== Adding UURemote and enabling privacy permissions ==="
 
 screenshot_dir="$evidence_dir"
-/bin/mkdir -p "$screenshot_dir"
+if [ "$debug_level" -ge 1 ]; then
+    /bin/mkdir -p "$screenshot_dir"
+else
+    screenshot_dir=""
+fi
 
 run_permission() {
     local permission_kind="$1"
@@ -245,16 +275,28 @@ run_permission() {
         screen-capture)
             permission_target_path="$APP"
             ;;
+        agent-private-picker)
+            permission_target_path="$APP"
+            ;;
         *)
             echo "Unsupported permission kind: $permission_kind" >&2
             return 1
             ;;
     esac
 
-    run_in_gui /usr/bin/osascript - "$runner_password" "$screenshot_dir" "$permission_kind" "$permission_target_path" <<'APPLESCRIPT'
+    run_in_gui /usr/bin/osascript - "$runner_password" "$screenshot_dir" "$permission_kind" "$permission_target_path" "$debug_level" <<'APPLESCRIPT'
 property settingsProcessName : "System Settings"
 property targetApplicationPath : ""
 property targetApplicationNames : {}
+property activeDebugLevel : 0
+
+on settleDelay(diagnosticSeconds, fastSeconds)
+    if activeDebugLevel is greater than or equal to 1 then
+        delay diagnosticSeconds
+    else if fastSeconds is greater than 0 then
+        delay fastSeconds
+    end if
+end settleDelay
 
 on attributeText(uiItem, attributeName)
     tell application "System Events"
@@ -579,7 +621,7 @@ on progressMessage(messageText)
     log "UUREMOTE_PERMISSION: " & messageText
 end progressMessage
 
-on dismissPrivateWindowScreenshotPrompt()
+on inspectPrivateWindowPickerPrompt(requesterText, shouldPressAllow)
     tell application "System Events"
         repeat with appProcess in application processes
             try
@@ -599,16 +641,21 @@ on dismissPrivateWindowScreenshotPrompt()
                             set buttonTitle to my attributeText(uiButton, "AXTitle")
                             set buttonDescription to my attributeText(uiButton, "AXDescription")
 
-                            ignoring case
-                                if buttonTitle is "Allow" or buttonDescription is "Allow" then
-                                    set allowButton to contents of uiButton
-                                end if
-                            end ignoring
+                            if buttonTitle is "Allow" or buttonDescription is "Allow" then
+                                set allowButton to contents of uiButton
+                            end if
                         end repeat
 
                         ignoring case
-                            if allowButton is not missing value and contextText contains "bash" and contextText contains "private window picker" then
+                            if contextText contains requesterText and contextText contains "private window picker" then
+                                if shouldPressAllow and allowButton is missing value then
+                                    return "MISSING_ALLOW|process=" & processName & "; context=[" & contextText & "]"
+                                end if
+
+                                if shouldPressAllow then
                                 perform action "AXPress" of allowButton
+                                end if
+
                                 return "process=" & processName & "; context=[" & contextText & "]"
                             end if
                         end ignoring
@@ -619,9 +666,68 @@ on dismissPrivateWindowScreenshotPrompt()
     end tell
 
     return ""
+end inspectPrivateWindowPickerPrompt
+
+on dismissPrivateWindowScreenshotPrompt()
+    set promptDetails to my inspectPrivateWindowPickerPrompt("bash", true)
+    if promptDetails starts with "MISSING_ALLOW|" then error "Matched the bash private window picker but its exact Allow button is missing: " & promptDetails
+    return promptDetails
 end dismissPrivateWindowScreenshotPrompt
 
+on dismissUURemotePrivateWindowPrompt(screenshotDirectory)
+    set waitAttempts to 12
+    if activeDebugLevel is greater than or equal to 1 then set waitAttempts to 40
+
+    set promptDetails to ""
+    repeat waitAttempts times
+        set promptDetails to my inspectPrivateWindowPickerPrompt("com.netease.uuremote.agent", false)
+        if promptDetails is not "" then exit repeat
+        delay 0.25
+    end repeat
+
+    if promptDetails is "" then
+        my progressMessage("UURemote private window picker did not appear")
+        return "UURemote private window picker was not present"
+    end if
+
+    my progressMessage("UURemote private window picker detected; " & promptDetails)
+
+    if activeDebugLevel is greater than or equal to 1 then
+        try
+            my emitScreenshot("agent-private-picker-before", screenshotDirectory)
+        on error screenshotError
+            my progressMessage("UURemote private window picker pre-Allow screenshot failed: " & screenshotError)
+        end try
+    end if
+
+    set pressedDetails to my inspectPrivateWindowPickerPrompt("com.netease.uuremote.agent", true)
+    if pressedDetails is "" then error "UURemote private window picker disappeared before its Allow button could be pressed"
+    if pressedDetails starts with "MISSING_ALLOW|" then error "Matched the UURemote private window picker but its exact Allow button is missing: " & pressedDetails
+    my progressMessage("UURemote private window picker Allow pressed; " & pressedDetails)
+
+    repeat 40 times
+        if my inspectPrivateWindowPickerPrompt("com.netease.uuremote.agent", false) is "" then
+            if activeDebugLevel is greater than or equal to 1 then
+                my settleDelay(1, 0)
+                try
+                    my emitScreenshot("agent-private-picker-after", screenshotDirectory)
+                on error screenshotError
+                    my progressMessage("UURemote private window picker post-Allow screenshot failed: " & screenshotError)
+                end try
+            end if
+
+            return "UURemote private window picker allowed"
+        end if
+
+        delay 0.25
+    end repeat
+
+    error "UURemote private window picker remained visible after pressing Allow"
+end dismissUURemotePrivateWindowPrompt
+
 on emitScreenshot(captureLabel, screenshotDirectory)
+    if activeDebugLevel is 0 then return ""
+
     tell application "System Events"
         tell process settingsProcessName
             set windowPosition to position of window 1
@@ -661,11 +767,11 @@ end emitScreenshot
 on ensurePermission(permissionURL, permissionWindowTitle, permissionLabel, screenshotPrefix, authorizationPassword, screenshotDirectory)
     my progressMessage(permissionLabel & ": restarting System Settings for an isolated permission session")
     do shell script "/usr/bin/killall " & quoted form of "System Settings" & " >/dev/null 2>&1 || true"
-    delay 2
+    my settleDelay(2, 0.5)
     do shell script "/usr/bin/open -a " & quoted form of "System Settings"
-    delay 1
+    my settleDelay(1, 0.25)
     do shell script "/usr/bin/open " & quoted form of permissionURL
-    delay 5
+    my settleDelay(5, 0.5)
 
     tell application "System Events"
     my progressMessage(permissionLabel & ": waiting for the permission window")
@@ -734,7 +840,7 @@ on ensurePermission(permissionURL, permissionWindowTitle, permissionLabel, scree
 
         my progressMessage(permissionLabel & ": add button identified")
         perform action "AXPress" of addButton
-        delay 2
+        my settleDelay(2, 0.5)
         set fileChooserReady to my processHasWindowTitle(settingsProcess, "Open")
 
         if fileChooserReady is false then
@@ -743,7 +849,7 @@ on ensurePermission(permissionURL, permissionWindowTitle, permissionLabel, scree
                 set frontmost of settingsProcess to true
             end try
             key code 36
-            delay 5
+            my settleDelay(5, 0.5)
             my progressMessage(permissionLabel & ": windows after Modify Settings: " & my visibleWindowDiagnostics())
 
             set authenticationField to value of attribute "AXFocusedUIElement" of settingsProcess
@@ -759,7 +865,7 @@ on ensurePermission(permissionURL, permissionWindowTitle, permissionLabel, scree
             end if
 
             my progressMessage(permissionLabel & ": administrator password field populated")
-            delay 1
+            my settleDelay(1, 0.25)
             key code 36
             my progressMessage(permissionLabel & ": administrator authorization submitted with the default button")
         end if
@@ -782,7 +888,7 @@ on ensurePermission(permissionURL, permissionWindowTitle, permissionLabel, scree
 
         -- Use the standard macOS file chooser's Go to Folder command.
         keystroke "g" using {command down, shift down}
-        delay 1
+        my settleDelay(1, 0.25)
         set goToFolderField to value of attribute "AXFocusedUIElement" of settingsProcess
 
         if my attributeText(goToFolderField, "AXRole") is not "AXTextField" then
@@ -799,14 +905,14 @@ on ensurePermission(permissionURL, permissionWindowTitle, permissionLabel, scree
         end if
 
         my progressMessage(permissionLabel & ": Go to Folder path populated: " & targetApplicationPath)
-        delay 1
+        my settleDelay(1, 0.25)
 
         -- macOS 26 may consume a variable number of Returns while accepting
         -- autocomplete, navigating to the app, and submitting it. Keep going
         -- until the top-level Open window is actually gone.
         repeat with submissionNumber from 1 to 12
             key code 36
-            delay 1
+            my settleDelay(1, 0.25)
             set openWindowPresent to my processHasWindowTitle(settingsProcess, "Open")
             my progressMessage(permissionLabel & ": file chooser submission " & submissionNumber & "; openWindowPresent=" & openWindowPresent)
 
@@ -821,10 +927,10 @@ on ensurePermission(permissionURL, permissionWindowTitle, permissionLabel, scree
 
         -- The application has been submitted. Accept a possible default
         -- Quit & Reopen prompt before traversing the permission list again.
-        delay 1
+        my settleDelay(1, 0.25)
         key code 36
         my progressMessage(permissionLabel & ": accepted the default post-add confirmation, if present")
-        delay 3
+        my settleDelay(3, 0.5)
 
         set settingsProcess to application process settingsProcessName
         set permissionOutline to missing value
@@ -864,14 +970,14 @@ on ensurePermission(permissionURL, permissionWindowTitle, permissionLabel, scree
     try
         set frontmost of settingsProcess to true
     end try
-    delay 1
+    my settleDelay(1, 0.25)
     perform action "AXPress" of targetSwitch
     my progressMessage(permissionLabel & ": permission switch pressed")
 
     -- On macOS 26 the switch can appear on before the administrator sheet is
     -- completed. Treating that transient visual state as success leaves the
     -- TCC row denied (auth_value=0), so explicitly complete the sheet first.
-    delay 2
+    my settleDelay(2, 0.5)
     my emitScreenshot(screenshotPrefix & "-after-switch-pressed", screenshotDirectory)
 
     set restartButtonTitle to ""
@@ -883,7 +989,7 @@ on ensurePermission(permissionURL, permissionWindowTitle, permissionLabel, scree
 
     if restartButtonTitle is not "" then
         my progressMessage(permissionLabel & ": accepted post-toggle button: " & restartButtonTitle)
-        delay 3
+        my settleDelay(3, 0.5)
         my emitScreenshot(screenshotPrefix & "-after-quit-and-reopen", screenshotDirectory)
     else
         my progressMessage(permissionLabel & ": no Quit & Reopen button appeared after toggling permission")
@@ -912,7 +1018,7 @@ on ensurePermission(permissionURL, permissionWindowTitle, permissionLabel, scree
             error permissionLabel & ": the post-toggle authentication password field remained empty"
         end if
 
-        delay 1
+        my settleDelay(1, 0.25)
         key code 36
         my progressMessage(permissionLabel & ": administrator authorization submitted after toggling permission")
 
@@ -962,11 +1068,11 @@ on ensurePermission(permissionURL, permissionWindowTitle, permissionLabel, scree
     -- the row again so the script only succeeds after TCC has persisted it.
     my progressMessage(permissionLabel & ": reopening System Settings to verify persistence")
     do shell script "/usr/bin/killall " & quoted form of "System Settings" & " >/dev/null 2>&1 || true"
-    delay 2
+    my settleDelay(2, 0.5)
     do shell script "/usr/bin/open -a " & quoted form of "System Settings"
-    delay 1
+    my settleDelay(1, 0.25)
     do shell script "/usr/bin/open " & quoted form of permissionURL
-    delay 5
+    my settleDelay(5, 0.5)
 
     set persistedPageReady to false
 
@@ -1022,11 +1128,12 @@ on ensurePermission(permissionURL, permissionWindowTitle, permissionLabel, scree
 end ensurePermission
 
 on run argv
-    if (count of argv) is not 4 then error "Expected the runner login password, screenshot directory, permission kind, and permission target path arguments"
+    if (count of argv) is not 5 then error "Expected the runner login password, screenshot directory, permission kind, permission target path, and debug level arguments"
     set authorizationPassword to item 1 of argv as text
     set screenshotDirectory to item 2 of argv as text
     set permissionKind to item 3 of argv as text
     set targetApplicationPath to item 4 of argv as text
+    set activeDebugLevel to item 5 of argv as integer
 
     if permissionKind is "accessibility-main" then
         set targetApplicationNames to {"UU远程", "UURemote", "UU Remote", "网易UU远程", "网易 UU 远程"}
@@ -1055,6 +1162,8 @@ on run argv
             "screen-capture", ¬
             authorizationPassword, ¬
             screenshotDirectory)
+    else if permissionKind is "agent-private-picker" then
+        return my dismissUURemotePrivateWindowPrompt(screenshotDirectory)
     end if
 
     error "Unsupported permission kind: " & permissionKind
@@ -1066,11 +1175,9 @@ run_permission accessibility-main
 run_permission accessibility-server
 run_permission screen-capture
 
-unset runner_password
-
 echo "=== Restarting UURemote ==="
 
-sleep 2
+debug_sleep 2 0.5
 run_in_gui /usr/bin/open "$APP"
 
 echo "=== Waiting for CLI ==="
@@ -1083,4 +1190,11 @@ fi
 printf '%s\n' "$cli_status"
 echo "UURemote restarted successfully"
 
-capture_snapshot "final-app"
+echo "=== Handling UURemote screen-sharing confirmation ==="
+run_permission agent-private-picker
+
+unset runner_password
+
+if [ "$debug_level" -ge 1 ]; then
+    capture_snapshot "final-app"
+fi

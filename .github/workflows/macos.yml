@@ -2,6 +2,17 @@ name: macOS
 
 on:
   workflow_dispatch:
+    inputs:
+      debug_level:
+        description: UURemote diagnostic level (0=fast, 1=screenshots, 2=idempotency, 3=live sampling)
+        required: true
+        default: "0"
+        type: choice
+        options:
+          - "0"
+          - "1"
+          - "2"
+          - "3"
 
 permissions:
   contents: write
@@ -9,6 +20,8 @@ permissions:
 jobs:
   run:
     runs-on: macos-latest
+    env:
+      UUREMOTE_DEBUG: ${{ inputs.debug_level || '0' }}
 
     steps:
       - name: Checkout
@@ -64,12 +77,13 @@ jobs:
             .github/workflows/apple.sh
 
       - name: Verify permission idempotency
+        if: env.UUREMOTE_DEBUG == '2' || env.UUREMOTE_DEBUG == '3'
         shell: bash
         run: |
             .github/workflows/apple.sh
 
       - name: Keep runner alive and capture diagnostics
-        if: success()
+        if: success() && env.UUREMOTE_DEBUG == '3'
         shell: bash
         run: |
             for ((sample=1; sample<=20; sample++))
@@ -81,7 +95,7 @@ jobs:
             done
 
       - name: Upload permission screenshots
-        if: always()
+        if: always() && env.UUREMOTE_DEBUG != '0'
         uses: actions/upload-artifact@v4
         with:
           name: uuremote-permission-screenshots
