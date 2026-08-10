@@ -450,6 +450,7 @@ verify_root_password_hash() {
     local verification_status=1
 
     if ! sudo /usr/bin/dscl -plist . -read /Users/root ShadowHashData >"$shadow_plist"; then
+        echo "Root hash verifier: ShadowHashData is absent" >&2
         /bin/rm -f -- "$shadow_plist"
         return 1
     fi
@@ -470,16 +471,20 @@ for key, value in outer.items():
         values = value
         break
 if values is None:
+    print("Root hash verifier: outer ShadowHashData value is absent", file=sys.stderr)
     raise SystemExit(1)
 if isinstance(values, list):
     if not values:
+        print("Root hash verifier: ShadowHashData list is empty", file=sys.stderr)
         raise SystemExit(1)
     values = values[0]
 if not isinstance(values, bytes):
+    print("Root hash verifier: ShadowHashData is not binary plist data", file=sys.stderr)
     raise SystemExit(1)
 inner = plistlib.loads(values)
 hash_data = inner.get("SALTED-SHA512-PBKDF2")
 if not isinstance(hash_data, dict):
+    print("Root hash verifier: PBKDF2 dictionary is absent", file=sys.stderr)
     raise SystemExit(1)
 password_bytes = sys.stdin.buffer.read()
 derived = hashlib.pbkdf2_hmac(
@@ -490,6 +495,7 @@ derived = hashlib.pbkdf2_hmac(
     dklen=len(hash_data["entropy"]),
 )
 if not hmac.compare_digest(derived, hash_data["entropy"]):
+    print("Root hash verifier: candidate does not match PBKDF2 data", file=sys.stderr)
     raise SystemExit(1)
 ' "$shadow_plist"
     then
