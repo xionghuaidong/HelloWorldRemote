@@ -585,8 +585,23 @@ on ensurePermission(permissionURL, permissionWindowTitle, permissionLabel, scree
         -- Use the standard macOS file chooser's Go to Folder command.
         keystroke "g" using {command down, shift down}
         delay 1
-        keystroke targetApplicationPath
-        delay 2
+        set goToFolderField to value of attribute "AXFocusedUIElement" of settingsProcess
+
+        if my attributeText(goToFolderField, "AXRole") is not "AXTextField" then
+            error permissionLabel & ": the Go to Folder text field does not have keyboard focus"
+        end if
+
+        -- Assign the accessibility value directly. Sending a long path as
+        -- synthetic keystrokes is intermittent on hosted macOS runners and
+        -- can leave this sheet open forever with an incomplete path.
+        set value of goToFolderField to targetApplicationPath
+
+        if my attributeText(goToFolderField, "AXValue") is not targetApplicationPath then
+            error permissionLabel & ": the Go to Folder path was not populated completely"
+        end if
+
+        my progressMessage(permissionLabel & ": Go to Folder path populated: " & targetApplicationPath)
+        delay 1
 
         -- macOS 26 may consume a variable number of Returns while accepting
         -- autocomplete, navigating to the app, and submitting it. Keep going
