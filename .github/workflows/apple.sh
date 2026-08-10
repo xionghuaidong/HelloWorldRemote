@@ -148,10 +148,95 @@ capture_snapshot() {
     echo "UUREMOTE_SNAPSHOT_SAVED:$jpeg_path" | /usr/bin/tee -a "$diagnostic_log"
 }
 
+dismiss_uuremote_private_window_prompt() {
+    local prompt_result
+
+    if ! prompt_result="$(run_in_gui /usr/bin/osascript <<'APPLESCRIPT'
+on attributeText(uiItem, attributeName)
+    tell application "System Events"
+        try
+            set attributeValue to value of attribute attributeName of uiItem
+            if attributeValue is not missing value then return attributeValue as text
+        end try
+    end tell
+
+    return ""
+end attributeText
+
+on inspectPrompt(shouldPressAllow)
+    tell application "System Events"
+        if not (exists application process "UserNotificationCenter") then return ""
+        set notificationProcess to application process "UserNotificationCenter"
+
+        repeat with promptWindow in windows of notificationProcess
+            set contextText to my attributeText(promptWindow, "AXDescription")
+            set allowButton to missing value
+
+            repeat with uiText in static texts of promptWindow
+                set textValue to my attributeText(uiText, "AXValue")
+                if textValue is not "" then set contextText to contextText & " " & textValue
+            end repeat
+
+            repeat with uiButton in buttons of promptWindow
+                set buttonTitle to my attributeText(uiButton, "AXTitle")
+                set buttonDescription to my attributeText(uiButton, "AXDescription")
+
+                -- The action is intentionally restricted to the exact English
+                -- Allow label; similarly named buttons are never pressed.
+                if buttonTitle is "Allow" or buttonDescription is "Allow" then
+                    set allowButton to contents of uiButton
+                end if
+            end repeat
+
+            ignoring case
+                if contextText contains "com.netease.uuremote.agent" and contextText contains "private window picker" then
+                    if shouldPressAllow and allowButton is missing value then
+                        return "MISSING_ALLOW|context=[" & contextText & "]"
+                    end if
+
+                    if shouldPressAllow then perform action "AXPress" of allowButton
+                    return "MATCHED|context=[" & contextText & "]"
+                end if
+            end ignoring
+        end repeat
+    end tell
+
+    return ""
+end inspectPrompt
+
+set promptDetails to ""
+repeat 4 times
+    set promptDetails to my inspectPrompt(false)
+    if promptDetails is not "" then exit repeat
+    delay 0.25
+end repeat
+
+if promptDetails is "" then return "UURemote private window picker was not present during snapshot"
+
+set pressedDetails to my inspectPrompt(true)
+if pressedDetails starts with "MISSING_ALLOW|" then error "Matched the UURemote private window picker but its exact Allow button is missing: " & pressedDetails
+if pressedDetails is "" then error "UURemote private window picker disappeared before its Allow button could be pressed"
+
+repeat 20 times
+    if my inspectPrompt(false) is "" then return "UURemote private window picker allowed during snapshot; " & pressedDetails
+    delay 0.1
+end repeat
+
+error "UURemote private window picker remained visible after pressing Allow during snapshot"
+APPLESCRIPT
+)"; then
+        echo "UUREMOTE_PERMISSION: failed to handle the UURemote private window picker during snapshot" >&2
+        return 1
+    fi
+
+    echo "UUREMOTE_PERMISSION: $prompt_result"
+}
+
 case "$mode" in
     configure)
         ;;
     snapshot)
+        dismiss_uuremote_private_window_prompt
         capture_snapshot "${2:-manual}"
         exit 0
         ;;
