@@ -478,6 +478,13 @@ if isinstance(values, list):
         print("Root hash verifier: ShadowHashData list is empty", file=sys.stderr)
         raise SystemExit(1)
     values = values[0]
+if isinstance(values, str):
+    encoded_hex = "".join(values.strip().strip("<>").split())
+    try:
+        values = bytes.fromhex(encoded_hex)
+    except ValueError:
+        print("Root hash verifier: ShadowHashData text is not hexadecimal", file=sys.stderr)
+        raise SystemExit(1)
 if not isinstance(values, bytes):
     print("Root hash verifier: ShadowHashData is not binary plist data", file=sys.stderr)
     raise SystemExit(1)
