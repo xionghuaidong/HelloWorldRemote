@@ -199,7 +199,6 @@ on textMatchesTarget(textValue)
             set candidateText to contents of candidateName as text
 
             if textValue is candidateText then return true
-            if textValue contains candidateText then return true
         end repeat
     end ignoring
 
@@ -366,73 +365,6 @@ on findAddButton(settingsProcess, targetOutline)
 
     return missing value
 end findAddButton
-
-on pressSettingsConfirmationButton(settingsProcess, desiredTitles)
-    tell application "System Events"
-        repeat with settingsWindow in windows of settingsProcess
-            set windowTitle to my attributeText(settingsWindow, "AXTitle")
-
-            -- Do not traverse the entire window here. On macOS 26 the
-            -- permission modal can block a recursive AX query indefinitely.
-            if exists sheet 1 of settingsWindow then
-                set confirmationSheet to sheet 1 of settingsWindow
-
-                repeat with uiButton in buttons of confirmationSheet
-                    set itemTitle to my attributeText(uiButton, "AXTitle")
-                    set itemDescription to my attributeText(uiButton, "AXDescription")
-
-                    ignoring case
-                        repeat with desiredTitle in desiredTitles
-                            set desiredText to contents of desiredTitle as text
-
-                            if itemTitle is desiredText or itemDescription is desiredText then
-                                perform action "AXPress" of uiButton
-                                return "sheet in window=[" & windowTitle & "]"
-                            end if
-                        end repeat
-                    end ignoring
-                end repeat
-            end if
-
-            repeat with uiButton in buttons of settingsWindow
-                set itemTitle to my attributeText(uiButton, "AXTitle")
-                set itemDescription to my attributeText(uiButton, "AXDescription")
-
-                ignoring case
-                    repeat with desiredTitle in desiredTitles
-                        set desiredText to contents of desiredTitle as text
-
-                        if itemTitle is desiredText or itemDescription is desiredText then
-                            perform action "AXPress" of uiButton
-                            return "window=[" & windowTitle & "]"
-                        end if
-                    end repeat
-                end ignoring
-            end repeat
-        end repeat
-    end tell
-
-    return ""
-end pressSettingsConfirmationButton
-
-on acceptAllowConfirmation(settingsProcess, permissionLabel)
-    set confirmationOwner to ""
-
-    repeat 40 times
-        set confirmationOwner to my pressSettingsConfirmationButton(settingsProcess, {"Allow", "允许"})
-
-        if confirmationOwner is not "" then
-            my progressMessage(permissionLabel & ": Allow confirmation pressed; " & confirmationOwner)
-            delay 2
-            return true
-        end if
-
-        delay 0.25
-    end repeat
-
-    my progressMessage(permissionLabel & ": no Allow confirmation appeared in System Settings")
-    return false
-end acceptAllowConfirmation
 
 on processHasWindowTitle(settingsProcess, desiredTitle)
     tell application "System Events"
@@ -725,11 +657,6 @@ on ensurePermission(permissionURL, permissionWindowTitle, permissionLabel, scree
     my progressMessage(permissionLabel & ": UURemote switch identified")
 
     if my switchIsEnabled(targetSwitch) then
-        -- Adding an application can turn the switch on before the separate
-        -- Allow confirmation is accepted. Handle a pending dialog before
-        -- returning from the already-on path.
-        my emitScreenshot(screenshotPrefix & "-before-allow", screenshotDirectory)
-        my acceptAllowConfirmation(settingsProcess, permissionLabel)
         return "UURemote " & permissionLabel & " permission is already enabled"
     end if
 
@@ -738,13 +665,6 @@ on ensurePermission(permissionURL, permissionWindowTitle, permissionLabel, scree
     delay 1
     perform action "AXPress" of targetSwitch
     my progressMessage(permissionLabel & ": permission switch pressed")
-    delay 1
-    my emitScreenshot(screenshotPrefix & "-before-allow", screenshotDirectory)
-
-    -- macOS 26 shows a second confirmation after the switch is pressed. The
-    -- switch can already report "on" while this dialog is still waiting, so
-    -- accept it before treating the permission as effective.
-    my acceptAllowConfirmation(settingsProcess, permissionLabel)
 
     repeat 40 times
         if my switchIsEnabled(targetSwitch) then
