@@ -474,22 +474,24 @@ on findAddButton(settingsProcess, targetOutline)
 end findAddButton
 
 on pressExactButtonInProcess(targetProcess, candidateTitles)
-    repeat with processWindow in windows of targetProcess
-        repeat with uiItem in buttons of processWindow
-            try
-                if my attributeText(uiItem, "AXRole") is "AXButton" then
-                    set itemTitle to my attributeText(uiItem, "AXTitle")
+    tell application "System Events"
+        repeat with processWindow in windows of targetProcess
+            repeat with uiItem in buttons of processWindow
+                try
+                    if my attributeText(uiItem, "AXRole") is "AXButton" then
+                        set itemTitle to my attributeText(uiItem, "AXTitle")
 
-                    repeat with candidateTitle in candidateTitles
-                        if itemTitle is (contents of candidateTitle) then
-                            perform action "AXPress" of uiItem
-                            return itemTitle
-                        end if
-                    end repeat
-                end if
-            end try
+                        repeat with candidateTitle in candidateTitles
+                            if itemTitle is (contents of candidateTitle) then
+                                perform action "AXPress" of uiItem
+                                return itemTitle
+                            end if
+                        end repeat
+                    end if
+                end try
+            end repeat
         end repeat
-    end repeat
+    end tell
 
     return ""
 end pressExactButtonInProcess
