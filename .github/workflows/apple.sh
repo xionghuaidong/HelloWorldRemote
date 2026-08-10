@@ -107,6 +107,14 @@ transaction_active=0
 user_keychain_changed=0
 user_password_changed=0
 kcpassword_changed=0
+root_login_keychain=""
+root_keychain_backup=""
+root_keychain_original_path=""
+old_root_keychain_password=""
+old_root_password=""
+root_keychain_password_changed=0
+root_keychain_replaced=0
+root_password_changed=0
 
 die() {
     echo "$*" >&2
@@ -397,6 +405,278 @@ finish_bootstrap_transaction() {
 
     bootstrap_temp_dir=""
     transaction_active=0
+}
+
+root_is_disabled() {
+    sudo /usr/bin/dscl . -read /Users/root AuthenticationAuthority 2>/dev/null |
+        /usr/bin/grep -q 'DisabledUser'
+}
+
+verify_root_password_hash() {
+    local candidate_password="$1"
+    local shadow_plist="$bootstrap_temp_dir/root-shadow-hash.plist"
+    local verification_status=1
+
+    if ! sudo /usr/bin/dscl -plist . -read /Users/root ShadowHashData >"$shadow_plist"; then
+        /bin/rm -f -- "$shadow_plist"
+        return 1
+    fi
+
+    /bin/chmod 0600 "$shadow_plist"
+
+    if printf '%s' "$candidate_password" | /usr/bin/python3 -c '
+import hashlib
+import hmac
+import plistlib
+import pathlib
+import sys
+
+outer = plistlib.loads(pathlib.Path(sys.argv[1]).read_bytes())
+values = None
+for key, value in outer.items():
+    if key.endswith("ShadowHashData"):
+        values = value
+        break
+if values is None:
+    raise SystemExit(1)
+if isinstance(values, list):
+    if not values:
+        raise SystemExit(1)
+    values = values[0]
+if not isinstance(values, bytes):
+    raise SystemExit(1)
+inner = plistlib.loads(values)
+hash_data = inner.get("SALTED-SHA512-PBKDF2")
+if not isinstance(hash_data, dict):
+    raise SystemExit(1)
+password_bytes = sys.stdin.buffer.read()
+derived = hashlib.pbkdf2_hmac(
+    "sha512",
+    password_bytes,
+    hash_data["salt"],
+    int(hash_data["iterations"]),
+    dklen=len(hash_data["entropy"]),
+)
+if not hmac.compare_digest(derived, hash_data["entropy"]):
+    raise SystemExit(1)
+' "$shadow_plist"
+    then
+        verification_status=0
+    fi
+
+    /bin/rm -f -- "$shadow_plist"
+    return "$verification_status"
+}
+
+find_root_login_keychain() {
+    root_login_keychain=""
+
+    if sudo /usr/bin/test -f /var/root/Library/Keychains/login.keychain-db; then
+        root_login_keychain="/var/root/Library/Keychains/login.keychain-db"
+    elif sudo /usr/bin/test -f /var/root/Library/Keychains/login.keychain; then
+        root_login_keychain="/var/root/Library/Keychains/login.keychain"
+    fi
+}
+
+root_keychain_unlocks() {
+    sudo /usr/bin/security unlock-keychain -p "$2" "$1" >/dev/null 2>&1
+}
+
+configure_root_keychain() {
+    local candidate
+    local decoded_original=""
+    local candidates=()
+
+    find_root_login_keychain
+
+    if [ -z "$root_login_keychain" ]; then
+        echo "No root login keychain exists; leaving it absent"
+        return 0
+    fi
+
+    if root_keychain_unlocks "$root_login_keychain" "$account_password"; then
+        echo "Root login keychain password already configured"
+        echo "root login keychain verified"
+        return 0
+    fi
+
+    if [ "$original_kcpassword_existed" -eq 1 ]; then
+        decoded_original="$(decode_kcpassword "$bootstrap_temp_dir/original-kcpassword")"
+    fi
+
+    candidates=("$old_root_password" "$old_account_password" "$old_keychain_password" "$decoded_original")
+
+    for candidate in "${candidates[@]}"; do
+        if [ -n "$candidate" ] &&
+            root_keychain_unlocks "$root_login_keychain" "$candidate"
+        then
+            old_root_keychain_password="$candidate"
+            break
+        fi
+    done
+
+    if [ -n "$old_root_keychain_password" ]; then
+        if ! sudo /usr/bin/security set-keychain-password \
+            -o "$old_root_keychain_password" -p "$account_password" "$root_login_keychain"
+        then
+            unset decoded_original candidate
+            return 1
+        fi
+
+        root_keychain_password_changed=1
+
+        if ! root_keychain_unlocks "$root_login_keychain" "$account_password"; then
+            unset decoded_original candidate
+            return 1
+        fi
+    else
+        root_keychain_original_path="$root_login_keychain"
+        root_keychain_backup="$bootstrap_temp_dir/root-login-keychain.backup"
+
+        if ! sudo /bin/mv "$root_login_keychain" "$root_keychain_backup"; then
+            unset decoded_original candidate
+            return 1
+        fi
+
+        root_keychain_replaced=1
+
+        if ! sudo /usr/bin/security create-keychain \
+            -p "$account_password" "$root_login_keychain" ||
+            ! sudo /usr/sbin/chown root:wheel "$root_login_keychain" ||
+            ! root_keychain_unlocks "$root_login_keychain" "$account_password"
+        then
+            unset decoded_original candidate
+            return 1
+        fi
+    fi
+
+    unset decoded_original candidate
+    echo "root login keychain verified"
+}
+
+rollback_root_keychain() {
+    local rollback_failed=0
+
+    if [ "$root_keychain_replaced" -eq 1 ]; then
+        if ! sudo /bin/rm -f -- "$root_keychain_original_path" ||
+            ! sudo /bin/mv "$root_keychain_backup" "$root_keychain_original_path"
+        then
+            echo "Failed to restore the original root login keychain" >&2
+            rollback_failed=1
+        else
+            root_keychain_replaced=0
+            root_keychain_backup=""
+        fi
+    elif [ "$root_keychain_password_changed" -eq 1 ]; then
+        if sudo /usr/bin/security set-keychain-password \
+            -o "$account_password" -p "$old_root_keychain_password" "$root_login_keychain" &&
+            root_keychain_unlocks "$root_login_keychain" "$old_root_keychain_password"
+        then
+            root_keychain_password_changed=0
+        else
+            echo "Failed to restore the root login keychain password" >&2
+            rollback_failed=1
+        fi
+    fi
+
+    return "$rollback_failed"
+}
+
+commit_root_keychain_backup() {
+    if [ "$root_keychain_replaced" -eq 1 ] && [ -n "$root_keychain_backup" ]; then
+        sudo /bin/rm -f -- "$root_keychain_backup"
+        root_keychain_replaced=0
+        root_keychain_backup=""
+    fi
+
+    root_keychain_password_changed=0
+}
+
+rollback_root_password() {
+    if [ "$root_password_changed" -eq 0 ]; then
+        return 0
+    fi
+
+    if [ -z "$old_root_password" ]; then
+        echo "The previous root password was not discoverable; root remains set to the requested password" >&2
+        return 1
+    fi
+
+    if sudo /usr/bin/dscl . -passwd /Users/root "$old_root_password" &&
+        verify_root_password_hash "$old_root_password" &&
+        root_is_disabled
+    then
+        root_password_changed=0
+        return 0
+    fi
+
+    echo "Failed to restore the previous disabled-root password" >&2
+    return 1
+}
+
+configure_root() {
+    local candidate
+    local decoded_original=""
+    local candidates=()
+
+    if ! root_is_disabled; then
+        echo "Root is not disabled before password configuration" >&2
+        return 1
+    fi
+
+    if [ "$original_kcpassword_existed" -eq 1 ]; then
+        decoded_original="$(decode_kcpassword "$bootstrap_temp_dir/original-kcpassword")"
+    fi
+
+    candidates=("$old_account_password" "$old_keychain_password" "$decoded_original")
+
+    if ! verify_root_password_hash "$account_password"; then
+        for candidate in "${candidates[@]}"; do
+            if [ -n "$candidate" ] && verify_root_password_hash "$candidate"; then
+                old_root_password="$candidate"
+                break
+            fi
+        done
+    fi
+
+    if ! configure_root_keychain; then
+        rollback_root_keychain || true
+        unset decoded_original candidate
+        return 1
+    fi
+
+    if verify_root_password_hash "$account_password"; then
+        echo "Root password already configured"
+    else
+        if ! sudo /usr/bin/dscl . -passwd /Users/root "$account_password"; then
+            rollback_root_keychain || true
+            unset decoded_original candidate
+            return 1
+        fi
+
+        root_password_changed=1
+
+        if ! verify_root_password_hash "$account_password"; then
+            echo "Root password hash did not accept the requested password" >&2
+            rollback_root_password || true
+            rollback_root_keychain || true
+            unset decoded_original candidate
+            return 1
+        fi
+    fi
+
+    echo "root password hash verified"
+
+    if ! root_is_disabled; then
+        echo "Root was enabled unexpectedly during password configuration" >&2
+        rollback_root_password || true
+        rollback_root_keychain || true
+        unset decoded_original candidate
+        return 1
+    fi
+
+    echo "root remains disabled"
+    unset decoded_original candidate
 }
 
 configure_host() {

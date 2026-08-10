@@ -115,5 +115,37 @@ class AccountTransactionContractTests(unittest.TestCase):
         self.assertIn('decode_kcpassword /etc/kcpassword', script)
 
 
+class RootSafetyContractTests(unittest.TestCase):
+    def test_script_never_enables_root_or_changes_sshd(self):
+        script = text(SCRIPT_PATH)
+        for token in ("dsenableroot", "PermitRootLogin", "sshd_config"):
+            self.assertNotIn(token, script)
+
+    def test_root_disabled_state_and_password_hash_are_verified(self):
+        script = text(SCRIPT_PATH)
+        for function_name in (
+            "root_is_disabled",
+            "verify_root_password_hash",
+            "configure_root",
+        ):
+            self.assertIn(f"{function_name}()", script)
+        self.assertIn("DisabledUser", script)
+        self.assertIn("SALTED-SHA512-PBKDF2", script)
+        self.assertIn("hashlib.pbkdf2_hmac", script)
+
+    def test_root_keychain_is_optional_transactional_and_cleaned(self):
+        script = text(SCRIPT_PATH)
+        for function_name in (
+            "find_root_login_keychain",
+            "rollback_root_keychain",
+            "commit_root_keychain_backup",
+        ):
+            self.assertIn(f"{function_name}()", script)
+        self.assertIn("root_keychain_backup", script)
+        self.assertIn(
+            "No root login keychain exists; leaving it absent", script
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
