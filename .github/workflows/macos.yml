@@ -94,6 +94,14 @@ jobs:
                 sleep 15
             done
 
+      - name: Wait connections
+        if: success() && env.UUREMOTE_DEBUG == '0'
+        shell: bash
+        run: |
+            timeout=300
+            echo "Waiting connections for $timeout seconds ..."
+            sleep $timeout
+
       - name: Upload permission screenshots
         if: always() && env.UUREMOTE_DEBUG != '0'
         uses: actions/upload-artifact@v4
