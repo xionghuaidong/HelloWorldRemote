@@ -1068,6 +1068,7 @@ on inspectPrompt(shouldPressAllow)
         repeat with promptWindow in windows of notificationProcess
             set contextText to my attributeText(promptWindow, "AXDescription")
             set allowButton to missing value
+            set openSettingsButton to missing value
 
             repeat with uiText in static texts of promptWindow
                 set textValue to my attributeText(uiText, "AXValue")
@@ -1078,17 +1079,19 @@ on inspectPrompt(shouldPressAllow)
                 set buttonTitle to my attributeText(uiButton, "AXTitle")
                 set buttonDescription to my attributeText(uiButton, "AXDescription")
 
-                -- The action is intentionally restricted to the exact English
-                -- Allow label; similarly named buttons are never pressed.
-                if buttonTitle is "Allow" or buttonDescription is "Allow" then
+                if buttonTitle is "Allow" or buttonDescription is "Allow" or buttonTitle is "允许" or buttonDescription is "允许" then
                     set allowButton to contents of uiButton
+                end if
+
+                if buttonTitle is "Open System Settings" or buttonDescription is "Open System Settings" or buttonTitle is "打开系统设置" or buttonDescription is "打开系统设置" then
+                    set openSettingsButton to contents of uiButton
                 end if
             end repeat
 
             ignoring case
-                if contextText contains "com.netease.uuremote.agent" and contextText contains "private window picker" then
-                    if shouldPressAllow and allowButton is missing value then
-                        return "MISSING_ALLOW|context=[" & contextText & "]"
+                if contextText contains "com.netease.uuremote.agent" then
+                    if allowButton is missing value or openSettingsButton is missing value then
+                        return "MISSING_STRUCTURE|context=[" & contextText & "]"
                     end if
 
                     if shouldPressAllow then perform action "AXPress" of allowButton
@@ -1111,7 +1114,7 @@ end repeat
 if promptDetails is "" then return "UURemote private window picker was not present during snapshot"
 
 set pressedDetails to my inspectPrompt(true)
-if pressedDetails starts with "MISSING_ALLOW|" then error "Matched the UURemote private window picker but its exact Allow button is missing: " & pressedDetails
+if pressedDetails starts with "MISSING_STRUCTURE|" then error "Matched the UURemote screen-sharing prompt but its recognized action structure is incomplete: " & pressedDetails
 if pressedDetails is "" then error "UURemote private window picker disappeared before its Allow button could be pressed"
 
 repeat 20 times
@@ -1507,19 +1510,26 @@ on pressExactButtonInProcess(targetProcess, candidateTitles)
     return ""
 end pressExactButtonInProcess
 
-on processHasWindowTitle(settingsProcess, desiredTitle)
+on processHasWindowTitle(settingsProcess, desiredTitles)
     tell application "System Events"
         set settingsWindows to windows of settingsProcess
 
         repeat with settingsWindow in settingsWindows
-            ignoring case
-                if my attributeText(settingsWindow, "AXTitle") is desiredTitle then return true
-            end ignoring
+            if my listContainsText(desiredTitles, my attributeText(settingsWindow, "AXTitle")) then return true
         end repeat
     end tell
 
     return false
 end processHasWindowTitle
+
+on isPasswordField(uiItem)
+    if my attributeText(uiItem, "AXRole") is not "AXTextField" then return false
+    set fieldDescription to my attributeText(uiItem, "AXDescription")
+    set fieldTitle to my attributeText(uiItem, "AXTitle")
+    if my listContainsText({"Password", "密码"}, fieldDescription) then return true
+    if my listContainsText({"Password", "密码"}, fieldTitle) then return true
+    return false
+end isPasswordField
 
 on visibleWindowDiagnostics()
     tell application "System Events"
@@ -1601,6 +1611,7 @@ on inspectPrivateWindowPickerPrompt(requesterText, shouldPressAllow)
 
                     repeat with processWindow in windows of appProcess
                         set allowButton to missing value
+                        set openSettingsButton to missing value
                         set contextText to my attributeText(processWindow, "AXDescription")
 
                         repeat with uiText in static texts of processWindow
@@ -1612,15 +1623,19 @@ on inspectPrivateWindowPickerPrompt(requesterText, shouldPressAllow)
                             set buttonTitle to my attributeText(uiButton, "AXTitle")
                             set buttonDescription to my attributeText(uiButton, "AXDescription")
 
-                            if buttonTitle is "Allow" or buttonDescription is "Allow" then
+                            if buttonTitle is "Allow" or buttonDescription is "Allow" or buttonTitle is "允许" or buttonDescription is "允许" then
                                 set allowButton to contents of uiButton
+                            end if
+
+                            if buttonTitle is "Open System Settings" or buttonDescription is "Open System Settings" or buttonTitle is "打开系统设置" or buttonDescription is "打开系统设置" then
+                                set openSettingsButton to contents of uiButton
                             end if
                         end repeat
 
                         ignoring case
-                            if contextText contains requesterText and contextText contains "private window picker" then
-                                if shouldPressAllow and allowButton is missing value then
-                                    return "MISSING_ALLOW|process=" & processName & "; context=[" & contextText & "]"
+                            if contextText contains requesterText then
+                                if allowButton is missing value or openSettingsButton is missing value then
+                                    return "MISSING_STRUCTURE|process=" & processName & "; context=[" & contextText & "]"
                                 end if
 
                                 if shouldPressAllow then
@@ -1640,7 +1655,7 @@ end inspectPrivateWindowPickerPrompt
 
 on dismissPrivateWindowScreenshotPrompt()
     set promptDetails to my inspectPrivateWindowPickerPrompt("bash", true)
-    if promptDetails starts with "MISSING_ALLOW|" then error "Matched the bash private window picker but its exact Allow button is missing: " & promptDetails
+    if promptDetails starts with "MISSING_STRUCTURE|" then error "Matched the bash screen-sharing prompt but its recognized action structure is incomplete: " & promptDetails
     return promptDetails
 end dismissPrivateWindowScreenshotPrompt
 
@@ -1672,7 +1687,7 @@ on dismissUURemotePrivateWindowPrompt(screenshotDirectory)
 
     set pressedDetails to my inspectPrivateWindowPickerPrompt("com.netease.uuremote.agent", true)
     if pressedDetails is "" then error "UURemote private window picker disappeared before its Allow button could be pressed"
-    if pressedDetails starts with "MISSING_ALLOW|" then error "Matched the UURemote private window picker but its exact Allow button is missing: " & pressedDetails
+    if pressedDetails starts with "MISSING_STRUCTURE|" then error "Matched the UURemote screen-sharing prompt but its recognized action structure is incomplete: " & pressedDetails
     my progressMessage("UURemote private window picker Allow pressed; " & pressedDetails)
 
     repeat 40 times
@@ -1734,7 +1749,7 @@ on emitScreenshot(captureLabel, screenshotDirectory)
     end if
 end emitScreenshot
 
-on ensurePermission(permissionURL, permissionWindowTitle, permissionLabel, screenshotPrefix, authorizationPassword, screenshotDirectory)
+on ensurePermission(permissionURL, permissionWindowTitles, permissionLabel, screenshotPrefix, authorizationPassword, screenshotDirectory)
     my progressMessage(permissionLabel & ": restarting System Settings for an isolated permission session")
     do shell script "/usr/bin/killall " & quoted form of "System Settings" & " >/dev/null 2>&1 || true"
     my settleDelay(2, 0.5)
@@ -1752,7 +1767,7 @@ on ensurePermission(permissionURL, permissionWindowTitle, permissionLabel, scree
             set settingsProcess to application process settingsProcessName
 
             if exists window 1 of settingsProcess then
-                if my attributeText(window 1 of settingsProcess, "AXTitle") is permissionWindowTitle then
+                if my listContainsText(permissionWindowTitles, my attributeText(window 1 of settingsProcess, "AXTitle")) then
                     set pageReady to true
                     exit repeat
                 end if
@@ -1811,7 +1826,7 @@ on ensurePermission(permissionURL, permissionWindowTitle, permissionLabel, scree
         my progressMessage(permissionLabel & ": add button identified")
         perform action "AXPress" of addButton
         my settleDelay(2, 0.5)
-        set fileChooserReady to my processHasWindowTitle(settingsProcess, "Open")
+        set fileChooserReady to my processHasWindowTitle(settingsProcess, {"Open", "打开"})
 
         if fileChooserReady is false then
             my progressMessage(permissionLabel & ": submitting the default Modify Settings confirmation")
@@ -1831,7 +1846,7 @@ on ensurePermission(permissionURL, permissionWindowTitle, permissionLabel, scree
                 try
                     set focusedItem to value of attribute "AXFocusedUIElement" of settingsProcess
 
-                    if my attributeText(focusedItem, "AXRole") is "AXTextField" and my attributeText(focusedItem, "AXDescription") is "Password" then
+                    if my isPasswordField(focusedItem) then
                         set authenticationField to focusedItem
                         exit repeat
                     end if
@@ -1857,7 +1872,7 @@ on ensurePermission(permissionURL, permissionWindowTitle, permissionLabel, scree
         end if
 
         repeat 80 times
-            if my processHasWindowTitle(settingsProcess, "Open") then
+            if my processHasWindowTitle(settingsProcess, {"Open", "打开"}) then
                 set fileChooserReady to true
                 exit repeat
             end if
@@ -1899,13 +1914,13 @@ on ensurePermission(permissionURL, permissionWindowTitle, permissionLabel, scree
         repeat with submissionNumber from 1 to 12
             key code 36
             my settleDelay(1, 0.25)
-            set openWindowPresent to my processHasWindowTitle(settingsProcess, "Open")
+            set openWindowPresent to my processHasWindowTitle(settingsProcess, {"Open", "打开"})
             my progressMessage(permissionLabel & ": file chooser submission " & submissionNumber & "; openWindowPresent=" & openWindowPresent)
 
             if openWindowPresent is false then exit repeat
         end repeat
 
-        if my processHasWindowTitle(settingsProcess, "Open") then
+        if my processHasWindowTitle(settingsProcess, {"Open", "打开"}) then
             error permissionLabel & ": the file chooser remained open after 12 submissions. Windows: " & my visibleWindowDiagnostics()
         end if
 
@@ -1968,7 +1983,7 @@ on ensurePermission(permissionURL, permissionWindowTitle, permissionLabel, scree
 
     set restartButtonTitle to ""
     repeat 20 times
-        set restartButtonTitle to my pressExactButtonInProcess(settingsProcess, {"Quit & Reopen", "Quit and Reopen"})
+        set restartButtonTitle to my pressExactButtonInProcess(settingsProcess, {"Quit & Reopen", "Quit and Reopen", "退出并重新打开"})
         if restartButtonTitle is not "" then exit repeat
         delay 0.25
     end repeat
@@ -1987,7 +2002,7 @@ on ensurePermission(permissionURL, permissionWindowTitle, permissionLabel, scree
         try
             set focusedItem to value of attribute "AXFocusedUIElement" of settingsProcess
 
-            if my attributeText(focusedItem, "AXRole") is "AXTextField" and my attributeText(focusedItem, "AXDescription") is "Password" then
+            if my isPasswordField(focusedItem) then
                 set authenticationField to focusedItem
                 exit repeat
             end if
@@ -2012,7 +2027,7 @@ on ensurePermission(permissionURL, permissionWindowTitle, permissionLabel, scree
             try
                 set focusedItem to value of attribute "AXFocusedUIElement" of settingsProcess
 
-                if my attributeText(focusedItem, "AXRole") is not "AXTextField" or my attributeText(focusedItem, "AXDescription") is not "Password" then
+                if my isPasswordField(focusedItem) is false then
                     exit repeat
                 end if
             on error
@@ -2025,7 +2040,7 @@ on ensurePermission(permissionURL, permissionWindowTitle, permissionLabel, scree
         try
             set focusedItem to value of attribute "AXFocusedUIElement" of settingsProcess
 
-            if my attributeText(focusedItem, "AXRole") is "AXTextField" and my attributeText(focusedItem, "AXDescription") is "Password" then
+            if my isPasswordField(focusedItem) then
                 error permissionLabel & ": administrator authorization remained open after password submission"
             end if
         end try
@@ -2074,7 +2089,7 @@ on ensurePermission(permissionURL, permissionWindowTitle, permissionLabel, scree
             set settingsProcess to application process settingsProcessName
 
             if exists window 1 of settingsProcess then
-                if my attributeText(window 1 of settingsProcess, "AXTitle") is permissionWindowTitle then
+                if my listContainsText(permissionWindowTitles, my attributeText(window 1 of settingsProcess, "AXTitle")) then
                     set persistedPageReady to true
                     exit repeat
                 end if
@@ -2132,7 +2147,7 @@ on run argv
         set targetApplicationNames to {"UU远程", "UURemote", "UU Remote", "网易UU远程", "网易 UU 远程"}
         return my ensurePermission(¬
             "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility", ¬
-            "Accessibility", ¬
+            {"Accessibility", "辅助功能"}, ¬
             "Accessibility (UURemote)", ¬
             "accessibility-main", ¬
             authorizationPassword, ¬
@@ -2141,7 +2156,7 @@ on run argv
         set targetApplicationNames to {"UU远程", "UURemote", "UU Remote", "网易UU远程", "网易 UU 远程"}
         return my ensurePermission(¬
             "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture", ¬
-            "Screen & System Audio Recording", ¬
+            {"Screen & System Audio Recording", "录屏与系统录音"}, ¬
             "Screen & System Audio Recording", ¬
             "screen-capture", ¬
             authorizationPassword, ¬

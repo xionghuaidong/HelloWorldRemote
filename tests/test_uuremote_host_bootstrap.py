@@ -179,5 +179,33 @@ class LocaleContractTests(unittest.TestCase):
         )
 
 
+class BilingualPermissionContractTests(unittest.TestCase):
+    def test_permission_vocabulary_contains_english_and_chinese(self):
+        script = text(SCRIPT_PATH)
+        for english, chinese in (
+            ("Accessibility", "辅助功能"),
+            ("Screen & System Audio Recording", "录屏与系统录音"),
+            ("Allow", "允许"),
+            ("Open System Settings", "打开系统设置"),
+        ):
+            self.assertIn(english, script)
+            self.assertIn(chinese, script)
+
+    def test_private_picker_requires_bundle_id_and_two_known_actions(self):
+        script = text(SCRIPT_PATH)
+        self.assertIn("com.netease.uuremote.agent", script)
+        self.assertIn("allowButton", script)
+        self.assertIn("openSettingsButton", script)
+        self.assertNotIn('contextText contains "private window picker"', script)
+
+    def test_server_is_not_a_permission_target(self):
+        script = text(SCRIPT_PATH)
+        permission_calls = re.findall(r"^run_permission ([^\n]+)$", script, re.MULTILINE)
+        self.assertEqual(
+            permission_calls,
+            ["accessibility-main", "screen-capture", "agent-private-picker"],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
