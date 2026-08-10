@@ -4,6 +4,111 @@ set -euo pipefail
 APP="/Applications/UURemote.app"
 CLI="$APP/Contents/Helpers/uuyc-cli"
 mode="${1:-configure}"
+
+encode_kcpassword() {
+    local output_path="$1"
+
+    /usr/bin/python3 -c '
+import pathlib
+import sys
+
+key = bytes((0x7D, 0x89, 0x52, 0x23, 0xD2, 0xBC, 0xDD, 0xEA, 0xA3, 0xB9, 0x1F))
+plain = sys.stdin.buffer.read()
+padded_length = ((len(plain) + 12) // 12) * 12
+plain += b"\0" * (padded_length - len(plain))
+encoded = bytes(value ^ key[index % len(key)] for index, value in enumerate(plain))
+pathlib.Path(sys.argv[1]).write_bytes(encoded)
+' "$output_path"
+}
+
+decode_kcpassword() {
+    local input_path="$1"
+
+    if [ -r "$input_path" ]; then
+        /bin/cat "$input_path"
+    else
+        sudo /bin/cat "$input_path"
+    fi | /usr/bin/python3 -c '
+import sys
+
+key = bytes((0x7D, 0x89, 0x52, 0x23, 0xD2, 0xBC, 0xDD, 0xEA, 0xA3, 0xB9, 0x1F))
+encoded = sys.stdin.buffer.read()
+decoded = bytes(value ^ key[index % len(key)] for index, value in enumerate(encoded))
+sys.stdout.buffer.write(decoded.split(b"\0", 1)[0])
+'
+}
+
+self_test_kcpassword() {
+    local codec_temp_dir
+    local encoded_path
+    local encoded_hex
+    local decoded_value
+    local index
+    local sample
+    local samples=(
+        "john.doe"
+        'space and $hell!'
+        "12345678901"
+        "123456789012"
+        "1234567890123"
+        "密码-SG"
+    )
+    local vector_passwords=("john.doe" "123456789012" "密码-SG")
+    local vector_hex=(
+        "17e63a4dfcd8b28fa3b91f7d"
+        "4cbb6117e78aead29a892e4f895223d2bcddeaa3b91f7d89"
+        "9826d4c4723df0b9e4b91f7d"
+    )
+
+    codec_temp_dir="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/uuremote-kcpassword-test.XXXXXX")"
+    encoded_path="$codec_temp_dir/kcpassword"
+
+    for sample in "${samples[@]}"; do
+        printf '%s' "$sample" | encode_kcpassword "$encoded_path"
+
+        if ! decoded_value="$(decode_kcpassword "$encoded_path")"; then
+            /bin/rm -rf -- "$codec_temp_dir"
+            echo "kcpassword codec self-test could not decode a sample" >&2
+            return 1
+        fi
+
+        if [ "$decoded_value" != "$sample" ]; then
+            /bin/rm -rf -- "$codec_temp_dir"
+            echo "kcpassword codec self-test round trip failed" >&2
+            return 1
+        fi
+    done
+
+    for index in 0 1 2; do
+        printf '%s' "${vector_passwords[$index]}" | encode_kcpassword "$encoded_path"
+        encoded_hex="$(/usr/bin/python3 -c 'import pathlib, sys; print(pathlib.Path(sys.argv[1]).read_bytes().hex())' "$encoded_path")"
+
+        if [ "$encoded_hex" != "${vector_hex[$index]}" ]; then
+            /bin/rm -rf -- "$codec_temp_dir"
+            echo "kcpassword codec self-test known vector failed" >&2
+            return 1
+        fi
+    done
+
+    /bin/rm -rf -- "$codec_temp_dir"
+    echo "kcpassword codec self-test passed"
+}
+
+configure_host() {
+    echo "Host bootstrap implementation is incomplete" >&2
+    return 1
+}
+
+if [ "$mode" = "self-test-kcpassword" ]; then
+    self_test_kcpassword
+    exit 0
+fi
+
+if [ "$mode" = "configure-host" ]; then
+    configure_host
+    exit 0
+fi
+
 debug_level="${UUREMOTE_DEBUG:-0}"
 evidence_dir="${RUNNER_TEMP:-/tmp}/uuremote-permission-screenshots"
 diagnostic_log="$evidence_dir/diagnostics.log"
@@ -305,16 +410,7 @@ if [ ! -f /etc/kcpassword ]; then
     exit 1
 fi
 
-runner_password="$(
-    sudo /usr/bin/python3 -c '
-import sys
-key = bytes([0x7D, 0x89, 0x52, 0x23, 0xD2, 0xBC, 0xDD, 0xEA, 0xA3, 0xB9, 0x1F])
-with open("/etc/kcpassword", "rb") as password_file:
-    encoded = password_file.read()
-decoded = bytes(value ^ key[index % len(key)] for index, value in enumerate(encoded))
-sys.stdout.buffer.write(decoded.rstrip(b"\0"))
-'
-)"
+runner_password="$(decode_kcpassword /etc/kcpassword)"
 
 if [ -z "$runner_password" ]; then
     echo "Could not decode the automatic-login password" >&2

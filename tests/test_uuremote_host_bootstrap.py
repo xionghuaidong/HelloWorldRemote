@@ -61,5 +61,27 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertNotIn("configure-host", block)
 
 
+class ScriptRoutingAndCodecTests(unittest.TestCase):
+    def test_configure_host_is_dispatched_before_uuremote_app_preflight(self):
+        script = text(SCRIPT_PATH)
+        dispatch_marker = 'if [ "$mode" = "configure-host" ]'
+        self.assertIn(dispatch_marker, script)
+        self.assertLess(
+            script.index(dispatch_marker),
+            script.index('if [ ! -d "$APP" ]'),
+        )
+
+    def test_codec_self_test_is_side_effect_free_and_passes(self):
+        completed = subprocess.run(
+            ["/bin/bash", str(SCRIPT_PATH), "self-test-kcpassword"],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(completed.stdout.strip(), "kcpassword codec self-test passed")
+
+
 if __name__ == "__main__":
     unittest.main()
