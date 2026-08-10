@@ -475,9 +475,7 @@ end findAddButton
 
 on pressExactButtonInProcess(targetProcess, candidateTitles)
     repeat with processWindow in windows of targetProcess
-        set processItems to entire contents of processWindow
-
-        repeat with uiItem in processItems
+        repeat with uiItem in buttons of processWindow
             try
                 if my attributeText(uiItem, "AXRole") is "AXButton" then
                     set itemTitle to my attributeText(uiItem, "AXTitle")
