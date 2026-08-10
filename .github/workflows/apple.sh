@@ -938,10 +938,26 @@ on ensurePermission(permissionURL, permissionWindowTitle, permissionLabel, scree
             my settleDelay(5, 0.5)
             my progressMessage(permissionLabel & ": windows after Modify Settings: " & my visibleWindowDiagnostics())
 
-            set authenticationField to value of attribute "AXFocusedUIElement" of settingsProcess
+            -- The authorization sheet can become visible before its password
+            -- field receives keyboard focus. Wait on the actual UI condition
+            -- so fast mode returns immediately when ready without racing it.
+            set authenticationField to missing value
 
-            if my attributeText(authenticationField, "AXRole") is not "AXTextField" or my attributeText(authenticationField, "AXDescription") is not "Password" then
-                error permissionLabel & ": the system authentication password field does not have keyboard focus"
+            repeat 40 times
+                try
+                    set focusedItem to value of attribute "AXFocusedUIElement" of settingsProcess
+
+                    if my attributeText(focusedItem, "AXRole") is "AXTextField" and my attributeText(focusedItem, "AXDescription") is "Password" then
+                        set authenticationField to focusedItem
+                        exit repeat
+                    end if
+                end try
+
+                delay 0.25
+            end repeat
+
+            if authenticationField is missing value then
+                error permissionLabel & ": the system authentication password field did not receive keyboard focus. Windows: " & my visibleWindowDiagnostics()
             end if
 
             set value of authenticationField to authorizationPassword
