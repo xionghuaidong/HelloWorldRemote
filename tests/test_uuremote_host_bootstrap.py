@@ -138,6 +138,9 @@ class RootSafetyContractTests(unittest.TestCase):
         self.assertIn("authentication_authorities is None", script)
         self.assertIn("plistlib.loads", script)
         self.assertIn("bytes.fromhex", script)
+        self.assertIn("ensure_root_disabled_authentication()", script)
+        self.assertIn(";DisabledUser;", script)
+        self.assertIn("original_root_shadow_hash_existed", script)
         self.assertIn("SALTED-SHA512-PBKDF2", script)
         self.assertIn("hashlib.pbkdf2_hmac", script)
 

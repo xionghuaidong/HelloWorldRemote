@@ -115,6 +115,8 @@ old_root_password=""
 root_keychain_password_changed=0
 root_keychain_replaced=0
 root_password_changed=0
+original_root_shadow_hash_existed=0
+original_root_authentication_authority_existed=0
 
 die() {
     echo "$*" >&2
@@ -209,6 +211,14 @@ begin_bootstrap_transaction() {
         sudo /bin/cp -p /etc/kcpassword "$bootstrap_temp_dir/original-kcpassword"
     else
         original_kcpassword_existed=0
+    fi
+
+    if sudo /usr/bin/dscl . -read /Users/root ShadowHashData >/dev/null 2>&1; then
+        original_root_shadow_hash_existed=1
+    fi
+
+    if sudo /usr/bin/dscl . -read /Users/root AuthenticationAuthority >/dev/null 2>&1; then
+        original_root_authentication_authority_existed=1
     fi
 
     transaction_active=1
@@ -444,6 +454,16 @@ raise SystemExit(1)
 '
 }
 
+ensure_root_disabled_authentication() {
+    if root_is_disabled; then
+        return 0
+    fi
+
+    sudo /usr/bin/dscl . -append /Users/root \
+        AuthenticationAuthority ';DisabledUser;' &&
+        root_is_disabled
+}
+
 verify_root_password_hash() {
     local candidate_password="$1"
     local shadow_plist="$bootstrap_temp_dir/root-shadow-hash.plist"
@@ -642,6 +662,27 @@ rollback_root_password() {
         return 0
     fi
 
+    if [ -z "$old_root_password" ] &&
+        [ "$original_root_shadow_hash_existed" -eq 0 ]
+    then
+        sudo /usr/bin/dscl . -delete /Users/root ShadowHashData >/dev/null 2>&1 || true
+
+        if [ "$original_root_authentication_authority_existed" -eq 0 ]; then
+            sudo /usr/bin/dscl . -delete /Users/root AuthenticationAuthority \
+                >/dev/null 2>&1 || true
+        fi
+
+        if root_is_disabled &&
+            ! sudo /usr/bin/dscl . -read /Users/root ShadowHashData >/dev/null 2>&1
+        then
+            root_password_changed=0
+            return 0
+        fi
+
+        echo "Failed to restore the original passwordless disabled-root state" >&2
+        return 1
+    fi
+
     if [ -z "$old_root_password" ]; then
         echo "The previous root password was not discoverable; root remains set to the requested password" >&2
         return 1
@@ -700,6 +741,14 @@ configure_root() {
         fi
 
         root_password_changed=1
+
+        if ! ensure_root_disabled_authentication; then
+            echo "Could not restore disabled-root authentication after setting its password" >&2
+            rollback_root_password || true
+            rollback_root_keychain || true
+            unset decoded_original candidate
+            return 1
+        fi
 
         if ! verify_root_password_hash "$account_password"; then
             echo "Root password hash did not accept the requested password" >&2
