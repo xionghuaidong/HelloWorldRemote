@@ -399,6 +399,12 @@ rollback_console_user_transaction() {
 }
 
 finish_bootstrap_transaction() {
+    if [ "$root_keychain_replaced" -eq 1 ]; then
+        echo "Preserving transaction directory because the root keychain backup still requires recovery: $bootstrap_temp_dir" >&2
+        transaction_active=0
+        return 1
+    fi
+
     if [ -n "$bootstrap_temp_dir" ] && [ -d "$bootstrap_temp_dir" ]; then
         sudo /bin/rm -rf -- "$bootstrap_temp_dir"
     fi
@@ -679,9 +685,210 @@ configure_root() {
     unset decoded_original candidate
 }
 
+language_settings_match() {
+    local expected_first_language="$1"
+
+    run_as_console_user /usr/bin/defaults export NSGlobalDomain - 2>/dev/null |
+        /usr/bin/python3 -c '
+import plistlib
+import sys
+
+expected_first = sys.argv[1]
+preferences = plistlib.loads(sys.stdin.buffer.read())
+languages = preferences.get("AppleLanguages")
+locale = preferences.get("AppleLocale")
+measurement = preferences.get("AppleMeasurementUnits")
+metric = preferences.get("AppleMetricUnits")
+
+if languages != [expected_first, "en-SG"]:
+    raise SystemExit(1)
+if locale != "zh_SG":
+    raise SystemExit(1)
+if measurement != "Centimeters":
+    raise SystemExit(1)
+if metric not in (True, 1):
+    raise SystemExit(1)
+' "$expected_first_language"
+}
+
+dismiss_safe_restart_prompt() {
+    local prompt_result
+
+    if ! prompt_result="$(run_as_console_user /usr/bin/osascript <<'APPLESCRIPT'
+on attributeText(uiItem, attributeName)
+    tell application "System Events"
+        try
+            set attributeValue to value of attribute attributeName of uiItem
+            if attributeValue is not missing value then return attributeValue as text
+        end try
+    end tell
+    return ""
+end attributeText
+
+on isRestartContext(contextText)
+    ignoring case
+        if contextText contains "restart" then return true
+        if contextText contains "log out" then return true
+    end ignoring
+
+    if contextText contains "重新启动" then return true
+    if contextText contains "重启" then return true
+    if contextText contains "退出登录" then return true
+    return false
+end isRestartContext
+
+on inspectProcess(processName)
+    tell application "System Events"
+        if not (exists application process processName) then return "NONE"
+        set targetProcess to application process processName
+
+        repeat with targetWindow in windows of targetProcess
+            set contextText to my attributeText(targetWindow, "AXTitle") & " " & my attributeText(targetWindow, "AXDescription")
+
+            repeat with uiText in static texts of targetWindow
+                set contextText to contextText & " " & my attributeText(uiText, "AXValue")
+            end repeat
+
+            if my isRestartContext(contextText) then
+                set safeButton to missing value
+                set safeTitle to ""
+
+                repeat with uiButton in buttons of targetWindow
+                    set buttonTitle to my attributeText(uiButton, "AXTitle")
+                    set buttonDescription to my attributeText(uiButton, "AXDescription")
+
+                    repeat with acceptedTitle in {"Not Now", "Later", "Restart Later", "稍后", "暂不", "以后再说"}
+                        set acceptedText to contents of acceptedTitle as text
+                        if buttonTitle is acceptedText or buttonDescription is acceptedText then
+                            set safeButton to contents of uiButton
+                            set safeTitle to acceptedText
+                            exit repeat
+                        end if
+                    end repeat
+                end repeat
+
+                if safeButton is missing value then return "UNSAFE|" & contextText
+                perform action "AXPress" of safeButton
+                return "DISMISSED|" & safeTitle
+            end if
+        end repeat
+    end tell
+
+    return "NONE"
+end inspectProcess
+
+repeat 8 times
+    repeat with processName in {"System Settings", "UserNotificationCenter"}
+        set inspectionResult to my inspectProcess(contents of processName as text)
+        if inspectionResult starts with "DISMISSED|" then return inspectionResult
+        if inspectionResult starts with "UNSAFE|" then error "Restart-related dialog has no recognized safe negative action: " & inspectionResult
+    end repeat
+    delay 0.25
+end repeat
+
+return "No restart-related prompt appeared"
+APPLESCRIPT
+)"; then
+        echo "Could not safely dismiss the language or region restart prompt" >&2
+        return 1
+    fi
+
+    echo "$prompt_result"
+}
+
+configure_language_and_region() {
+    local effective_first_language
+    local language_or_region_changed=0
+
+    if language_settings_match "zh-Hans-SG"; then
+        effective_first_language="zh-Hans-SG"
+        echo "Language and region settings already configured"
+    elif language_settings_match "zh-Hans-CN"; then
+        effective_first_language="zh-Hans-CN"
+        echo "Language and region settings already configured with the supported fallback"
+    else
+        language_or_region_changed=1
+        run_as_console_user /usr/bin/defaults write NSGlobalDomain AppleLanguages \
+            -array "zh-Hans-SG" "en-SG"
+        run_as_console_user /usr/bin/defaults write NSGlobalDomain AppleLocale \
+            -string "zh_SG"
+        run_as_console_user /usr/bin/defaults write NSGlobalDomain AppleMeasurementUnits \
+            -string "Centimeters"
+        run_as_console_user /usr/bin/defaults write NSGlobalDomain AppleMetricUnits \
+            -bool true
+
+        if language_settings_match "zh-Hans-SG"; then
+            effective_first_language="zh-Hans-SG"
+        else
+            run_as_console_user /usr/bin/defaults write NSGlobalDomain AppleLanguages \
+                -array "zh-Hans-CN" "en-SG"
+
+            if ! language_settings_match "zh-Hans-CN"; then
+                echo "Could not verify Simplified Chinese, English Singapore, and Singapore region settings" >&2
+                return 1
+            fi
+
+            effective_first_language="zh-Hans-CN"
+        fi
+    fi
+
+    echo "language order verified: $effective_first_language, en-SG"
+    echo "Singapore locale and region verified: zh_SG"
+
+    if [ "$language_or_region_changed" = "1" ]; then
+        dismiss_safe_restart_prompt
+    fi
+}
+
+rollback_host_transaction_on_exit() {
+    local exit_status="$1"
+    trap - EXIT
+
+    if [ "$exit_status" -ne 0 ] && [ "$transaction_active" -eq 1 ]; then
+        echo "Host bootstrap failed; rolling back credential changes" >&2
+        rollback_root_password || true
+        rollback_root_keychain || true
+        rollback_console_user_transaction || true
+        finish_bootstrap_transaction || true
+    fi
+
+    unset account_password old_account_password old_keychain_password
+    unset old_root_password old_root_keychain_password UUREMOTE_ACCOUNT_PASSWORD
+    exit "$exit_status"
+}
+
 configure_host() {
-    echo "Host bootstrap implementation is incomplete" >&2
-    return 1
+    account_password="${UUREMOTE_ACCOUNT_PASSWORD:-}"
+
+    if [ -z "$account_password" ]; then
+        die "UUREMOTE_ACCOUNT_PASSWORD is required"
+        return 1
+    fi
+
+    unset UUREMOTE_ACCOUNT_PASSWORD
+    resolve_console_account
+    find_user_login_keychain
+    begin_bootstrap_transaction
+    trap 'rollback_host_transaction_on_exit $?' EXIT
+
+    echo "=== Configuring console account ==="
+    configure_console_user
+    echo "=== Configuring disabled root account ==="
+    configure_root
+    echo "=== Configuring language and region ==="
+    configure_language_and_region
+
+    commit_root_keychain_backup
+    root_password_changed=0
+    user_keychain_changed=0
+    user_password_changed=0
+    kcpassword_changed=0
+    finish_bootstrap_transaction
+    trap - EXIT
+
+    unset account_password old_account_password old_keychain_password
+    unset old_root_password old_root_keychain_password
+    echo "macOS host bootstrap completed"
 }
 
 if [ "$mode" = "self-test-kcpassword" ]; then

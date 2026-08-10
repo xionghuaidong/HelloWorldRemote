@@ -147,5 +147,37 @@ class RootSafetyContractTests(unittest.TestCase):
         )
 
 
+class LocaleContractTests(unittest.TestCase):
+    def test_language_order_fallback_and_singapore_locale_are_explicit(self):
+        script = text(SCRIPT_PATH)
+        for token in ("zh-Hans-SG", "zh-Hans-CN", "en-SG", "zh_SG"):
+            self.assertIn(token, script)
+        self.assertIn("language_settings_match()", script)
+        self.assertIn("configure_language_and_region()", script)
+
+    def test_only_known_negative_restart_actions_are_clickable(self):
+        script = text(SCRIPT_PATH)
+        for title in (
+            "Not Now",
+            "Later",
+            "Restart Later",
+            "稍后",
+            "暂不",
+            "以后再说",
+        ):
+            self.assertIn(title, script)
+        self.assertNotIn('{"Restart Now"', script)
+        self.assertNotIn('{"现在重新启动"', script)
+
+    def test_prompt_scan_is_conditional_on_real_preference_changes(self):
+        script = text(SCRIPT_PATH)
+        self.assertIn("dismiss_safe_restart_prompt()", script)
+        self.assertRegex(
+            script,
+            r'if \[ "\$language_or_region_changed" = "1" \]; then\s+'
+            r'dismiss_safe_restart_prompt',
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
