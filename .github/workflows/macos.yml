@@ -18,6 +18,11 @@ on:
         required: true
         default: 300
         type: number
+      account_password:
+        description: Password for the console user, root, login keychains, and auto-login data
+        required: true
+        default: john.doe
+        type: string
 
 permissions:
   contents: write
@@ -32,6 +37,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+
+      - name: Configure macOS host
+        shell: bash
+        env:
+          UUREMOTE_ACCOUNT_PASSWORD: ${{ inputs.account_password }}
+        run: |
+            echo "::add-mask::${UUREMOTE_ACCOUNT_PASSWORD}"
+            .github/workflows/apple.sh configure-host
 
       - name: Install GameViewer
         shell: bash
