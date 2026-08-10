@@ -189,7 +189,7 @@ user_keychain_unlocks() {
 kcpassword_matches() {
     local decoded_password
 
-    if ! sudo /usr/bin/test -f /etc/kcpassword; then
+    if ! sudo /bin/test -f /etc/kcpassword; then
         return 1
     fi
 
@@ -204,7 +204,7 @@ begin_bootstrap_transaction() {
     bootstrap_temp_dir="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/uuremote-bootstrap.XXXXXX")"
     /bin/chmod 0700 "$bootstrap_temp_dir"
 
-    if sudo /usr/bin/test -f /etc/kcpassword; then
+    if sudo /bin/test -f /etc/kcpassword; then
         original_kcpassword_existed=1
         sudo /bin/cp -p /etc/kcpassword "$bootstrap_temp_dir/original-kcpassword"
     else
@@ -477,9 +477,9 @@ if not hmac.compare_digest(derived, hash_data["entropy"]):
 find_root_login_keychain() {
     root_login_keychain=""
 
-    if sudo /usr/bin/test -f /var/root/Library/Keychains/login.keychain-db; then
+    if sudo /bin/test -f /var/root/Library/Keychains/login.keychain-db; then
         root_login_keychain="/var/root/Library/Keychains/login.keychain-db"
-    elif sudo /usr/bin/test -f /var/root/Library/Keychains/login.keychain; then
+    elif sudo /bin/test -f /var/root/Library/Keychains/login.keychain; then
         root_login_keychain="/var/root/Library/Keychains/login.keychain"
     fi
 }

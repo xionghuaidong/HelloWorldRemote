@@ -40,11 +40,20 @@ jobs:
 
       - name: Configure macOS host
         shell: bash
-        env:
-          UUREMOTE_ACCOUNT_PASSWORD: ${{ inputs.account_password }}
         run: |
-            echo "::add-mask::${UUREMOTE_ACCOUNT_PASSWORD}"
+            account_password="$(
+                /usr/bin/python3 -c '
+            import json
+            import os
+
+            with open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8") as event_file:
+                print(json.load(event_file)["inputs"]["account_password"], end="")
+            '
+            )"
+            echo "::add-mask::${account_password}"
+            export UUREMOTE_ACCOUNT_PASSWORD="$account_password"
             .github/workflows/apple.sh configure-host
+            unset UUREMOTE_ACCOUNT_PASSWORD account_password
 
       - name: Install GameViewer
         shell: bash

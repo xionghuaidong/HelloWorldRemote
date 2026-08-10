@@ -49,10 +49,10 @@ class WorkflowContractTests(unittest.TestCase):
 
         self.assertIn("      - name: Configure macOS host", workflow)
         block = step_block(workflow, "Configure macOS host")
-        self.assertIn(
-            "UUREMOTE_ACCOUNT_PASSWORD: ${{ inputs.account_password }}", block
-        )
+        self.assertNotIn("inputs.account_password", block)
+        self.assertIn("GITHUB_EVENT_PATH", block)
         self.assertIn("::add-mask::", block)
+        self.assertIn('export UUREMOTE_ACCOUNT_PASSWORD="$account_password"', block)
         self.assertIn(".github/workflows/apple.sh configure-host", block)
 
     def test_permission_idempotency_does_not_repeat_host_configuration(self):
@@ -84,6 +84,11 @@ class ScriptRoutingAndCodecTests(unittest.TestCase):
 
 
 class AccountTransactionContractTests(unittest.TestCase):
+    def test_macos_uses_the_available_test_binary(self):
+        script = text(SCRIPT_PATH)
+        self.assertNotIn("/usr/bin/test", script)
+        self.assertIn("/bin/test", script)
+
     def test_console_account_is_discovered_without_runner_or_home_shortcuts(self):
         script = text(SCRIPT_PATH)
         self.assertIn("resolve_console_account()", script)
