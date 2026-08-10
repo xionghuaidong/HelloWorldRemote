@@ -840,18 +840,140 @@ on ensurePermission(permissionURL, permissionWindowTitle, permissionLabel, scree
     perform action "AXPress" of targetSwitch
     my progressMessage(permissionLabel & ": permission switch pressed")
 
+    -- On macOS 26 the switch can appear on before the administrator sheet is
+    -- completed. Treating that transient visual state as success leaves the
+    -- TCC row denied (auth_value=0), so explicitly complete the sheet first.
+    delay 2
+    my emitScreenshot(screenshotPrefix & "-after-switch-pressed", screenshotDirectory)
+    set authenticationField to missing value
+
+    repeat 40 times
+        try
+            set focusedItem to value of attribute "AXFocusedUIElement" of settingsProcess
+
+            if my attributeText(focusedItem, "AXRole") is "AXTextField" and my attributeText(focusedItem, "AXDescription") is "Password" then
+                set authenticationField to focusedItem
+                exit repeat
+            end if
+        end try
+
+        delay 0.25
+    end repeat
+
+    if authenticationField is not missing value then
+        my progressMessage(permissionLabel & ": administrator authorization required after toggling permission")
+        set value of authenticationField to authorizationPassword
+
+        if my attributeText(authenticationField, "AXValue") is "" then
+            error permissionLabel & ": the post-toggle authentication password field remained empty"
+        end if
+
+        delay 1
+        key code 36
+        my progressMessage(permissionLabel & ": administrator authorization submitted after toggling permission")
+
+        repeat 80 times
+            try
+                set focusedItem to value of attribute "AXFocusedUIElement" of settingsProcess
+
+                if my attributeText(focusedItem, "AXRole") is not "AXTextField" or my attributeText(focusedItem, "AXDescription") is not "Password" then
+                    exit repeat
+                end if
+            on error
+                exit repeat
+            end try
+
+            delay 0.25
+        end repeat
+
+        try
+            set focusedItem to value of attribute "AXFocusedUIElement" of settingsProcess
+
+            if my attributeText(focusedItem, "AXRole") is "AXTextField" and my attributeText(focusedItem, "AXDescription") is "Password" then
+                error permissionLabel & ": administrator authorization remained open after password submission"
+            end if
+        end try
+
+        my emitScreenshot(screenshotPrefix & "-after-authentication", screenshotDirectory)
+    else
+        my progressMessage(permissionLabel & ": no administrator authorization sheet appeared after toggling permission")
+    end if
+
     repeat 40 times
         if my switchIsEnabled(targetSwitch) then
             my progressMessage(permissionLabel & ": permission switch is on")
             my progressMessage(permissionLabel & ": state after action: " & my outlineDiagnostics(permissionOutline))
             my emitScreenshot(screenshotPrefix & "-after-enabled", screenshotDirectory)
-            return "UURemote " & permissionLabel & " permission enabled"
+            exit repeat
         end if
 
         delay 0.25
     end repeat
 
+    if my switchIsEnabled(targetSwitch) is false then
         error permissionLabel & ": UURemote switch was pressed but did not turn on. Rows: " & my outlineDiagnostics(permissionOutline)
+    end if
+
+    -- A visual on-state is not sufficient: restart System Settings and read
+    -- the row again so the script only succeeds after TCC has persisted it.
+    my progressMessage(permissionLabel & ": reopening System Settings to verify persistence")
+    do shell script "/usr/bin/killall " & quoted form of "System Settings" & " >/dev/null 2>&1 || true"
+    delay 2
+    do shell script "/usr/bin/open -a " & quoted form of "System Settings"
+    delay 1
+    do shell script "/usr/bin/open " & quoted form of permissionURL
+    delay 5
+
+    set persistedPageReady to false
+
+    repeat 120 times
+        if exists application process settingsProcessName then
+            set settingsProcess to application process settingsProcessName
+
+            if exists window 1 of settingsProcess then
+                if my attributeText(window 1 of settingsProcess, "AXTitle") is permissionWindowTitle then
+                    set persistedPageReady to true
+                    exit repeat
+                end if
+            end if
+        end if
+
+        delay 0.25
+    end repeat
+
+    if persistedPageReady is false then
+        error permissionLabel & ": could not reopen the permission page for persistence verification"
+    end if
+
+    set persistedOutline to missing value
+
+    repeat 120 times
+        set persistedOutline to my getPermissionOutline(settingsProcess)
+        if persistedOutline is not missing value then exit repeat
+        delay 0.25
+    end repeat
+
+    if persistedOutline is missing value then
+        error permissionLabel & ": permission list did not reappear for persistence verification"
+    end if
+
+    set persistedSwitch to my findTargetSwitch(persistedOutline)
+
+    if persistedSwitch is missing value then
+        my emitScreenshot(screenshotPrefix & "-persistence-row-missing", screenshotDirectory)
+        error permissionLabel & ": UURemote row disappeared after reopening System Settings"
+    end if
+
+    if my switchIsEnabled(persistedSwitch) is false then
+        my progressMessage(permissionLabel & ": state after reopening: " & my outlineDiagnostics(persistedOutline))
+        my emitScreenshot(screenshotPrefix & "-persistence-failed", screenshotDirectory)
+        error permissionLabel & ": permission did not persist after reopening System Settings"
+    end if
+
+    my progressMessage(permissionLabel & ": permission persisted after reopening System Settings")
+    my progressMessage(permissionLabel & ": persisted state: " & my outlineDiagnostics(persistedOutline))
+    my emitScreenshot(screenshotPrefix & "-after-reopened", screenshotDirectory)
+    return "UURemote " & permissionLabel & " permission enabled and persisted"
     end tell
 end ensurePermission
 
