@@ -371,26 +371,43 @@ on pressSettingsConfirmationButton(settingsProcess, desiredTitles)
     tell application "System Events"
         repeat with settingsWindow in windows of settingsProcess
             set windowTitle to my attributeText(settingsWindow, "AXTitle")
-            set allItems to entire contents of settingsWindow
 
-            repeat with uiItem in allItems
-                try
-                    if (role of uiItem as text) is "AXButton" then
-                        set itemTitle to my attributeText(uiItem, "AXTitle")
-                        set itemDescription to my attributeText(uiItem, "AXDescription")
+            -- Do not traverse the entire window here. On macOS 26 the
+            -- permission modal can block a recursive AX query indefinitely.
+            if exists sheet 1 of settingsWindow then
+                set confirmationSheet to sheet 1 of settingsWindow
 
-                        ignoring case
-                            repeat with desiredTitle in desiredTitles
-                                set desiredText to contents of desiredTitle as text
+                repeat with uiButton in buttons of confirmationSheet
+                    set itemTitle to my attributeText(uiButton, "AXTitle")
+                    set itemDescription to my attributeText(uiButton, "AXDescription")
 
-                                if itemTitle is desiredText or itemDescription is desiredText then
-                                    perform action "AXPress" of uiItem
-                                    return "window=[" & windowTitle & "]"
-                                end if
-                            end repeat
-                        end ignoring
-                    end if
-                end try
+                    ignoring case
+                        repeat with desiredTitle in desiredTitles
+                            set desiredText to contents of desiredTitle as text
+
+                            if itemTitle is desiredText or itemDescription is desiredText then
+                                perform action "AXPress" of uiButton
+                                return "sheet in window=[" & windowTitle & "]"
+                            end if
+                        end repeat
+                    end ignoring
+                end repeat
+            end if
+
+            repeat with uiButton in buttons of settingsWindow
+                set itemTitle to my attributeText(uiButton, "AXTitle")
+                set itemDescription to my attributeText(uiButton, "AXDescription")
+
+                ignoring case
+                    repeat with desiredTitle in desiredTitles
+                        set desiredText to contents of desiredTitle as text
+
+                        if itemTitle is desiredText or itemDescription is desiredText then
+                            perform action "AXPress" of uiButton
+                            return "window=[" & windowTitle & "]"
+                        end if
+                    end repeat
+                end ignoring
             end repeat
         end repeat
     end tell
@@ -711,6 +728,7 @@ on ensurePermission(permissionURL, permissionWindowTitle, permissionLabel, scree
         -- Adding an application can turn the switch on before the separate
         -- Allow confirmation is accepted. Handle a pending dialog before
         -- returning from the already-on path.
+        my emitScreenshot(screenshotPrefix & "-before-allow", screenshotDirectory)
         my acceptAllowConfirmation(settingsProcess, permissionLabel)
         return "UURemote " & permissionLabel & " permission is already enabled"
     end if
@@ -720,6 +738,8 @@ on ensurePermission(permissionURL, permissionWindowTitle, permissionLabel, scree
     delay 1
     perform action "AXPress" of targetSwitch
     my progressMessage(permissionLabel & ": permission switch pressed")
+    delay 1
+    my emitScreenshot(screenshotPrefix & "-before-allow", screenshotDirectory)
 
     -- macOS 26 shows a second confirmation after the switch is pressed. The
     -- switch can already report "on" while this dialog is still waiting, so
