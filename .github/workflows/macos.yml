@@ -13,6 +13,11 @@ on:
           - "1"
           - "2"
           - "3"
+      wait_connections_seconds:
+        description: Seconds to wait for remote connections (0-21000)
+        required: true
+        default: 300
+        type: number
 
 permissions:
   contents: write
@@ -22,6 +27,7 @@ jobs:
     runs-on: macos-latest
     env:
       UUREMOTE_DEBUG: ${{ inputs.debug_level || '0' }}
+      UUREMOTE_WAIT_CONNECTIONS_SECONDS: ${{ inputs.wait_connections_seconds }}
 
     steps:
       - name: Checkout
@@ -98,9 +104,20 @@ jobs:
         if: success() && env.UUREMOTE_DEBUG == '0'
         shell: bash
         run: |
-            timeout=300
-            echo "Waiting connections for $timeout seconds ..."
-            sleep $timeout
+            wait_seconds="${UUREMOTE_WAIT_CONNECTIONS_SECONDS:-300}"
+
+            if [[ ! "$wait_seconds" =~ ^-?[0-9]+$ ]]; then
+                echo "wait_connections_seconds must be an integer in the range 0-21000; got: $wait_seconds" >&2
+                exit 2
+            fi
+
+            if (( wait_seconds < 0 || wait_seconds > 21000 )); then
+                echo "wait_connections_seconds must be in the range 0-21000; got: $wait_seconds" >&2
+                exit 2
+            fi
+
+            echo "Waiting connections for $wait_seconds seconds ..."
+            sleep "$wait_seconds"
 
       - name: Upload permission screenshots
         if: always() && env.UUREMOTE_DEBUG != '0'

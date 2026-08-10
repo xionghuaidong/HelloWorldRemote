@@ -353,10 +353,6 @@ run_permission() {
             # permission state to the remote client.
             permission_target_path="$APP"
             ;;
-        accessibility-server)
-            # Keyboard and mouse events are injected by this server process.
-            permission_target_path="$APP/Contents/Helpers/UURemoteServer"
-            ;;
         screen-capture)
             permission_target_path="$APP"
             ;;
@@ -1253,15 +1249,6 @@ on run argv
             "accessibility-main", ¬
             authorizationPassword, ¬
             screenshotDirectory)
-    else if permissionKind is "accessibility-server" then
-        set targetApplicationNames to {"UURemoteServer", "com.netease.uuremote.server"}
-        return my ensurePermission(¬
-            "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility", ¬
-            "Accessibility", ¬
-            "Accessibility (UURemoteServer)", ¬
-            "accessibility-server", ¬
-            authorizationPassword, ¬
-            screenshotDirectory)
     else if permissionKind is "screen-capture" then
         set targetApplicationNames to {"UU远程", "UURemote", "UU Remote", "网易UU远程", "网易 UU 远程"}
         return my ensurePermission(¬
@@ -1281,7 +1268,6 @@ APPLESCRIPT
 }
 
 run_permission accessibility-main
-run_permission accessibility-server
 run_permission screen-capture
 
 echo "=== Restarting UURemote ==="
