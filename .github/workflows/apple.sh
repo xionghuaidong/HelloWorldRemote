@@ -3,6 +3,9 @@ set -euo pipefail
 
 APP="/Applications/UURemote.app"
 CLI="$APP/Contents/Helpers/uuyc-cli"
+mode="${1:-configure}"
+evidence_dir="${RUNNER_TEMP:-/tmp}/uuremote-permission-screenshots"
+diagnostic_log="$evidence_dir/diagnostics.log"
 
 console_uid="$(stat -f '%u' /dev/console)"
 console_user="$(stat -f '%Su' /dev/console)"
@@ -27,6 +30,110 @@ run_in_gui() {
         sudo -u "#$console_uid" \
         "$@"
 }
+
+capture_tcc_database() {
+    local database_path="$1"
+    local database_label="$2"
+    local query
+
+    query="SELECT service, client, client_type, auth_value, auth_reason, flags, last_modified FROM access WHERE service LIKE '%Accessibility%' OR service LIKE '%ScreenCapture%' OR service LIKE '%ListenEvent%' OR service LIKE '%PostEvent%' ORDER BY service, client;"
+
+    echo "--- TCC $database_label: $database_path ---"
+
+    if [ ! -e "$database_path" ]; then
+        echo "TCC database unavailable: file does not exist"
+        return 0
+    fi
+
+    if [ "$database_label" = "system" ]; then
+        if ! sudo /usr/bin/sqlite3 -header -tabs "$database_path" "$query"; then
+            echo "TCC database unavailable: query failed"
+        fi
+    elif ! /usr/bin/sqlite3 -header -tabs "$database_path" "$query"; then
+        echo "TCC database unavailable: query failed"
+    fi
+}
+
+capture_snapshot() {
+    local requested_label="${1:-manual}"
+    local safe_label
+    local timestamp
+    local png_path
+    local jpeg_path
+    local user_tcc_database
+    local executable
+
+    safe_label="$(printf '%s' "$requested_label" | /usr/bin/tr -cd 'A-Za-z0-9._-')"
+    if [ -z "$safe_label" ]; then
+        safe_label="manual"
+    fi
+
+    timestamp="$(/bin/date '+%Y%m%d-%H%M%S')"
+    /bin/mkdir -p "$evidence_dir"
+    png_path="$evidence_dir/${safe_label}-${timestamp}.png"
+    jpeg_path="$evidence_dir/${safe_label}-${timestamp}.jpg"
+    user_tcc_database="/Users/$console_user/Library/Application Support/com.apple.TCC/TCC.db"
+
+    case "$safe_label" in
+        live-*|final-app*)
+            run_in_gui /usr/bin/open "$APP"
+            sleep 1
+            ;;
+    esac
+
+    {
+        echo
+        echo "========== SNAPSHOT $safe_label $timestamp =========="
+        echo "--- UU processes ---"
+        /bin/ps -axo pid=,ppid=,uid=,user=,comm=,args= | /usr/bin/grep -Ei '[U]URemote|[u]uyc-cli' || echo "No UU process matched"
+
+        echo "--- Code signing ---"
+        for executable in \
+            "$APP/Contents/MacOS/UURemote" \
+            "$APP/Contents/MacOS/UURemoteService" \
+            "$APP/Contents/MacOS/UURemoteDaemon" \
+            "$APP/Contents/Helpers/UURemoteServer"
+        do
+            echo "executable=$executable"
+            if [ -e "$executable" ]; then
+                /usr/bin/codesign -dv --verbose=4 "$executable" 2>&1 | /usr/bin/grep -E '^(Identifier|TeamIdentifier|CodeDirectory)=' || true
+                /usr/bin/codesign -dr - "$executable" 2>&1 || true
+            else
+                echo "missing"
+            fi
+        done
+
+        capture_tcc_database "$user_tcc_database" "user"
+        capture_tcc_database "/Library/Application Support/com.apple.TCC/TCC.db" "system"
+
+        echo "--- CLI status ---"
+        run_in_gui "$CLI" status 2>&1 || true
+        echo "--- Assist ID ---"
+        run_in_gui "$CLI" assist id 2>&1 || true
+    } | /usr/bin/tee -a "$diagnostic_log"
+
+    if ! run_in_gui /usr/sbin/screencapture -x -t png "$png_path"; then
+        echo "Snapshot failed: $safe_label" | /usr/bin/tee -a "$diagnostic_log" >&2
+        return 1
+    fi
+
+    /usr/bin/sips -s format jpeg -s formatOptions 70 "$png_path" --out "$jpeg_path" >/dev/null
+    /bin/rm -f "$png_path"
+    echo "UUREMOTE_SNAPSHOT_SAVED:$jpeg_path" | /usr/bin/tee -a "$diagnostic_log"
+}
+
+case "$mode" in
+    configure)
+        ;;
+    snapshot)
+        capture_snapshot "${2:-manual}"
+        exit 0
+        ;;
+    *)
+        echo "Usage: $0 [configure | snapshot LABEL]" >&2
+        exit 2
+        ;;
+esac
 
 wait_for_cli() {
     local output
@@ -118,7 +225,7 @@ sleep 2
 
 echo "=== Adding UURemote and enabling privacy permissions ==="
 
-screenshot_dir="${RUNNER_TEMP:-/tmp}/uuremote-permission-screenshots"
+screenshot_dir="$evidence_dir"
 /bin/mkdir -p "$screenshot_dir"
 
 run_permission() {
@@ -449,6 +556,48 @@ on progressMessage(messageText)
     log "UUREMOTE_PERMISSION: " & messageText
 end progressMessage
 
+on dismissPrivateWindowScreenshotPrompt()
+    tell application "System Events"
+        repeat with appProcess in application processes
+            try
+                if (count of windows of appProcess) is greater than 0 then
+                    set processName to name of appProcess as text
+
+                    repeat with processWindow in windows of appProcess
+                        set allowButton to missing value
+                        set contextText to my attributeText(processWindow, "AXDescription")
+
+                        repeat with uiText in static texts of processWindow
+                            set textValue to my attributeText(uiText, "AXValue")
+                            if textValue is not "" then set contextText to contextText & " " & textValue
+                        end repeat
+
+                        repeat with uiButton in buttons of processWindow
+                            set buttonTitle to my attributeText(uiButton, "AXTitle")
+                            set buttonDescription to my attributeText(uiButton, "AXDescription")
+
+                            ignoring case
+                                if buttonTitle is "Allow" or buttonDescription is "Allow" then
+                                    set allowButton to contents of uiButton
+                                end if
+                            end ignoring
+                        end repeat
+
+                        ignoring case
+                            if allowButton is not missing value and contextText contains "bash" and contextText contains "private window picker" then
+                                perform action "AXPress" of allowButton
+                                return "process=" & processName & "; context=[" & contextText & "]"
+                            end if
+                        end ignoring
+                    end repeat
+                end if
+            end try
+        end repeat
+    end tell
+
+    return ""
+end dismissPrivateWindowScreenshotPrompt
+
 on emitScreenshot(captureLabel, screenshotDirectory)
     tell application "System Events"
         tell process settingsProcessName
@@ -458,11 +607,32 @@ on emitScreenshot(captureLabel, screenshotDirectory)
     end tell
 
     set captureRegion to (item 1 of windowPosition as text) & "," & (item 2 of windowPosition as text) & "," & (item 1 of windowSize as text) & "," & (item 2 of windowSize as text)
-    set pngPath to screenshotDirectory & "/uuremote-permission-" & captureLabel & ".png"
-    set jpegPath to screenshotDirectory & "/uuremote-permission-" & captureLabel & ".jpg"
+    set captureTimestamp to do shell script "/bin/date '+%Y%m%d-%H%M%S'"
+    set pngPath to screenshotDirectory & "/uuremote-permission-" & captureLabel & "-" & captureTimestamp & ".png"
+    set jpegPath to screenshotDirectory & "/uuremote-permission-" & captureLabel & "-" & captureTimestamp & ".jpg"
     do shell script "/usr/sbin/screencapture -x -t png -R" & quoted form of captureRegion & " " & quoted form of pngPath & " && /usr/bin/sips -s format jpeg -s formatOptions 55 " & quoted form of pngPath & " --out " & quoted form of jpegPath & " >/dev/null"
     log "UUREMOTE_SCREENSHOT_SAVED:" & jpegPath
     do shell script "/bin/rm -f " & quoted form of pngPath
+
+    -- macOS 26 protects Privacy & Security windows with a separate prompt.
+    -- Dismiss only the exact bash/private-window-picker prompt, then capture
+    -- an unobscured copy. Any other Allow button is left untouched.
+    set promptOwner to ""
+    repeat 20 times
+        set promptOwner to my dismissPrivateWindowScreenshotPrompt()
+        if promptOwner is not "" then exit repeat
+        delay 0.25
+    end repeat
+
+    if promptOwner is not "" then
+        my progressMessage("Screenshot prerequisite allowed; " & promptOwner)
+        delay 1
+        set confirmedPngPath to screenshotDirectory & "/uuremote-permission-" & captureLabel & "-confirmed-" & captureTimestamp & ".png"
+        set confirmedJpegPath to screenshotDirectory & "/uuremote-permission-" & captureLabel & "-confirmed-" & captureTimestamp & ".jpg"
+        do shell script "/usr/sbin/screencapture -x -t png -R" & quoted form of captureRegion & " " & quoted form of confirmedPngPath & " && /usr/bin/sips -s format jpeg -s formatOptions 55 " & quoted form of confirmedPngPath & " --out " & quoted form of confirmedJpegPath & " >/dev/null"
+        log "UUREMOTE_SCREENSHOT_SAVED:" & confirmedJpegPath
+        do shell script "/bin/rm -f " & quoted form of confirmedPngPath
+    end if
 end emitScreenshot
 
 on ensurePermission(permissionURL, permissionWindowTitle, permissionLabel, screenshotPrefix, authorizationPassword, screenshotDirectory)
@@ -526,6 +696,8 @@ on ensurePermission(permissionURL, permissionWindowTitle, permissionLabel, scree
 
     set initialRows to my getOutlineRows(permissionOutline)
     my progressMessage(permissionLabel & ": primary outline ready; rows=" & (count of initialRows))
+    my progressMessage(permissionLabel & ": state before action: " & my outlineDiagnostics(permissionOutline))
+    my emitScreenshot(screenshotPrefix & "-before", screenshotDirectory)
     set targetSwitch to my findTargetSwitch(permissionOutline)
 
     if targetSwitch is missing value then
@@ -657,6 +829,8 @@ on ensurePermission(permissionURL, permissionWindowTitle, permissionLabel, scree
     my progressMessage(permissionLabel & ": UURemote switch identified")
 
     if my switchIsEnabled(targetSwitch) then
+        my progressMessage(permissionLabel & ": state after action: " & my outlineDiagnostics(permissionOutline))
+        my emitScreenshot(screenshotPrefix & "-after-already-enabled", screenshotDirectory)
         return "UURemote " & permissionLabel & " permission is already enabled"
     end if
 
@@ -669,6 +843,8 @@ on ensurePermission(permissionURL, permissionWindowTitle, permissionLabel, scree
     repeat 40 times
         if my switchIsEnabled(targetSwitch) then
             my progressMessage(permissionLabel & ": permission switch is on")
+            my progressMessage(permissionLabel & ": state after action: " & my outlineDiagnostics(permissionOutline))
+            my emitScreenshot(screenshotPrefix & "-after-enabled", screenshotDirectory)
             return "UURemote " & permissionLabel & " permission enabled"
         end if
 
@@ -740,3 +916,5 @@ fi
 
 printf '%s\n' "$cli_status"
 echo "UURemote restarted successfully"
+
+capture_snapshot "final-app"
