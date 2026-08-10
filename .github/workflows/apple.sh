@@ -623,7 +623,9 @@ end progressMessage
 
 on inspectPrivateWindowPickerPrompt(requesterText, shouldPressAllow)
     tell application "System Events"
-        repeat with appProcess in application processes
+        if not (exists application process "UserNotificationCenter") then return ""
+        set appProcess to application process "UserNotificationCenter"
+
             try
                 if (count of windows of appProcess) is greater than 0 then
                     set processName to name of appProcess as text
@@ -662,7 +664,6 @@ on inspectPrivateWindowPickerPrompt(requesterText, shouldPressAllow)
                     end repeat
                 end if
             end try
-        end repeat
     end tell
 
     return ""
@@ -1067,14 +1068,21 @@ on ensurePermission(permissionURL, permissionWindowTitle, permissionLabel, scree
     -- A visual on-state is not sufficient: restart System Settings and read
     -- the row again so the script only succeeds after TCC has persisted it.
     my progressMessage(permissionLabel & ": reopening System Settings to verify persistence")
+    my progressMessage(permissionLabel & ": stopping System Settings")
     do shell script "/usr/bin/killall " & quoted form of "System Settings" & " >/dev/null 2>&1 || true"
+    my progressMessage(permissionLabel & ": System Settings stop command completed")
     my settleDelay(2, 0.5)
+    my progressMessage(permissionLabel & ": launching System Settings")
     do shell script "/usr/bin/open -a " & quoted form of "System Settings"
+    my progressMessage(permissionLabel & ": System Settings launch command completed")
     my settleDelay(1, 0.25)
+    my progressMessage(permissionLabel & ": opening permission URL for persistence verification")
     do shell script "/usr/bin/open " & quoted form of permissionURL
+    my progressMessage(permissionLabel & ": permission URL open command completed")
     my settleDelay(5, 0.5)
 
     set persistedPageReady to false
+    my progressMessage(permissionLabel & ": waiting for the persistence verification page")
 
     repeat 120 times
         if exists application process settingsProcessName then
