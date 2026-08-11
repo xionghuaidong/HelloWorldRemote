@@ -33,6 +33,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      - name: Test shutdown-aware wait
+        if: env.UUREMOTE_DEBUG != '0'
+        shell: bash
+        run: |
+            .github/workflows/apple.sh self-test-wait-connections
+
       - name: Configure macOS host
         shell: bash
         env:

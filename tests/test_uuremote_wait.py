@@ -35,6 +35,15 @@ class WaitWorkflowContractTests(unittest.TestCase):
         )
         self.assertNotIn('sleep "$wait_seconds"', block)
 
+    def test_appkit_self_test_is_diagnostic_only(self):
+        workflow = text(WORKFLOW_PATH)
+        block = step_block(workflow, "Test shutdown-aware wait")
+        self.assertIn("if: env.UUREMOTE_DEBUG != '0'", block)
+        self.assertIn(
+            ".github/workflows/apple.sh self-test-wait-connections",
+            block,
+        )
+
 
 class WaitShellContractTests(unittest.TestCase):
     def run_script(self, *args: str) -> subprocess.CompletedProcess[str]:
