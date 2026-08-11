@@ -2258,11 +2258,15 @@ on dismissUURemoteRestartPrompt(screenshotPrefix, screenshotDirectory)
 end dismissUURemoteRestartPrompt
 
 on inspectPrivateWindowPickerPrompt(requesterText, shouldPressAllow)
-    tell application "System Events"
-        if not (exists application process "UserNotificationCenter") then return ""
-        set appProcess to application process "UserNotificationCenter"
+    try
+        -- AX calls into UserNotificationCenter can block indefinitely on
+        -- macOS 26 while a protected-window prompt is being constructed.
+        -- Bound every probe so a diagnostic screenshot cannot stall the job.
+        with timeout of 2 seconds
+            tell application "System Events"
+                if not (exists application process "UserNotificationCenter") then return ""
+                set appProcess to application process "UserNotificationCenter"
 
-            try
                 if (count of windows of appProcess) is greater than 0 then
                     set processName to name of appProcess as text
 
@@ -2304,8 +2308,11 @@ on inspectPrivateWindowPickerPrompt(requesterText, shouldPressAllow)
                         end ignoring
                     end repeat
                 end if
-            end try
-    end tell
+            end tell
+        end timeout
+    on error errorMessage number errorNumber
+        if errorNumber is -1712 then return ""
+    end try
 
     return ""
 end inspectPrivateWindowPickerPrompt
@@ -2389,7 +2396,17 @@ on emitScreenshot(captureLabel, screenshotDirectory)
     -- Dismiss only the exact bash/private-window-picker prompt, then capture
     -- an unobscured copy. Any other Allow button is left untouched.
     set promptOwner to ""
-    repeat 20 times
+    repeat 8 times
+        -- UU Remote can raise its own protected-window prompt while a debug
+        -- capture is being taken. Do not spend every retry waiting behind it:
+        -- preserve it for dismissUURemotePrivateWindowPrompt, which validates
+        -- the exact bundle id and button structure before pressing Allow.
+        set pendingUURemotePrompt to my inspectPrivateWindowPickerPrompt("com.netease.uuremote.agent", false)
+        if pendingUURemotePrompt is not "" then
+            my progressMessage("UURemote private window picker is pending; leaving it for the exact handler")
+            return jpegPath
+        end if
+
         set promptOwner to my dismissPrivateWindowScreenshotPrompt()
         if promptOwner is not "" then exit repeat
         delay 0.25

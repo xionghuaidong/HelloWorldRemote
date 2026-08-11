@@ -201,6 +201,33 @@ class DesktopPreferenceBehaviorTests(unittest.TestCase):
 
 
 class PermissionFinalizationContractTests(unittest.TestCase):
+    def test_private_picker_ax_probe_has_a_hard_apple_event_timeout(self):
+        script = text(SCRIPT_PATH)
+        probe = script[
+            script.index("on inspectPrivateWindowPickerPrompt") :
+            script.index("end inspectPrivateWindowPickerPrompt")
+        ]
+
+        self.assertIn("with timeout of 2 seconds", probe)
+        self.assertIn("if errorNumber is -1712 then return \"\"", probe)
+
+    def test_screenshot_probe_does_not_wait_behind_uuremote_picker(self):
+        script = text(SCRIPT_PATH)
+        screenshot = script[
+            script.index("on emitScreenshot") : script.index("end emitScreenshot")
+        ]
+
+        uuremote_probe = (
+            'inspectPrivateWindowPickerPrompt("com.netease.uuremote.agent", false)'
+        )
+        bash_probe = "dismissPrivateWindowScreenshotPrompt()"
+        self.assertIn("repeat 8 times", screenshot)
+        self.assertLess(screenshot.index(uuremote_probe), screenshot.index(bash_probe))
+        self.assertIn(
+            "UURemote private window picker is pending; leaving it for the exact handler",
+            screenshot,
+        )
+
     def test_permission_dialogs_use_exact_bilingual_actions(self):
         script = text(SCRIPT_PATH)
 
