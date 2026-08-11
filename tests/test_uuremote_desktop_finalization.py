@@ -174,7 +174,7 @@ class DesktopPreferenceBehaviorTests(unittest.TestCase):
         probe = script[probe_start:probe_end]
 
         self.assertIn("plistlib.loads(sys.stdin.buffer.read())", probe)
-        self.assertNotIn("plistlib.load(sys.stdin.buffer)", probe)
+        self.assertNotIn("plistlib.load(sys.stdin.buffer)", script)
 
     def test_keyboard_contract_uses_system_settings_visible_extremes(self):
         result = subprocess.run(

@@ -1150,7 +1150,7 @@ terminal_preferences_match() {
 import plistlib
 import sys
 
-preferences = plistlib.load(sys.stdin.buffer)
+preferences = plistlib.loads(sys.stdin.buffer.read())
 profiles = preferences.get("Window Settings")
 valid = isinstance(profiles, dict) and bool(profiles)
 valid = valid and all(
