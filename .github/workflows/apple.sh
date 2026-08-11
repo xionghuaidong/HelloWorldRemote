@@ -2063,6 +2063,142 @@ on progressMessage(messageText)
     log "UUREMOTE_PERMISSION: " & messageText
 end progressMessage
 
+on windowContext(processWindow)
+    tell application "System Events"
+        set contextText to my attributeText(processWindow, "AXTitle") & " " & my attributeText(processWindow, "AXDescription")
+        set allItems to entire contents of processWindow
+
+        repeat with uiItem in allItems
+            try
+                if (role of uiItem as text) is "AXStaticText" then
+                    set textValue to my attributeText(uiItem, "AXValue")
+                    if textValue is not "" then set contextText to contextText & " " & textValue
+                end if
+            end try
+        end repeat
+    end tell
+
+    return contextText
+end windowContext
+
+on isUURemoteRestartContext(contextText)
+    set targetMatched to false
+
+    ignoring case
+        repeat with candidateName in targetApplicationNames
+            if contextText contains (contents of candidateName as text) then
+                set targetMatched to true
+                exit repeat
+            end if
+        end repeat
+
+        if targetMatched is false then return false
+
+        if contextText contains "will not be able to record" and contextText contains "until it quits" then return true
+    end ignoring
+
+    if contextText contains "无法录制屏幕" and contextText contains "直至退出" then return true
+    return false
+end isUURemoteRestartContext
+
+on inspectUURemoteRestartPrompt(shouldPressRestart)
+    tell application "System Events"
+        if not (exists application process settingsProcessName) then return ""
+        set settingsProcess to application process settingsProcessName
+
+        repeat with processWindow in windows of settingsProcess
+            set contextText to my windowContext(processWindow)
+
+            if my isUURemoteRestartContext(contextText) then
+                set restartButton to missing value
+                set restartButtonTitle to ""
+                set allItems to entire contents of processWindow
+
+                repeat with uiItem in allItems
+                    try
+                        if (role of uiItem as text) is "AXButton" then
+                            set buttonTitle to my attributeText(uiItem, "AXTitle")
+
+                            if buttonTitle is "Quit & Reopen" or buttonTitle is "Quit and Reopen" or buttonTitle is "退出并重新打开" then
+                                set restartButton to contents of uiItem
+                                set restartButtonTitle to buttonTitle
+                                exit repeat
+                            end if
+                        end if
+                    end try
+                end repeat
+
+                if restartButton is missing value then return "MISSING_STRUCTURE|context=[" & contextText & "]"
+                if shouldPressRestart then perform action "AXPress" of restartButton
+                return "MATCHED|button=[" & restartButtonTitle & "]; context=[" & contextText & "]"
+            end if
+        end repeat
+    end tell
+
+    return ""
+end inspectUURemoteRestartPrompt
+
+on waitForUURemoteCLI()
+    repeat 40 times
+        try
+            set cliOutput to do shell script "/Applications/UURemote.app/Contents/Helpers/uuyc-cli status"
+            if cliOutput contains "\"success\" : true" then return true
+        end try
+        delay 0.5
+    end repeat
+
+    error "UURemote CLI did not recover after Quit & Reopen"
+end waitForUURemoteCLI
+
+on dismissUURemoteRestartPrompt(screenshotPrefix, screenshotDirectory)
+    set waitAttempts to 8
+    if activeDebugLevel is greater than or equal to 1 then set waitAttempts to 20
+
+    set promptDetails to ""
+    repeat waitAttempts times
+        set promptDetails to my inspectUURemoteRestartPrompt(false)
+        if promptDetails is not "" then exit repeat
+        delay 0.25
+    end repeat
+
+    if promptDetails is "" then return "UURemote recording restart prompt was not present"
+    if promptDetails starts with "MISSING_STRUCTURE|" then error "Matched the UURemote recording restart prompt but its recognized action is missing: " & promptDetails
+
+    if activeDebugLevel is greater than or equal to 1 then
+        try
+            my emitScreenshot(screenshotPrefix & "-restart-before", screenshotDirectory)
+        on error screenshotError
+            my progressMessage("UURemote restart prompt pre-action screenshot failed: " & screenshotError)
+        end try
+    end if
+
+    set pressedDetails to my inspectUURemoteRestartPrompt(true)
+    if pressedDetails is "" then error "UURemote recording restart prompt disappeared before its exact action could be pressed"
+    if pressedDetails starts with "MISSING_STRUCTURE|" then error "Matched the UURemote recording restart prompt but its recognized action is missing: " & pressedDetails
+    my progressMessage("UURemote recording restart action pressed; " & pressedDetails)
+
+    repeat 40 times
+        if my inspectUURemoteRestartPrompt(false) is "" then
+            my waitForUURemoteCLI()
+
+            if activeDebugLevel is greater than or equal to 1 then
+                my settleDelay(1, 0)
+                try
+                    my emitScreenshot(screenshotPrefix & "-restart-after", screenshotDirectory)
+                on error screenshotError
+                    my progressMessage("UURemote restart prompt post-action screenshot failed: " & screenshotError)
+                end try
+            end if
+
+            return "UURemote recording restart prompt accepted and closed"
+        end if
+
+        delay 0.25
+    end repeat
+
+    error "UURemote recording restart prompt remained visible after pressing its exact action"
+end dismissUURemoteRestartPrompt
+
 on inspectPrivateWindowPickerPrompt(requesterText, shouldPressAllow)
     tell application "System Events"
         if not (exists application process "UserNotificationCenter") then return ""
@@ -2389,12 +2525,13 @@ on ensurePermission(permissionURL, permissionWindowTitles, permissionLabel, scre
 
         my emitScreenshot(screenshotPrefix & "-file-chooser-selected", screenshotDirectory)
 
-        -- The application has been submitted. Accept a possible default
-        -- Quit & Reopen prompt before traversing the permission list again.
+        -- The application has been submitted. A recording restart prompt is
+        -- accepted only when both its UU Remote context and exact localized
+        -- action are recognized.
         my settleDelay(1, 0.25)
-        key code 36
-        my progressMessage(permissionLabel & ": accepted the default post-add confirmation, if present")
-        my settleDelay(3, 0.5)
+        set postAddRestartResult to my dismissUURemoteRestartPrompt(screenshotPrefix & "-post-add", screenshotDirectory)
+        my progressMessage(permissionLabel & ": " & postAddRestartResult)
+        my settleDelay(1, 0.25)
 
         set settingsProcess to application process settingsProcessName
         set permissionOutline to missing value
@@ -2422,6 +2559,8 @@ on ensurePermission(permissionURL, permissionWindowTitles, permissionLabel, scre
     my progressMessage(permissionLabel & ": UURemote switch identified")
 
     if my switchIsEnabled(targetSwitch) then
+        set alreadyEnabledRestartResult to my dismissUURemoteRestartPrompt(screenshotPrefix & "-already-enabled", screenshotDirectory)
+        my progressMessage(permissionLabel & ": " & alreadyEnabledRestartResult)
         my progressMessage(permissionLabel & ": state after action: " & my outlineDiagnostics(permissionOutline))
         my emitScreenshot(screenshotPrefix & "-after-already-enabled", screenshotDirectory)
         return "UURemote " & permissionLabel & " permission is already enabled"
@@ -2444,20 +2583,8 @@ on ensurePermission(permissionURL, permissionWindowTitles, permissionLabel, scre
     my settleDelay(2, 0.5)
     my emitScreenshot(screenshotPrefix & "-after-switch-pressed", screenshotDirectory)
 
-    set restartButtonTitle to ""
-    repeat 20 times
-        set restartButtonTitle to my pressExactButtonInProcess(settingsProcess, {"Quit & Reopen", "Quit and Reopen", "退出并重新打开"})
-        if restartButtonTitle is not "" then exit repeat
-        delay 0.25
-    end repeat
-
-    if restartButtonTitle is not "" then
-        my progressMessage(permissionLabel & ": accepted post-toggle button: " & restartButtonTitle)
-        my settleDelay(3, 0.5)
-        my emitScreenshot(screenshotPrefix & "-after-quit-and-reopen", screenshotDirectory)
-    else
-        my progressMessage(permissionLabel & ": no Quit & Reopen button appeared after toggling permission")
-    end if
+    set preAuthenticationRestartResult to my dismissUURemoteRestartPrompt(screenshotPrefix & "-post-toggle", screenshotDirectory)
+    my progressMessage(permissionLabel & ": " & preAuthenticationRestartResult)
 
     set authenticationField to missing value
 
@@ -2512,6 +2639,9 @@ on ensurePermission(permissionURL, permissionWindowTitles, permissionLabel, scre
     else
         my progressMessage(permissionLabel & ": no administrator authorization sheet appeared after toggling permission")
     end if
+
+    set postAuthenticationRestartResult to my dismissUURemoteRestartPrompt(screenshotPrefix & "-post-authentication", screenshotDirectory)
+    my progressMessage(permissionLabel & ": " & postAuthenticationRestartResult)
 
     repeat 40 times
         if my switchIsEnabled(targetSwitch) then
@@ -2633,6 +2763,367 @@ end run
 APPLESCRIPT
 }
 
+normalize_remote_desktop() {
+    local normalization_mode="${1:-normalize}"
+    local normalization_result
+
+    if ! normalization_result="$(run_in_gui /usr/bin/osascript - "$normalization_mode" <<'APPLESCRIPT'
+property settingsProcessName : "System Settings"
+property targetApplicationNames : {"UU远程", "UURemote", "UU Remote", "网易UU远程", "网易 UU 远程"}
+
+on attributeText(uiItem, attributeName)
+    tell application "System Events"
+        try
+            set attributeValue to value of attribute attributeName of uiItem
+            if attributeValue is not missing value then return attributeValue as text
+        end try
+    end tell
+    return ""
+end attributeText
+
+on processMatchesUURemote(appProcess)
+    tell application "System Events"
+        set processName to name of appProcess as text
+    end tell
+
+    ignoring case
+        repeat with candidateName in targetApplicationNames
+            if processName is (contents of candidateName as text) then return true
+        end repeat
+    end ignoring
+
+    return false
+end processMatchesUURemote
+
+on windowContext(processWindow)
+    tell application "System Events"
+        set contextText to my attributeText(processWindow, "AXTitle") & " " & my attributeText(processWindow, "AXDescription")
+        set allItems to entire contents of processWindow
+
+        repeat with uiItem in allItems
+            try
+                if (role of uiItem as text) is "AXStaticText" then
+                    set textValue to my attributeText(uiItem, "AXValue")
+                    if textValue is not "" then set contextText to contextText & " " & textValue
+                end if
+            end try
+        end repeat
+    end tell
+
+    return contextText
+end windowContext
+
+on isUURemoteRestartContext(contextText)
+    set targetMatched to false
+
+    ignoring case
+        repeat with candidateName in targetApplicationNames
+            if contextText contains (contents of candidateName as text) then
+                set targetMatched to true
+                exit repeat
+            end if
+        end repeat
+
+        if targetMatched is false then return false
+        if contextText contains "will not be able to record" and contextText contains "until it quits" then return true
+    end ignoring
+
+    if contextText contains "无法录制屏幕" and contextText contains "直至退出" then return true
+    return false
+end isUURemoteRestartContext
+
+on inspectUURemoteRestartPrompt()
+    tell application "System Events"
+        if not (exists application process settingsProcessName) then return ""
+        set settingsProcess to application process settingsProcessName
+
+        repeat with processWindow in windows of settingsProcess
+            set contextText to my windowContext(processWindow)
+            if my isUURemoteRestartContext(contextText) then return "context=[" & contextText & "]"
+        end repeat
+    end tell
+
+    return ""
+end inspectUURemoteRestartPrompt
+
+on inspectUURemotePrivateWindowPrompt()
+    tell application "System Events"
+        if not (exists application process "UserNotificationCenter") then return ""
+        set notificationProcess to application process "UserNotificationCenter"
+
+        repeat with promptWindow in windows of notificationProcess
+            set contextText to my windowContext(promptWindow)
+
+            ignoring case
+                if contextText contains "com.netease.uuremote.agent" then return "context=[" & contextText & "]"
+            end ignoring
+        end repeat
+    end tell
+
+    return ""
+end inspectUURemotePrivateWindowPrompt
+
+on assertKnownPromptsAbsent()
+    set privatePrompt to my inspectUURemotePrivateWindowPrompt()
+    if privatePrompt is not "" then error "UURemote private window picker is still visible: " & privatePrompt
+
+    set restartPrompt to my inspectUURemoteRestartPrompt()
+    if restartPrompt is not "" then error "UURemote recording restart prompt is still visible: " & restartPrompt
+end assertKnownPromptsAbsent
+
+on isOrdinaryWindow(appWindow)
+    set windowSubrole to my attributeText(appWindow, "AXSubrole")
+    if windowSubrole is "AXDialog" or windowSubrole is "AXSystemDialog" or windowSubrole is "AXSheet" then return false
+    return true
+end isOrdinaryWindow
+
+on verifyUURemoteWindowsMinimized(requireOrdinaryWindow)
+    set ordinaryWindowCount to 0
+
+    tell application "System Events"
+        repeat with appProcess in application processes
+            if my processMatchesUURemote(appProcess) then
+                repeat with appWindow in windows of appProcess
+                    if my isOrdinaryWindow(appWindow) then
+                        set ordinaryWindowCount to ordinaryWindowCount + 1
+                        set minimizedValue to my attributeText(appWindow, "AXMinimized")
+                        if minimizedValue is not "true" and minimizedValue is not "1" then
+                            error "A UU Remote ordinary window is not minimized"
+                        end if
+                    end if
+                end repeat
+            end if
+        end repeat
+    end tell
+
+    if requireOrdinaryWindow and ordinaryWindowCount is 0 then error "No UU Remote ordinary window was available to minimize"
+    return ordinaryWindowCount
+end verifyUURemoteWindowsMinimized
+
+on minimizeUURemoteWindows(requireOrdinaryWindow)
+    set ordinaryWindowCount to 0
+
+    tell application "System Events"
+        repeat with appProcess in application processes
+            if my processMatchesUURemote(appProcess) then
+                repeat with appWindow in windows of appProcess
+                    if my isOrdinaryWindow(appWindow) then
+                        set ordinaryWindowCount to ordinaryWindowCount + 1
+                        try
+                            set value of attribute "AXMinimized" of appWindow to true
+                        on error errorMessage
+                            error "Could not minimize a UU Remote ordinary window: " & errorMessage
+                        end try
+                    end if
+                end repeat
+            end if
+        end repeat
+    end tell
+
+    if requireOrdinaryWindow and ordinaryWindowCount is 0 then error "No UU Remote ordinary window was available to minimize"
+
+    repeat 20 times
+        try
+            return my verifyUURemoteWindowsMinimized(requireOrdinaryWindow)
+        end try
+        delay 0.1
+    end repeat
+
+    return my verifyUURemoteWindowsMinimized(requireOrdinaryWindow)
+end minimizeUURemoteWindows
+
+on systemSettingsHasWindows()
+    tell application "System Events"
+        if not (exists application process settingsProcessName) then return false
+        return (count of windows of application process settingsProcessName) is greater than 0
+    end tell
+end systemSettingsHasWindows
+
+on closeSystemSettings()
+    if not my systemSettingsHasWindows() then return "System Settings already closed"
+
+    try
+        tell application "System Settings" to quit
+    end try
+
+    repeat 40 times
+        if not my systemSettingsHasWindows() then return "System Settings closed gracefully"
+        delay 0.25
+    end repeat
+
+    do shell script "/usr/bin/killall " & quoted form of settingsProcessName & " >/dev/null 2>&1 || true"
+
+    repeat 20 times
+        if not my systemSettingsHasWindows() then return "System Settings closed with fallback"
+        delay 0.25
+    end repeat
+
+    error "System Settings still has a visible window after cleanup"
+end closeSystemSettings
+
+on run argv
+    if (count of argv) is not 1 then error "Expected one desktop normalization mode"
+    set normalizationMode to item 1 of argv as text
+
+    if normalizationMode is "cleanup" then
+        my minimizeUURemoteWindows(false)
+        return my closeSystemSettings()
+    end if
+
+    if normalizationMode is "normalize" then
+        my assertKnownPromptsAbsent()
+        my minimizeUURemoteWindows(true)
+        return my closeSystemSettings()
+    end if
+
+    if normalizationMode is "verify" then
+        my assertKnownPromptsAbsent()
+        my verifyUURemoteWindowsMinimized(true)
+        if my systemSettingsHasWindows() then error "System Settings still has a visible window"
+        return "UU Remote windows minimized; System Settings closed; known dialogs absent"
+    end if
+
+    error "Unsupported desktop normalization mode: " & normalizationMode
+end run
+APPLESCRIPT
+)"; then
+        echo "Could not complete UU Remote desktop normalization ($normalization_mode)" >&2
+        return 1
+    fi
+
+    echo "UUREMOTE_DESKTOP: $normalization_result"
+
+    if [ "$normalization_mode" != "normalize" ]; then
+        return 0
+    fi
+
+    if ! wait_for_cli >/dev/null; then
+        echo "UU Remote CLI became unavailable during desktop normalization" >&2
+        return 1
+    fi
+
+    if ! normalization_result="$(run_in_gui /usr/bin/osascript - "verify" <<'APPLESCRIPT'
+property settingsProcessName : "System Settings"
+property targetApplicationNames : {"UU远程", "UURemote", "UU Remote", "网易UU远程", "网易 UU 远程"}
+
+on attributeText(uiItem, attributeName)
+    tell application "System Events"
+        try
+            set attributeValue to value of attribute attributeName of uiItem
+            if attributeValue is not missing value then return attributeValue as text
+        end try
+    end tell
+    return ""
+end attributeText
+
+on processMatchesUURemote(appProcess)
+    tell application "System Events" to set processName to name of appProcess as text
+    ignoring case
+        repeat with candidateName in targetApplicationNames
+            if processName is (contents of candidateName as text) then return true
+        end repeat
+    end ignoring
+    return false
+end processMatchesUURemote
+
+on windowContext(processWindow)
+    tell application "System Events"
+        set contextText to my attributeText(processWindow, "AXTitle") & " " & my attributeText(processWindow, "AXDescription")
+        repeat with uiItem in entire contents of processWindow
+            try
+                if (role of uiItem as text) is "AXStaticText" then
+                    set textValue to my attributeText(uiItem, "AXValue")
+                    if textValue is not "" then set contextText to contextText & " " & textValue
+                end if
+            end try
+        end repeat
+    end tell
+    return contextText
+end windowContext
+
+on knownPromptDetails()
+    tell application "System Events"
+        if exists application process "UserNotificationCenter" then
+            repeat with promptWindow in windows of application process "UserNotificationCenter"
+                set contextText to my windowContext(promptWindow)
+                ignoring case
+                    if contextText contains "com.netease.uuremote.agent" then return "private picker: " & contextText
+                end ignoring
+            end repeat
+        end if
+
+        if exists application process settingsProcessName then
+            repeat with processWindow in windows of application process settingsProcessName
+                set contextText to my windowContext(processWindow)
+                set targetMatched to false
+                ignoring case
+                    repeat with candidateName in targetApplicationNames
+                        if contextText contains (contents of candidateName as text) then set targetMatched to true
+                    end repeat
+                    if targetMatched and contextText contains "will not be able to record" and contextText contains "until it quits" then return "restart prompt: " & contextText
+                end ignoring
+                if targetMatched and contextText contains "无法录制屏幕" and contextText contains "直至退出" then return "restart prompt: " & contextText
+            end repeat
+        end if
+    end tell
+    return ""
+end knownPromptDetails
+
+on run argv
+    set promptDetails to my knownPromptDetails()
+    if promptDetails is not "" then error "A known UU Remote permission dialog remains visible: " & promptDetails
+
+    set ordinaryWindowCount to 0
+    tell application "System Events"
+        repeat with appProcess in application processes
+            if my processMatchesUURemote(appProcess) then
+                repeat with appWindow in windows of appProcess
+                    set windowSubrole to my attributeText(appWindow, "AXSubrole")
+                    if windowSubrole is not "AXDialog" and windowSubrole is not "AXSystemDialog" and windowSubrole is not "AXSheet" then
+                        set ordinaryWindowCount to ordinaryWindowCount + 1
+                        set minimizedValue to my attributeText(appWindow, "AXMinimized")
+                        if minimizedValue is not "true" and minimizedValue is not "1" then error "A UU Remote ordinary window is not minimized"
+                    end if
+                end repeat
+            end if
+        end repeat
+
+        if ordinaryWindowCount is 0 then error "No UU Remote ordinary window was available for final verification"
+        if exists application process settingsProcessName then
+            if (count of windows of application process settingsProcessName) is greater than 0 then error "System Settings still has a visible window"
+        end if
+    end tell
+
+    return "UU Remote CLI ready; dialogs absent; windows minimized; System Settings closed"
+end run
+APPLESCRIPT
+)"; then
+        echo "Could not verify the final UU Remote desktop state" >&2
+        return 1
+    fi
+
+    echo "UUREMOTE_DESKTOP: $normalization_result"
+    echo "FINAL_DESKTOP_STATE=ready"
+}
+
+permission_cleanup_on_exit() {
+    local exit_status="$?"
+    trap - EXIT
+
+    if [ "$exit_status" -ne 0 ]; then
+        if [ "$debug_level" -ge 1 ]; then
+            capture_snapshot "permission-error" || true
+        fi
+
+        normalize_remote_desktop cleanup || true
+    fi
+
+    unset runner_password
+    exit "$exit_status"
+}
+
+trap permission_cleanup_on_exit EXIT
+
 run_permission accessibility-main
 run_permission screen-capture
 
@@ -2654,8 +3145,13 @@ echo "UURemote restarted successfully"
 echo "=== Handling UURemote screen-sharing confirmation ==="
 run_permission agent-private-picker
 
+echo "=== Finalizing remote desktop ==="
+normalize_remote_desktop normalize
+
 unset runner_password
 
 if [ "$debug_level" -ge 1 ]; then
-    capture_snapshot "final-app"
+    capture_snapshot "final-desktop"
 fi
+
+trap - EXIT

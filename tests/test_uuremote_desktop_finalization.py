@@ -176,5 +176,54 @@ class DesktopPreferenceBehaviorTests(unittest.TestCase):
         self.assertNotIn(" to log out", script)
 
 
+class PermissionFinalizationContractTests(unittest.TestCase):
+    def test_permission_dialogs_use_exact_bilingual_actions(self):
+        script = text(SCRIPT_PATH)
+
+        for token in (
+            "com.netease.uuremote.agent",
+            "Allow",
+            "允许",
+            "Quit & Reopen",
+            "Quit and Reopen",
+            "退出并重新打开",
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, script)
+
+    def test_old_blind_post_add_return_is_absent(self):
+        script = text(SCRIPT_PATH)
+        self.assertNotIn(
+            "accepted the default post-add confirmation, if present",
+            script,
+        )
+
+    def test_final_order_is_picker_then_minimize_then_close_settings(self):
+        script = text(SCRIPT_PATH)
+        normalize_definition = script.index("normalize_remote_desktop()")
+        picker = script.rindex("run_permission agent-private-picker")
+        normalize_call = script.index("normalize_remote_desktop normalize", picker)
+
+        self.assertLess(normalize_definition, picker)
+        self.assertLess(picker, normalize_call)
+        self.assertLess(
+            script.index("minimizeUURemoteWindows", normalize_definition),
+            script.index("closeSystemSettings", normalize_definition),
+        )
+
+    def test_normalizer_verifies_cli_dialogs_minimized_app_and_closed_settings(self):
+        script = text(SCRIPT_PATH)
+
+        for token in (
+            "AXMinimized",
+            "UserNotificationCenter",
+            "System Settings",
+            "wait_for_cli",
+            "FINAL_DESKTOP_STATE=ready",
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, script)
+
+
 if __name__ == "__main__":
     unittest.main()
