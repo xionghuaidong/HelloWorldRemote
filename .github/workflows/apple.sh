@@ -5,6 +5,21 @@ APP="/Applications/UURemote.app"
 CLI="$APP/Contents/Helpers/uuyc-cli"
 mode="${1:-configure}"
 
+validate_uuremote_custom_code() {
+    local custom_code="${1:-}"
+
+    [[ "$custom_code" =~ ^[A-Za-z0-9]{8,16}$ ]]
+}
+
+if [ "$mode" = "validate-custom-code" ]; then
+    if validate_uuremote_custom_code "${UUREMOTE_CUSTOM_CODE:-}"; then
+        exit 0
+    fi
+
+    echo "UUREMOTE_CUSTOM_CODE must match ^[A-Za-z0-9]{8,16}$" >&2
+    exit 2
+fi
+
 encode_kcpassword() {
     local output_path="$1"
 
@@ -1125,6 +1140,44 @@ run_in_gui() {
         sudo -u "#$console_uid" \
         "$@"
 }
+
+set_uuremote_custom_code() {
+    local custom_code="${UUREMOTE_CUSTOM_CODE:-}"
+    local attempt
+    local status
+
+    if ! validate_uuremote_custom_code "$custom_code"; then
+        unset custom_code UUREMOTE_CUSTOM_CODE
+        echo "UUREMOTE_CUSTOM_CODE must match ^[A-Za-z0-9]{8,16}$" >&2
+        return 2
+    fi
+
+    unset UUREMOTE_CUSTOM_CODE
+
+    for ((attempt=1; attempt<=120; attempt++)); do
+        echo "Waiting to configure UU Remote custom code [$attempt/120] ..."
+
+        if run_in_gui "$CLI" assist set-code "$custom_code" >/dev/null 2>&1; then
+            unset custom_code
+            echo "UU Remote custom code configured successfully"
+            return 0
+        else
+            status="$?"
+        fi
+
+        echo "UU Remote CLI failed with exit code $status; retrying in 500 milliseconds" >&2
+        sleep 0.5
+    done
+
+    unset custom_code
+    echo "UU Remote custom code could not be configured after 120 attempts" >&2
+    return 1
+}
+
+if [ "$mode" = "set-custom-code" ]; then
+    set_uuremote_custom_code
+    exit $?
+fi
 
 debug_sleep() {
     local diagnostic_seconds="$1"

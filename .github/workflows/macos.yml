@@ -86,20 +86,23 @@ jobs:
                 sleep 0.5
             done
 
-            for ((i=1; i<=120; i++))
-            do
-                echo "Waiting customCode [$i/120] ..."
-                if output="$(/Applications/UURemote.app/Contents/Helpers/uuyc-cli assist set-code johnDOE123 )"
-                then
-                    echo "customCode: $output"
-                    break
-                else
-                    status="$?"
-                    echo "CLI 失败，退出码 $status，500 毫秒后重试" >&2
-                fi
-                sleep 0.5
-            done
+      - name: Configure UU Remote custom code
+        shell: bash
+        env:
+          UUREMOTE_CUSTOM_CODE: ${{ secrets.UUREMOTE_CUSTOM_CODE }}
+        run: |
+            if [ -z "${UUREMOTE_CUSTOM_CODE:-}" ]; then
+                echo "Repository secret UUREMOTE_CUSTOM_CODE is required" >&2
+                exit 2
+            fi
 
+            echo "::add-mask::${UUREMOTE_CUSTOM_CODE}"
+            .github/workflows/apple.sh set-custom-code
+            unset UUREMOTE_CUSTOM_CODE
+
+      - name: Configure UU Remote permissions
+        shell: bash
+        run: |
             .github/workflows/apple.sh
 
       - name: Verify permission idempotency
