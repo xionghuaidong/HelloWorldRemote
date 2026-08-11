@@ -201,6 +201,25 @@ class DesktopPreferenceBehaviorTests(unittest.TestCase):
 
 
 class PermissionFinalizationContractTests(unittest.TestCase):
+    def test_permission_outline_probe_and_retries_are_bounded(self):
+        script = text(SCRIPT_PATH)
+        probe = script[
+            script.index("on getPermissionOutline") :
+            script.index("end getPermissionOutline")
+        ]
+        ensure = script[
+            script.index("on ensurePermission") : script.index("end ensurePermission")
+        ]
+
+        self.assertIn("with timeout of 10 seconds", probe)
+        self.assertIn("if errorNumber is -1712 then return missing value", probe)
+        self.assertIn("set outlineWaitAttempts to 3", ensure)
+        self.assertIn(
+            "if activeDebugLevel is greater than or equal to 1 then set outlineWaitAttempts to 12",
+            ensure,
+        )
+        self.assertGreaterEqual(ensure.count("repeat outlineWaitAttempts times"), 3)
+
     def test_restart_prompt_probe_scans_only_sheets_with_a_hard_timeout(self):
         script = text(SCRIPT_PATH)
         probe = script[

@@ -1858,34 +1858,45 @@ on listContainsText(textValues, targetText)
 end listContainsText
 
 on getPermissionOutline(settingsProcess)
-    tell application "System Events"
-        set candidateOutline to missing value
-        set candidateTop to 1000000
-        set allItems to entire contents of window 1 of settingsProcess
+    try
+        -- System Settings occasionally stops answering a recursive AX query
+        -- while rebuilding a Privacy & Security page. Let the caller retry
+        -- instead of allowing one Apple event to hold the workflow forever.
+        with timeout of 10 seconds
+            tell application "System Events"
+                set candidateOutline to missing value
+                set candidateTop to 1000000
+                set allItems to entire contents of window 1 of settingsProcess
 
-        repeat with uiItem in allItems
-            try
-                if (role of uiItem as text) is "AXOutline" then
-                    set itemPosition to position of uiItem
-                    set itemSize to size of uiItem
-                    set itemWidth to item 1 of itemSize
-                    set itemHeight to item 2 of itemSize
-                    set itemTop to item 2 of itemPosition
+                repeat with uiItem in allItems
+                    try
+                        if (role of uiItem as text) is "AXOutline" then
+                            set itemPosition to position of uiItem
+                            set itemSize to size of uiItem
+                            set itemWidth to item 1 of itemSize
+                            set itemHeight to item 2 of itemSize
+                            set itemTop to item 2 of itemPosition
 
-                    -- A privacy permission list is the first wide,
-                    -- non-empty outline in the main settings pane.
-                    if itemWidth is greater than or equal to 300 and itemHeight is greater than or equal to 40 then
-                        if itemTop is less than candidateTop then
-                            set candidateOutline to contents of uiItem
-                            set candidateTop to itemTop
+                            -- A privacy permission list is the first wide,
+                            -- non-empty outline in the main settings pane.
+                            if itemWidth is greater than or equal to 300 and itemHeight is greater than or equal to 40 then
+                                if itemTop is less than candidateTop then
+                                    set candidateOutline to contents of uiItem
+                                    set candidateTop to itemTop
+                                end if
+                            end if
                         end if
-                    end if
-                end if
-            end try
-        end repeat
+                    end try
+                end repeat
 
-        return candidateOutline
-    end tell
+                return candidateOutline
+            end tell
+        end timeout
+    on error errorMessage number errorNumber
+        if errorNumber is -1712 then return missing value
+    end try
+
+    return missing value
 end getPermissionOutline
 
 on getOutlineRows(targetOutline)
@@ -2436,6 +2447,9 @@ on emitScreenshot(captureLabel, screenshotDirectory)
 end emitScreenshot
 
 on ensurePermission(permissionURL, permissionWindowTitles, permissionLabel, screenshotPrefix, authorizationPassword, screenshotDirectory)
+    set outlineWaitAttempts to 3
+    if activeDebugLevel is greater than or equal to 1 then set outlineWaitAttempts to 12
+
     my progressMessage(permissionLabel & ": restarting System Settings for an isolated permission session")
     do shell script "/usr/bin/killall " & quoted form of "System Settings" & " >/dev/null 2>&1 || true"
     my settleDelay(2, 0.5)
@@ -2479,7 +2493,7 @@ on ensurePermission(permissionURL, permissionWindowTitles, permissionLabel, scre
     set settingsReady to false
     set permissionOutline to missing value
 
-    repeat 120 times
+    repeat outlineWaitAttempts times
         set permissionOutline to my getPermissionOutline(settingsProcess)
 
         if permissionOutline is not missing value then
@@ -2623,7 +2637,7 @@ on ensurePermission(permissionURL, permissionWindowTitles, permissionLabel, scre
         set settingsProcess to application process settingsProcessName
         set permissionOutline to missing value
 
-        repeat 40 times
+        repeat outlineWaitAttempts times
             set permissionOutline to my getPermissionOutline(settingsProcess)
 
             if permissionOutline is not missing value then exit repeat
@@ -2785,7 +2799,7 @@ on ensurePermission(permissionURL, permissionWindowTitles, permissionLabel, scre
 
     set persistedOutline to missing value
 
-    repeat 120 times
+    repeat outlineWaitAttempts times
         set persistedOutline to my getPermissionOutline(settingsProcess)
         if persistedOutline is not missing value then exit repeat
         delay 0.25
