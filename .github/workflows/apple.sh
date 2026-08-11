@@ -2160,38 +2160,50 @@ on isUURemoteRestartContext(contextText)
 end isUURemoteRestartContext
 
 on inspectUURemoteRestartPrompt(shouldPressRestart)
-    tell application "System Events"
-        if not (exists application process settingsProcessName) then return ""
-        set settingsProcess to application process settingsProcessName
+    try
+        -- The recording restart confirmation is an attached sheet. Scanning
+        -- every descendant of the main System Settings window is both
+        -- unnecessary and can block for minutes on macOS 26.
+        with timeout of 2 seconds
+            tell application "System Events"
+                if not (exists application process settingsProcessName) then return ""
+                set settingsProcess to application process settingsProcessName
 
-        repeat with processWindow in windows of settingsProcess
-            set contextText to my windowContext(processWindow)
+                repeat with processWindow in windows of settingsProcess
+                    repeat with promptSheet in sheets of processWindow
+                        set actualSheet to contents of promptSheet
+                        set contextText to my windowContext(actualSheet)
 
-            if my isUURemoteRestartContext(contextText) then
-                set restartButton to missing value
-                set restartButtonTitle to ""
-                set allItems to entire contents of processWindow
+                        if my isUURemoteRestartContext(contextText) then
+                            set restartButton to missing value
+                            set restartButtonTitle to ""
+                            set allItems to entire contents of actualSheet
 
-                repeat with uiItem in allItems
-                    try
-                        if (role of uiItem as text) is "AXButton" then
-                            set buttonTitle to my attributeText(uiItem, "AXTitle")
+                            repeat with uiItem in allItems
+                                try
+                                    if (role of uiItem as text) is "AXButton" then
+                                        set buttonTitle to my attributeText(uiItem, "AXTitle")
 
-                            if buttonTitle is "Quit & Reopen" or buttonTitle is "Quit and Reopen" or buttonTitle is "退出并重新打开" then
-                                set restartButton to contents of uiItem
-                                set restartButtonTitle to buttonTitle
-                                exit repeat
-                            end if
+                                        if buttonTitle is "Quit & Reopen" or buttonTitle is "Quit and Reopen" or buttonTitle is "退出并重新打开" then
+                                            set restartButton to contents of uiItem
+                                            set restartButtonTitle to buttonTitle
+                                            exit repeat
+                                        end if
+                                    end if
+                                end try
+                            end repeat
+
+                            if restartButton is missing value then return "MISSING_STRUCTURE|context=[" & contextText & "]"
+                            if shouldPressRestart then perform action "AXPress" of restartButton
+                            return "MATCHED|button=[" & restartButtonTitle & "]; context=[" & contextText & "]"
                         end if
-                    end try
+                    end repeat
                 end repeat
-
-                if restartButton is missing value then return "MISSING_STRUCTURE|context=[" & contextText & "]"
-                if shouldPressRestart then perform action "AXPress" of restartButton
-                return "MATCHED|button=[" & restartButtonTitle & "]; context=[" & contextText & "]"
-            end if
-        end repeat
-    end tell
+            end tell
+        end timeout
+    on error errorMessage number errorNumber
+        if errorNumber is -1712 then return ""
+    end try
 
     return ""
 end inspectUURemoteRestartPrompt

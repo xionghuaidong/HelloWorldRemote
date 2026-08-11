@@ -201,6 +201,19 @@ class DesktopPreferenceBehaviorTests(unittest.TestCase):
 
 
 class PermissionFinalizationContractTests(unittest.TestCase):
+    def test_restart_prompt_probe_scans_only_sheets_with_a_hard_timeout(self):
+        script = text(SCRIPT_PATH)
+        probe = script[
+            script.index("on inspectUURemoteRestartPrompt") :
+            script.index("end inspectUURemoteRestartPrompt")
+        ]
+
+        self.assertIn("with timeout of 2 seconds", probe)
+        self.assertIn("repeat with promptSheet in sheets of processWindow", probe)
+        self.assertIn("windowContext(actualSheet)", probe)
+        self.assertNotIn("windowContext(processWindow)", probe)
+        self.assertIn("if errorNumber is -1712 then return \"\"", probe)
+
     def test_private_picker_ax_probe_has_a_hard_apple_event_timeout(self):
         script = text(SCRIPT_PATH)
         probe = script[
