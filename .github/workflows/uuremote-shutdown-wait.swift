@@ -126,4 +126,7 @@ guard let injectedEvent = InjectedEvent(rawValue: eventText) else {
     exit(2)
 }
 
-ShutdownWaiter(seconds: seconds, injectedEvent: injectedEvent).run()
+let waiter = ShutdownWaiter(seconds: seconds, injectedEvent: injectedEvent)
+withExtendedLifetime(waiter) {
+    waiter.run()
+}

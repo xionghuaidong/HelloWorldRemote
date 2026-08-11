@@ -77,6 +77,15 @@ class WaitShellContractTests(unittest.TestCase):
 
 
 class WaitWatcherSourceTests(unittest.TestCase):
+    def test_waiter_lifetime_is_extended_through_app_event_loop(self):
+        source = text(WATCHER_PATH)
+        self.assertIn("let waiter = ShutdownWaiter(", source)
+        self.assertIn("withExtendedLifetime(waiter)", source)
+        self.assertNotIn(
+            "ShutdownWaiter(seconds: seconds, injectedEvent: injectedEvent).run()",
+            source,
+        )
+
     def test_only_exact_power_off_event_finishes_early(self):
         source = text(WATCHER_PATH)
         self.assertIn("event.type == .systemDefined", source)
