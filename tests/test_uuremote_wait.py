@@ -67,5 +67,30 @@ class WaitShellContractTests(unittest.TestCase):
         )
 
 
+class WaitWatcherSourceTests(unittest.TestCase):
+    def test_only_exact_power_off_event_finishes_early(self):
+        source = text(WATCHER_PATH)
+        self.assertIn("event.type == .systemDefined", source)
+        self.assertIn("event.subtype == .powerOff", source)
+        self.assertNotIn("willPowerOffNotification", source)
+
+        for forbidden in ("UURemote", "uuyc", "NWPathMonitor", "URLSession"):
+            self.assertNotIn(forbidden, source)
+
+
+@unittest.skipUnless(platform.system() == "Darwin", "requires AppKit")
+class WaitWatcherBehaviorTests(unittest.TestCase):
+    def test_shell_self_test_passes(self):
+        result = subprocess.run(
+            ["/bin/bash", str(SCRIPT_PATH), "self-test-wait-connections"],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("shutdown-aware wait self-test passed", result.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

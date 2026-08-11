@@ -139,9 +139,65 @@ validate_wait_connections_seconds() {
     fi
 }
 
-run_shutdown_waiter() {
-    echo "Shutdown watcher is not available" >&2
-    return 1
+run_shutdown_waiter() (
+    set -euo pipefail
+
+    wait_seconds="$1"
+    injected_event="${2:-none}"
+    script_dir="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+    watcher_source="$script_dir/uuremote-shutdown-wait.swift"
+
+    resolve_console_account
+
+    build_dir="$(
+        run_as_console_user /usr/bin/mktemp -d \
+            "/tmp/uuremote-shutdown-wait.XXXXXX"
+    )"
+    watcher_binary="$build_dir/uuremote-shutdown-wait"
+    watcher_build_source="$build_dir/uuremote-shutdown-wait.swift"
+
+    cleanup_shutdown_waiter() {
+        sudo /bin/rm -f -- "$watcher_binary"
+        sudo /bin/rm -f -- "$watcher_build_source"
+        sudo /bin/rmdir "$build_dir" 2>/dev/null || true
+    }
+
+    trap cleanup_shutdown_waiter EXIT
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+
+    run_as_console_user /bin/chmod 0700 "$build_dir"
+    sudo /bin/cp "$watcher_source" "$watcher_build_source"
+    sudo /usr/sbin/chown "$console_uid" "$watcher_build_source"
+    sudo /bin/chmod 0600 "$watcher_build_source"
+    run_as_console_user /usr/bin/xcrun swiftc -framework AppKit \
+        "$watcher_build_source" -o "$watcher_binary"
+    run_as_console_user "$watcher_binary" "$wait_seconds" "$injected_event"
+)
+
+self_test_wait_connections() {
+    local result
+
+    result="$(run_shutdown_waiter 1 none)"
+    if [ "$result" != "WAIT_RESULT=timeout" ]; then
+        echo "Timeout wait self-test failed: $result" >&2
+        return 1
+    fi
+
+    result="$(run_shutdown_waiter 1 ordinary)"
+    if [ "$result" != "WAIT_RESULT=timeout" ]; then
+        echo "Ordinary-event wait self-test failed: $result" >&2
+        return 1
+    fi
+
+    result="$(run_shutdown_waiter 2 power-off)"
+    if [ "$result" != "WAIT_RESULT=shutdown/restart" ]; then
+        echo "Power-off wait self-test failed: $result" >&2
+        return 1
+    fi
+
+    echo "shutdown-aware wait self-test passed"
 }
 
 wait_connections() {
@@ -1015,6 +1071,11 @@ configure_host() {
 
 if [ "$mode" = "self-test-kcpassword" ]; then
     self_test_kcpassword
+    exit 0
+fi
+
+if [ "$mode" = "self-test-wait-connections" ]; then
+    self_test_wait_connections
     exit 0
 fi
 
