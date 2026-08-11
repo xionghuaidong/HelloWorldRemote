@@ -2597,10 +2597,26 @@ on ensurePermission(permissionURL, permissionWindowTitles, permissionLabel, scre
         -- Use the standard macOS file chooser's Go to Folder command.
         keystroke "g" using {command down, shift down}
         my settleDelay(1, 0.25)
-        set goToFolderField to value of attribute "AXFocusedUIElement" of settingsProcess
+        set goToFolderField to missing value
 
-        if my attributeText(goToFolderField, "AXRole") is not "AXTextField" then
-            error permissionLabel & ": the Go to Folder text field does not have keyboard focus"
+        -- The Go to Folder sheet can be visible before its text field becomes
+        -- the focused accessibility element, especially in fast mode. Wait on
+        -- the actual focus condition instead of relying on a fixed delay.
+        repeat 40 times
+            try
+                set focusedItem to value of attribute "AXFocusedUIElement" of settingsProcess
+
+                if my attributeText(focusedItem, "AXRole") is "AXTextField" then
+                    set goToFolderField to focusedItem
+                    exit repeat
+                end if
+            end try
+
+            delay 0.25
+        end repeat
+
+        if goToFolderField is missing value then
+            error permissionLabel & ": the Go to Folder text field did not receive keyboard focus. Windows: " & my visibleWindowDiagnostics()
         end if
 
         -- Assign the accessibility value directly. Sending a long path as

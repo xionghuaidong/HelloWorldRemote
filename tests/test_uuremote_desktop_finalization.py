@@ -234,6 +234,19 @@ class PermissionFinalizationContractTests(unittest.TestCase):
         self.assertGreaterEqual(ensure.count("repeat pageWaitAttempts times"), 2)
         self.assertGreaterEqual(ensure.count("on error pageProbeError"), 2)
 
+    def test_go_to_folder_waits_for_the_focused_text_field(self):
+        script = text(SCRIPT_PATH)
+        chooser = script[
+            script.index("-- Use the standard macOS file chooser's Go to Folder command.") :
+            script.index("-- Assign the accessibility value directly.")
+        ]
+
+        self.assertIn("set goToFolderField to missing value", chooser)
+        self.assertIn("repeat 40 times", chooser)
+        self.assertIn("set focusedItem to value of attribute \"AXFocusedUIElement\"", chooser)
+        self.assertIn("set goToFolderField to focusedItem", chooser)
+        self.assertIn("if goToFolderField is missing value then", chooser)
+
     def test_restart_prompt_probe_scans_only_sheets_with_a_hard_timeout(self):
         script = text(SCRIPT_PATH)
         probe = script[
