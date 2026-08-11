@@ -123,6 +123,40 @@ die() {
     return 1
 }
 
+validate_wait_connections_seconds() {
+    local wait_seconds="${1:-}"
+
+    case "$wait_seconds" in
+        ''|*[!0-9]*)
+            echo "wait_connections_seconds must be an integer in the range 0-21000; got: $wait_seconds" >&2
+            return 2
+            ;;
+    esac
+
+    if [ "$wait_seconds" -gt 21000 ]; then
+        echo "wait_connections_seconds must be an integer in the range 0-21000; got: $wait_seconds" >&2
+        return 2
+    fi
+}
+
+run_shutdown_waiter() {
+    echo "Shutdown watcher is not available" >&2
+    return 1
+}
+
+wait_connections() {
+    local wait_seconds="${1:-}"
+
+    validate_wait_connections_seconds "$wait_seconds" || return "$?"
+
+    if [ "$wait_seconds" -eq 0 ]; then
+        echo "Wait connections disabled (0 seconds)"
+        return 0
+    fi
+
+    run_shutdown_waiter "$wait_seconds" none
+}
+
 run_as_console_user() {
     sudo /bin/launchctl asuser "$console_uid" \
         sudo -u "#$console_uid" \
@@ -987,6 +1021,11 @@ fi
 if [ "$mode" = "configure-host" ]; then
     configure_host
     exit 0
+fi
+
+if [ "$mode" = "wait-connections" ]; then
+    wait_connections "${2:-}"
+    exit $?
 fi
 
 debug_level="${UUREMOTE_DEBUG:-0}"

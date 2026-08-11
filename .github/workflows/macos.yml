@@ -131,7 +131,7 @@ jobs:
             fi
 
             echo "Waiting connections for $wait_seconds seconds ..."
-            sleep "$wait_seconds"
+            .github/workflows/apple.sh wait-connections "$wait_seconds"
 
       - name: Upload permission screenshots
         if: always() && env.UUREMOTE_DEBUG != '0'
