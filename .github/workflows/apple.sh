@@ -1087,7 +1087,7 @@ terminal_preferences_have_profiles() {
 import plistlib
 import sys
 
-preferences = plistlib.load(sys.stdin.buffer)
+preferences = plistlib.loads(sys.stdin.buffer.read())
 profiles = preferences.get("Window Settings")
 raise SystemExit(0 if isinstance(profiles, dict) and bool(profiles) else 1)
 '

@@ -164,6 +164,18 @@ class DesktopPreferenceBehaviorTests(unittest.TestCase):
         self.assertIn('tell application "Terminal" to quit', initializer)
         self.assertIn('[ "$terminal_was_running" -eq 0 ]', initializer)
 
+    def test_terminal_profile_probe_reads_nonseekable_defaults_pipe(self):
+        script = text(SCRIPT_PATH)
+        probe_start = script.index("terminal_preferences_have_profiles()")
+        probe_end = script.index(
+            "initialize_terminal_preferences_if_needed()",
+            probe_start,
+        )
+        probe = script[probe_start:probe_end]
+
+        self.assertIn("plistlib.loads(sys.stdin.buffer.read())", probe)
+        self.assertNotIn("plistlib.load(sys.stdin.buffer)", probe)
+
     def test_keyboard_contract_uses_system_settings_visible_extremes(self):
         result = subprocess.run(
             ["/bin/bash", str(SCRIPT_PATH), "desktop-preference-contract"],
