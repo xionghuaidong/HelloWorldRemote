@@ -2447,6 +2447,8 @@ on emitScreenshot(captureLabel, screenshotDirectory)
 end emitScreenshot
 
 on ensurePermission(permissionURL, permissionWindowTitles, permissionLabel, screenshotPrefix, authorizationPassword, screenshotDirectory)
+    set pageWaitAttempts to 20
+    if activeDebugLevel is greater than or equal to 1 then set pageWaitAttempts to 120
     set outlineWaitAttempts to 3
     if activeDebugLevel is greater than or equal to 1 then set outlineWaitAttempts to 12
 
@@ -2462,17 +2464,22 @@ on ensurePermission(permissionURL, permissionWindowTitles, permissionLabel, scre
     my progressMessage(permissionLabel & ": waiting for the permission window")
     set pageReady to false
 
-    repeat 120 times
-        if exists application process settingsProcessName then
-            set settingsProcess to application process settingsProcessName
+    repeat pageWaitAttempts times
+        try
+            if exists application process settingsProcessName then
+                set settingsProcess to application process settingsProcessName
 
-            if exists window 1 of settingsProcess then
-                if my listContainsText(permissionWindowTitles, my attributeText(window 1 of settingsProcess, "AXTitle")) then
-                    set pageReady to true
-                    exit repeat
+                if exists window 1 of settingsProcess then
+                    if my listContainsText(permissionWindowTitles, my attributeText(window 1 of settingsProcess, "AXTitle")) then
+                        set pageReady to true
+                        exit repeat
+                    end if
                 end if
             end if
-        end if
+        on error pageProbeError
+            -- System Settings can transiently return -10000 while its first
+            -- window is being attached. The next probe normally succeeds.
+        end try
 
         delay 0.25
     end repeat
@@ -2778,17 +2785,21 @@ on ensurePermission(permissionURL, permissionWindowTitles, permissionLabel, scre
     set persistedPageReady to false
     my progressMessage(permissionLabel & ": waiting for the persistence verification page")
 
-    repeat 120 times
-        if exists application process settingsProcessName then
-            set settingsProcess to application process settingsProcessName
+    repeat pageWaitAttempts times
+        try
+            if exists application process settingsProcessName then
+                set settingsProcess to application process settingsProcessName
 
-            if exists window 1 of settingsProcess then
-                if my listContainsText(permissionWindowTitles, my attributeText(window 1 of settingsProcess, "AXTitle")) then
-                    set persistedPageReady to true
-                    exit repeat
+                if exists window 1 of settingsProcess then
+                    if my listContainsText(permissionWindowTitles, my attributeText(window 1 of settingsProcess, "AXTitle")) then
+                        set persistedPageReady to true
+                        exit repeat
+                    end if
                 end if
             end if
-        end if
+        on error pageProbeError
+            -- Retry the same transient launch-time AppleEvent failure here.
+        end try
 
         delay 0.25
     end repeat

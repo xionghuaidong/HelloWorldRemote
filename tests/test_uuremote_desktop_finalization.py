@@ -220,6 +220,20 @@ class PermissionFinalizationContractTests(unittest.TestCase):
         )
         self.assertGreaterEqual(ensure.count("repeat outlineWaitAttempts times"), 3)
 
+    def test_permission_page_probe_retries_transient_apple_event_failures(self):
+        script = text(SCRIPT_PATH)
+        ensure = script[
+            script.index("on ensurePermission") : script.index("end ensurePermission")
+        ]
+
+        self.assertIn("set pageWaitAttempts to 20", ensure)
+        self.assertIn(
+            "if activeDebugLevel is greater than or equal to 1 then set pageWaitAttempts to 120",
+            ensure,
+        )
+        self.assertGreaterEqual(ensure.count("repeat pageWaitAttempts times"), 2)
+        self.assertGreaterEqual(ensure.count("on error pageProbeError"), 2)
+
     def test_restart_prompt_probe_scans_only_sheets_with_a_hard_timeout(self):
         script = text(SCRIPT_PATH)
         probe = script[
