@@ -307,6 +307,19 @@ class PermissionFinalizationContractTests(unittest.TestCase):
             with self.subTest(token=token):
                 self.assertIn(token, script)
 
+    def test_no_ordinary_uuremote_window_is_an_already_hidden_success_state(self):
+        script = text(SCRIPT_PATH)
+
+        self.assertNotIn(
+            "No UU Remote ordinary window was available to minimize",
+            script,
+        )
+        self.assertNotIn(
+            "No UU Remote ordinary window was available for final verification",
+            script,
+        )
+        self.assertIn("ordinary windows minimized or absent", script)
+
 
 class DiagnosticStateContractTests(unittest.TestCase):
     def test_final_and_live_snapshots_do_not_open_uuremote(self):

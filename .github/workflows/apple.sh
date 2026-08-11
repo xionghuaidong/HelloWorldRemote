@@ -2997,7 +2997,6 @@ on verifyUURemoteWindowsMinimized(requireOrdinaryWindow)
         end repeat
     end tell
 
-    if requireOrdinaryWindow and ordinaryWindowCount is 0 then error "No UU Remote ordinary window was available to minimize"
     return ordinaryWindowCount
 end verifyUURemoteWindowsMinimized
 
@@ -3020,8 +3019,6 @@ on minimizeUURemoteWindows(requireOrdinaryWindow)
             end if
         end repeat
     end tell
-
-    if requireOrdinaryWindow and ordinaryWindowCount is 0 then error "No UU Remote ordinary window was available to minimize"
 
     repeat 20 times
         try
@@ -3189,13 +3186,12 @@ on run argv
             end if
         end repeat
 
-        if ordinaryWindowCount is 0 then error "No UU Remote ordinary window was available for final verification"
         if exists application process settingsProcessName then
             if (count of windows of application process settingsProcessName) is greater than 0 then error "System Settings still has a visible window"
         end if
     end tell
 
-    return "UU Remote CLI ready; dialogs absent; windows minimized; System Settings closed"
+    return "UU Remote CLI ready; dialogs absent; ordinary windows minimized or absent; System Settings closed"
 end run
 APPLESCRIPT
 )"; then
