@@ -152,6 +152,18 @@ class DesktopPreferenceBehaviorTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertFalse(output_path.exists())
 
+    def test_missing_terminal_profiles_are_initialized_without_touching_an_existing_session(self):
+        script = text(SCRIPT_PATH)
+        initializer_start = script.index("initialize_terminal_preferences_if_needed()")
+        initializer_end = script.index("configure_terminal_preferences()", initializer_start)
+        initializer = script[initializer_start:initializer_end]
+
+        self.assertIn("terminal_preferences_have_profiles", initializer)
+        self.assertIn("terminal_was_running", initializer)
+        self.assertIn("open -gj -a Terminal", initializer)
+        self.assertIn('tell application "Terminal" to quit', initializer)
+        self.assertIn('[ "$terminal_was_running" -eq 0 ]', initializer)
+
     def test_keyboard_contract_uses_system_settings_visible_extremes(self):
         result = subprocess.run(
             ["/bin/bash", str(SCRIPT_PATH), "desktop-preference-contract"],

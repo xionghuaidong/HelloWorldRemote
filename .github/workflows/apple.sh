@@ -1081,6 +1081,69 @@ configure_language_and_region() {
     fi
 }
 
+terminal_preferences_have_profiles() {
+    run_as_console_user /usr/bin/defaults export com.apple.Terminal - 2>/dev/null |
+        /usr/bin/python3 -c '
+import plistlib
+import sys
+
+preferences = plistlib.load(sys.stdin.buffer)
+profiles = preferences.get("Window Settings")
+raise SystemExit(0 if isinstance(profiles, dict) and bool(profiles) else 1)
+'
+}
+
+initialize_terminal_preferences_if_needed() {
+    local terminal_was_running=0
+    local attempt
+
+    if terminal_preferences_have_profiles; then
+        return 0
+    fi
+
+    if run_as_console_user /usr/bin/pgrep -x Terminal >/dev/null 2>&1; then
+        terminal_was_running=1
+        echo "Terminal is already running; waiting for its initial profiles without closing it"
+    else
+        echo "Initializing the fresh Terminal preference domain in the background"
+        run_as_console_user /usr/bin/open -gj -a Terminal
+    fi
+
+    for ((attempt=1; attempt<=20; attempt++)); do
+        if terminal_preferences_have_profiles; then
+            break
+        fi
+        /bin/sleep 0.25
+    done
+
+    if [ "$terminal_was_running" -eq 0 ]; then
+        run_as_console_user /usr/bin/osascript \
+            -e 'tell application "Terminal" to quit' >/dev/null 2>&1 || true
+
+        for ((attempt=1; attempt<=20; attempt++)); do
+            if ! run_as_console_user /usr/bin/pgrep -x Terminal >/dev/null 2>&1; then
+                break
+            fi
+            /bin/sleep 0.25
+        done
+
+        if run_as_console_user /usr/bin/pgrep -x Terminal >/dev/null 2>&1; then
+            run_as_console_user /usr/bin/killall Terminal >/dev/null 2>&1 || true
+        fi
+    fi
+
+    for ((attempt=1; attempt<=20; attempt++)); do
+        if terminal_preferences_have_profiles; then
+            echo "Terminal default profiles initialized"
+            return 0
+        fi
+        /bin/sleep 0.25
+    done
+
+    echo "Terminal Window Settings profiles are unavailable after initialization" >&2
+    return 1
+}
+
 terminal_preferences_match() {
     run_as_console_user /usr/bin/defaults export com.apple.Terminal - 2>/dev/null |
         /usr/bin/python3 -c '
@@ -1101,6 +1164,8 @@ raise SystemExit(0 if valid else 1)
 configure_terminal_preferences() {
     local terminal_before="$bootstrap_temp_dir/com.apple.Terminal.before.plist"
     local terminal_after="$bootstrap_temp_dir/com.apple.Terminal.after.plist"
+
+    initialize_terminal_preferences_if_needed
 
     if ! run_as_console_user /usr/bin/defaults export com.apple.Terminal - \
         >"$terminal_before" 2>/dev/null; then
