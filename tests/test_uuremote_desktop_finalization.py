@@ -225,5 +225,30 @@ class PermissionFinalizationContractTests(unittest.TestCase):
                 self.assertIn(token, script)
 
 
+class DiagnosticStateContractTests(unittest.TestCase):
+    def test_final_and_live_snapshots_do_not_open_uuremote(self):
+        script = text(SCRIPT_PATH)
+        capture = script[
+            script.index("capture_snapshot()") :
+            script.index("dismiss_uuremote_private_window_prompt()")
+        ]
+
+        self.assertNotIn('run_in_gui /usr/bin/open "$APP"', capture)
+        self.assertNotIn("live-*|final-app*", capture)
+
+    def test_normalization_precedes_wait_connections(self):
+        workflow = text(WORKFLOW_PATH)
+        permission = workflow.index("      - name: Configure UU Remote permissions")
+        wait_connections = workflow.index("      - name: Wait connections")
+
+        self.assertLess(permission, wait_connections)
+
+    def test_debug_zero_keeps_screenshot_and_artifact_paths_disabled(self):
+        workflow = text(WORKFLOW_PATH)
+        upload = step_block(workflow, "Upload permission screenshots")
+
+        self.assertIn("env.UUREMOTE_DEBUG != '0'", upload)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1460,13 +1460,6 @@ capture_snapshot() {
     jpeg_path="$evidence_dir/${safe_label}-${timestamp}.jpg"
     user_tcc_database="/Users/$console_user/Library/Application Support/com.apple.TCC/TCC.db"
 
-    case "$safe_label" in
-        live-*|final-app*)
-            run_in_gui /usr/bin/open "$APP"
-            debug_sleep 1 0
-            ;;
-    esac
-
     {
         echo
         echo "========== SNAPSHOT $safe_label $timestamp =========="
