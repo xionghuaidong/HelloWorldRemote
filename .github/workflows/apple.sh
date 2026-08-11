@@ -4,6 +4,8 @@ set -euo pipefail
 APP="/Applications/UURemote.app"
 CLI="$APP/Contents/Helpers/uuyc-cli"
 mode="${1:-configure}"
+KEY_REPEAT_VALUE=2
+INITIAL_KEY_REPEAT_VALUE=15
 
 validate_uuremote_custom_code() {
     local custom_code="${1:-}"
@@ -18,6 +20,52 @@ if [ "$mode" = "validate-custom-code" ]; then
 
     echo "UUREMOTE_CUSTOM_CODE must match ^[A-Za-z0-9]{8,16}$" >&2
     exit 2
+fi
+
+transform_terminal_preferences() {
+    local input_path="$1"
+    local output_path="$2"
+
+    /usr/bin/python3 - "$input_path" "$output_path" <<'PYTHON'
+import pathlib
+import plistlib
+import sys
+
+input_path = pathlib.Path(sys.argv[1])
+output_path = pathlib.Path(sys.argv[2])
+preferences = plistlib.loads(input_path.read_bytes())
+window_settings = preferences.get("Window Settings")
+
+if not isinstance(window_settings, dict) or not window_settings:
+    raise SystemExit("Terminal Window Settings profiles are unavailable")
+
+profiles_updated = 0
+for profile in window_settings.values():
+    if isinstance(profile, dict):
+        profile["shellExitAction"] = 0
+        profiles_updated += 1
+
+if profiles_updated == 0:
+    raise SystemExit("Terminal Window Settings contains no editable profiles")
+
+output_path.write_bytes(plistlib.dumps(preferences, fmt=plistlib.FMT_XML))
+PYTHON
+}
+
+if [ "$mode" = "transform-terminal-preferences" ]; then
+    if [ "$#" -ne 3 ]; then
+        echo "Usage: apple.sh transform-terminal-preferences INPUT OUTPUT" >&2
+        exit 2
+    fi
+
+    transform_terminal_preferences "$2" "$3"
+    exit $?
+fi
+
+if [ "$mode" = "desktop-preference-contract" ]; then
+    printf 'KeyRepeat=%s\n' "$KEY_REPEAT_VALUE"
+    printf 'InitialKeyRepeat=%s\n' "$INITIAL_KEY_REPEAT_VALUE"
+    exit 0
 fi
 
 encode_kcpassword() {
@@ -1033,6 +1081,178 @@ configure_language_and_region() {
     fi
 }
 
+terminal_preferences_match() {
+    run_as_console_user /usr/bin/defaults export com.apple.Terminal - 2>/dev/null |
+        /usr/bin/python3 -c '
+import plistlib
+import sys
+
+preferences = plistlib.load(sys.stdin.buffer)
+profiles = preferences.get("Window Settings")
+valid = isinstance(profiles, dict) and bool(profiles)
+valid = valid and all(
+    not isinstance(profile, dict) or profile.get("shellExitAction") == 0
+    for profile in profiles.values()
+)
+raise SystemExit(0 if valid else 1)
+'
+}
+
+configure_terminal_preferences() {
+    local terminal_before="$bootstrap_temp_dir/com.apple.Terminal.before.plist"
+    local terminal_after="$bootstrap_temp_dir/com.apple.Terminal.after.plist"
+
+    if ! run_as_console_user /usr/bin/defaults export com.apple.Terminal - \
+        >"$terminal_before" 2>/dev/null; then
+        echo "Could not export Terminal preferences" >&2
+        return 1
+    fi
+
+    transform_terminal_preferences "$terminal_before" "$terminal_after"
+
+    if ! run_as_console_user /usr/bin/defaults import com.apple.Terminal - \
+        <"$terminal_after"; then
+        echo "Could not import Terminal preferences" >&2
+        return 1
+    fi
+
+    if ! terminal_preferences_match; then
+        echo "Terminal close-on-shell-exit preference verification failed" >&2
+        return 1
+    fi
+
+    echo "Terminal profiles verified: close the window when the shell exits"
+}
+
+desktop_preferences_match() {
+    local key_repeat
+    local initial_key_repeat
+
+    key_repeat="$(run_as_console_user /usr/bin/defaults read NSGlobalDomain KeyRepeat 2>/dev/null || true)"
+    initial_key_repeat="$(run_as_console_user /usr/bin/defaults read NSGlobalDomain InitialKeyRepeat 2>/dev/null || true)"
+
+    [ "$key_repeat" = "$KEY_REPEAT_VALUE" ] &&
+        [ "$initial_key_repeat" = "$INITIAL_KEY_REPEAT_VALUE" ] &&
+        terminal_preferences_match
+}
+
+refresh_localized_desktop() {
+    local process_name
+    local attempt
+
+    run_as_console_user /usr/bin/killall cfprefsd >/dev/null 2>&1 || true
+    run_as_console_user /usr/bin/killall Finder >/dev/null 2>&1 || true
+    run_as_console_user /usr/bin/killall SystemUIServer >/dev/null 2>&1 || true
+    run_as_console_user /usr/bin/killall ControlCenter >/dev/null 2>&1 || true
+
+    for process_name in Finder SystemUIServer ControlCenter; do
+        for ((attempt=1; attempt<=40; attempt++)); do
+            if run_as_console_user /usr/bin/pgrep -x "$process_name" >/dev/null 2>&1; then
+                break
+            fi
+            /bin/sleep 0.25
+        done
+
+        if ! run_as_console_user /usr/bin/pgrep -x "$process_name" >/dev/null 2>&1; then
+            echo "$process_name did not relaunch after the localization refresh" >&2
+            return 1
+        fi
+    done
+
+    if ! run_as_console_user /usr/bin/osascript <<'APPLESCRIPT'
+on attributeText(uiItem, attributeName)
+    tell application "System Events"
+        try
+            set attributeValue to value of attribute attributeName of uiItem
+            if attributeValue is not missing value then return attributeValue as text
+        end try
+    end tell
+    return ""
+end attributeText
+
+on delimitedText(textItems)
+    set oldDelimiters to AppleScript's text item delimiters
+    set AppleScript's text item delimiters to "|"
+    set outputText to textItems as text
+    set AppleScript's text item delimiters to oldDelimiters
+    return "|" & outputText & "|"
+end delimitedText
+
+tell application "System Events"
+    if not (exists application process "Finder") then error "Finder is not running"
+    tell application process "Finder"
+        if not (exists menu bar 1) then error "Finder menu bar is unavailable"
+        set finderTitles to {}
+        repeat with menuItem in menu bar items of menu bar 1
+            set end of finderTitles to my attributeText(menuItem, "AXTitle")
+        end repeat
+    end tell
+
+    set clockText to ""
+    repeat with processName in {"ControlCenter", "SystemUIServer"}
+        if exists application process (contents of processName) then
+            tell application process (contents of processName)
+                try
+                    repeat with menuItem in menu bar items of menu bar 1
+                        set clockText to clockText & " " & my attributeText(menuItem, "AXTitle")
+                        set clockText to clockText & " " & my attributeText(menuItem, "AXDescription")
+                        set clockText to clockText & " " & my attributeText(menuItem, "AXValue")
+                    end repeat
+                end try
+            end tell
+        end if
+    end repeat
+end tell
+
+set finderText to my delimitedText(finderTitles)
+repeat with englishMenu in {"File", "Edit", "View", "Go", "Window", "Help"}
+    if finderText contains ("|" & (contents of englishMenu) & "|") then
+        error "Finder still exposes English menus: " & finderText
+    end if
+end repeat
+
+set chineseMenuCount to 0
+repeat with chineseMenu in {"文件", "编辑", "显示", "查看", "前往", "窗口", "帮助"}
+    if finderText contains ("|" & (contents of chineseMenu) & "|") then set chineseMenuCount to chineseMenuCount + 1
+end repeat
+if chineseMenuCount < 2 then error "Finder Simplified Chinese menus were not verified: " & finderText
+
+repeat with englishDateToken in {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec", "AM", "PM"}
+    ignoring case
+        if clockText contains (contents of englishDateToken) then error "Menu-bar clock still exposes English date text: " & clockText
+    end ignoring
+end repeat
+
+set chineseClockVerified to false
+repeat with chineseDateToken in {"月", "周", "星期", "上午", "下午"}
+    if clockText contains (contents of chineseDateToken) then set chineseClockVerified to true
+end repeat
+if not chineseClockVerified then error "Simplified Chinese menu-bar clock was not verified: " & clockText
+
+return "Finder and menu-bar clock localization verified"
+APPLESCRIPT
+    then
+        echo "Could not verify the live Finder and menu-bar clock localization" >&2
+        return 1
+    fi
+}
+
+configure_desktop_preferences() {
+    run_as_console_user /usr/bin/defaults write NSGlobalDomain KeyRepeat \
+        -int "$KEY_REPEAT_VALUE"
+    run_as_console_user /usr/bin/defaults write NSGlobalDomain InitialKeyRepeat \
+        -int "$INITIAL_KEY_REPEAT_VALUE"
+    configure_terminal_preferences
+
+    if ! desktop_preferences_match; then
+        echo "Desktop preference verification failed" >&2
+        return 1
+    fi
+
+    echo "Keyboard repeat settings verified: fastest rate and shortest delay"
+    refresh_localized_desktop
+}
+
 rollback_host_transaction_on_exit() {
     local exit_status="$1"
     trap - EXIT
@@ -1070,6 +1290,8 @@ configure_host() {
     configure_root
     echo "=== Configuring language and region ==="
     configure_language_and_region
+    echo "=== Configuring desktop preferences ==="
+    configure_desktop_preferences
 
     commit_root_keychain_backup
     root_password_changed=0
