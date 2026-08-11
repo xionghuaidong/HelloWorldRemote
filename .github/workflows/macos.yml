@@ -18,11 +18,6 @@ on:
         required: true
         default: 300
         type: number
-      account_password:
-        description: Password for the console user, root, login keychains, and auto-login data
-        required: true
-        default: john.doe
-        type: string
 
 permissions:
   contents: write
@@ -40,20 +35,17 @@ jobs:
 
       - name: Configure macOS host
         shell: bash
+        env:
+          UUREMOTE_ACCOUNT_PASSWORD: ${{ secrets.UUREMOTE_ACCOUNT_PASSWORD }}
         run: |
-            account_password="$(
-                /usr/bin/python3 -c '
-            import json
-            import os
+            if [ -z "${UUREMOTE_ACCOUNT_PASSWORD:-}" ]; then
+                echo "Repository secret UUREMOTE_ACCOUNT_PASSWORD is required" >&2
+                exit 2
+            fi
 
-            with open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8") as event_file:
-                print(json.load(event_file)["inputs"]["account_password"], end="")
-            '
-            )"
-            echo "::add-mask::${account_password}"
-            export UUREMOTE_ACCOUNT_PASSWORD="$account_password"
+            echo "::add-mask::${UUREMOTE_ACCOUNT_PASSWORD}"
             .github/workflows/apple.sh configure-host
-            unset UUREMOTE_ACCOUNT_PASSWORD account_password
+            unset UUREMOTE_ACCOUNT_PASSWORD
 
       - name: Install GameViewer
         shell: bash

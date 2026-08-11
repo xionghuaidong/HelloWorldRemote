@@ -21,16 +21,13 @@ def step_block(workflow: str, name: str) -> str:
 
 
 class WorkflowContractTests(unittest.TestCase):
-    def test_password_input_is_required_string_with_expected_default(self):
+    def test_password_is_not_a_workflow_dispatch_input(self):
         workflow = text(WORKFLOW_PATH)
-        match = re.search(
-            r"(?ms)^      account_password:\n"
-            r"(?:(?!^      \S).)*?^        required: true\n"
-            r"(?:(?!^      \S).)*?^        default: [\"']?john\.doe[\"']?\n"
-            r"(?:(?!^      \S).)*?^        type: string$",
-            workflow,
-        )
-        self.assertIsNotNone(match)
+        inputs = workflow[
+            workflow.index("    inputs:\n") : workflow.index("\npermissions:\n")
+        ]
+        self.assertNotIn("account_password:", inputs)
+        self.assertNotIn("john.doe", inputs)
 
     def test_host_configuration_precedes_uuremote_install(self):
         workflow = text(WORKFLOW_PATH)
@@ -40,7 +37,7 @@ class WorkflowContractTests(unittest.TestCase):
             workflow.index("      - name: Install GameViewer"),
         )
 
-    def test_password_is_scoped_and_masked_in_configuration_step(self):
+    def test_password_secret_is_scoped_masked_and_required(self):
         workflow = text(WORKFLOW_PATH)
         job_environment = workflow[
             workflow.index("    env:\n") : workflow.index("\n    steps:\n")
@@ -49,11 +46,15 @@ class WorkflowContractTests(unittest.TestCase):
 
         self.assertIn("      - name: Configure macOS host", workflow)
         block = step_block(workflow, "Configure macOS host")
-        self.assertNotIn("inputs.account_password", block)
-        self.assertIn("GITHUB_EVENT_PATH", block)
-        self.assertIn("::add-mask::", block)
-        self.assertIn('export UUREMOTE_ACCOUNT_PASSWORD="$account_password"', block)
+        self.assertIn(
+            "UUREMOTE_ACCOUNT_PASSWORD: ${{ secrets.UUREMOTE_ACCOUNT_PASSWORD }}",
+            block,
+        )
+        self.assertIn('if [ -z "${UUREMOTE_ACCOUNT_PASSWORD:-}" ]; then', block)
+        self.assertIn("::add-mask::${UUREMOTE_ACCOUNT_PASSWORD}", block)
         self.assertIn(".github/workflows/apple.sh configure-host", block)
+        self.assertNotIn("GITHUB_EVENT_PATH", block)
+        self.assertNotIn("inputs.account_password", block)
 
     def test_permission_idempotency_does_not_repeat_host_configuration(self):
         workflow = text(WORKFLOW_PATH)
