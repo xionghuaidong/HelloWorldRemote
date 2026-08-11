@@ -68,8 +68,9 @@ completion.
 ## Shutdown Detection
 
 `apple.sh` will expose a dedicated wait command used by `macos.yml`. The command
-will run a small, temporary Swift/AppKit helper in the active graphical session.
-The helper will have no window and no Dock presence.
+will compile a small checked-in Swift/AppKit source file to a temporary helper
+and run it in the active graphical session. The helper will have no window and
+no Dock presence.
 
 The helper will run an AppKit event loop and install both local and global
 monitors for `NSEvent.EventType.systemDefined`. It completes only when an event's
@@ -91,16 +92,17 @@ one short completion reason (`timeout` or `shutdown/restart`) and return success
 Initialization or compilation failures return nonzero so the workflow does not
 silently skip the requested wait.
 
-Temporary source and binary files will be created in a private temporary
-directory and removed on every normal exit and caught shell termination path.
+The temporary binary and build directory will be removed on every normal exit
+and caught shell termination path.
 
 ## Workflow Integration
 
 `macos.yml` retains validation of `wait_connections_seconds`, then invokes the
 new `apple.sh` wait command instead of calling one fixed `sleep`.
 
-This step remains after UU Remote launch and permission configuration. It does
-not depend on debug level, screenshots, artifacts, idempotency checks, or the
+This step remains after UU Remote launch and permission configuration, with its
+existing workflow debug-level gate unchanged. Its completion decision does not
+depend on debug level, screenshots, artifacts, idempotency checks, or the
 level-3 live diagnostic sampler.
 
 ## Failure and Lifecycle Behavior
