@@ -6,6 +6,7 @@ namespace UURemote
 {
     public static class ShutdownWaiter
     {
+        // Pre-C# 6 binds these overloads; modern compilers use the nameof operator, preserving parameter names in both cases.
         private static string nameof(int value)
         {
             return "seconds";
