@@ -441,6 +441,19 @@ class WindowsDiagnosticContractTests(unittest.TestCase):
         self.assertIn("windows.ps1 snapshot $label", live)
         self.assertIn("Start-Sleep -Seconds 15", live)
 
+    def test_window_enumeration_fails_closed_when_native_enumeration_fails(self):
+        helper = text(WINDOWS_HELPER)
+        interop_start = helper.index("public static class DesktopWindowInterop")
+        interop_end = helper.index("'@", interop_start)
+        interop = helper[interop_start:interop_end]
+
+        self.assertIn('[DllImport("user32.dll", SetLastError = true)]', interop)
+        self.assertIn("public static extern bool IsWindow(IntPtr windowHandle);", interop)
+        self.assertIn("if (!EnumWindows(", interop)
+        self.assertIn("if (GetWindowThreadProcessId(windowHandle, out processId) == 0)", interop)
+        self.assertIn("return !IsWindow(windowHandle);", interop)
+        self.assertIn('throw new InvalidOperationException("UU Remote window enumeration failed.");', interop)
+
 
 @unittest.skipUnless(
     WINDOWS_NATIVE_CAPABILITY_AVAILABLE,
@@ -532,6 +545,41 @@ Write-Output "HANDLES=$(@($handles | ForEach-Object {{ $_.ToInt64() }}) -join ',
         self.assertIn("HANDLES=101,202,303", result.stdout)
         self.assertNotIn("901", result.stdout)
         self.assertNotIn("902", result.stdout)
+
+    def test_finalization_rejects_a_null_interop_enumeration_result(self):
+        helper = str(WINDOWS_HELPER).replace("'", "''")
+        result = run_windows_script(
+            rf"""
+Add-Type @'
+using System;
+
+namespace UURemote
+{{
+    public static class DesktopWindowInterop
+    {{
+        public static IntPtr[] GetVisibleTopLevelWindowHandles(int[] processIds)
+        {{
+            return null;
+        }}
+    }}
+}}
+'@
+. '{helper}'
+function Get-UURemoteGameViewerProcess {{
+    return [pscustomobject]@{{ Id = 41 }}
+}}
+function Test-UURemoteWindowMinimized {{
+    param([AllowNull()]$WindowHandle)
+    return $true
+}}
+$HelperMode = 'finalize-desktop'
+$Arguments = @()
+Invoke-WindowsHelperRoute
+"""
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(result.stderr.strip(), "UU Remote desktop finalization failed.")
 
     def test_minimization_accepts_no_current_top_level_window(self):
         result = self.run_controlled_helper(

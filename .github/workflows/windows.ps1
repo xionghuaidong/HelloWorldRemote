@@ -236,19 +236,22 @@ namespace UURemote
     {
         public delegate bool EnumWindowsCallback(IntPtr windowHandle, IntPtr parameter);
 
-        [DllImport("user32.dll")]
+        [DllImport("user32.dll", SetLastError = true)]
         public static extern bool EnumWindows(EnumWindowsCallback callback, IntPtr parameter);
 
-        [DllImport("user32.dll")]
+        [DllImport("user32.dll", SetLastError = true)]
         public static extern uint GetWindowThreadProcessId(IntPtr windowHandle, out uint processId);
 
-        [DllImport("user32.dll")]
+        [DllImport("user32.dll", SetLastError = true)]
         public static extern bool IsWindowVisible(IntPtr windowHandle);
 
-        [DllImport("user32.dll")]
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern bool IsWindow(IntPtr windowHandle);
+
+        [DllImport("user32.dll", SetLastError = true)]
         public static extern bool ShowWindowAsync(IntPtr windowHandle, int command);
 
-        [DllImport("user32.dll")]
+        [DllImport("user32.dll", SetLastError = true)]
         public static extern bool IsIconic(IntPtr windowHandle);
 
         public static IntPtr[] GetVisibleTopLevelWindowHandles(int[] processIds)
@@ -263,18 +266,24 @@ namespace UURemote
             }
 
             List<IntPtr> handles = new List<IntPtr>();
-            EnumWindows(
+            if (!EnumWindows(
                 delegate(IntPtr windowHandle, IntPtr parameter)
                 {
                     uint processId;
-                    GetWindowThreadProcessId(windowHandle, out processId);
+                    if (GetWindowThreadProcessId(windowHandle, out processId) == 0)
+                    {
+                        return !IsWindow(windowHandle);
+                    }
                     if (requestedProcessIds.Contains(processId) && IsWindowVisible(windowHandle))
                     {
                         handles.Add(windowHandle);
                     }
                     return true;
                 },
-                IntPtr.Zero);
+                IntPtr.Zero))
+            {
+                throw new InvalidOperationException("UU Remote window enumeration failed.");
+            }
             return handles.ToArray();
         }
     }
@@ -294,11 +303,14 @@ function Get-UURemoteWindowHandles {
         return @()
     }
 
-    return @(
-        [UURemote.DesktopWindowInterop]::GetVisibleTopLevelWindowHandles(
-            [int[]]$processIds
-        )
+    $windowHandles = [UURemote.DesktopWindowInterop]::GetVisibleTopLevelWindowHandles(
+        [int[]]$processIds
     )
+    if ($null -eq $windowHandles) {
+        throw 'UU Remote window enumeration failed.'
+    }
+
+    return @($windowHandles)
 }
 
 function Request-UURemoteWindowMinimize([IntPtr]$WindowHandle) {
