@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 MACOS_WORKFLOW = ROOT / ".github/workflows/macos.yml"
 WINDOWS_WORKFLOW = ROOT / ".github/workflows/windows.yml"
 WINDOWS_HELPER = ROOT / ".github/workflows/windows.ps1"
+WINDOWS_HELPER_HARNESS = ROOT / "tests/windows_helper_harness.ps1"
 POWERSHELL = shutil.which("pwsh") or shutil.which("powershell.exe") or shutil.which("powershell")
 
 
@@ -103,3 +104,71 @@ class WindowsWaitBehaviorTests(unittest.TestCase):
         result = run_windows_helper("self-test-wait-connections")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("shutdown-aware wait self-test passed", result.stdout)
+
+
+class WindowsReadinessContractTests(unittest.TestCase):
+    def test_workflow_delegates_launch_and_readiness(self):
+        workflow = text(WINDOWS_WORKFLOW)
+        self.assertIn("      - name: Verify unattended readiness\n", workflow)
+        launch = step_block(workflow, "Launch GameViewer")
+        readiness = step_block(workflow, "Verify unattended readiness")
+        self.assertIn("windows.ps1 launch-and-wait-device", launch)
+        self.assertIn("windows.ps1 verify-unattended-readiness", readiness)
+        self.assertLess(workflow.index("Launch GameViewer"), workflow.index("Configure UU Remote custom code"))
+        self.assertLess(
+            workflow.index("Configure UU Remote custom code"),
+            workflow.index("Verify unattended readiness"),
+        )
+
+
+class WindowsReadinessBehaviorTests(unittest.TestCase):
+    def run_harness(self, mode: str):
+        if POWERSHELL is None:
+            self.skipTest("A PowerShell runtime is required to run the readiness harness.")
+
+        return subprocess.run(
+            [
+                POWERSHELL,
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(WINDOWS_HELPER_HARNESS),
+                mode,
+            ],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+    def test_readiness_retries_transient_failures_without_exposing_device_id(self):
+        result = self.run_harness("readiness-success")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("DEVICE_ID_STATE=ready", result.stdout)
+        self.assertIn("ATTEMPTS=3", result.stdout)
+        self.assertNotIn("device-id-fixture", result.stdout + result.stderr)
+
+    def test_readiness_timeout_is_bounded_and_sanitized(self):
+        result = self.run_harness("readiness-timeout")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("timed out", result.stderr.lower())
+        self.assertNotIn("device-id-fixture", result.stdout + result.stderr)
+
+    def test_unattended_readiness_requires_a_running_process(self):
+        result = self.run_harness("unattended-no-process")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("unattended readiness failed", result.stderr.lower())
+        self.assertNotIn("device-id-fixture", result.stdout + result.stderr)
+
+    def test_unattended_readiness_requires_a_nonempty_device_id(self):
+        result = self.run_harness("unattended-no-device")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("unattended readiness failed", result.stderr.lower())
+        self.assertNotIn("device-id-fixture", result.stdout + result.stderr)
+
+    def test_unattended_readiness_reports_only_sanitized_success(self):
+        result = self.run_harness("unattended-success")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("UNATTENDED_READINESS=verified", result.stdout)
+        self.assertNotIn("device-id-fixture", result.stdout + result.stderr)

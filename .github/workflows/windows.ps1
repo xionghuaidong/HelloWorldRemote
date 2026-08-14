@@ -3,7 +3,8 @@ param(
     [Parameter(Position = 0)]
     [string]$Mode = "configure",
     [Parameter(Position = 1, ValueFromRemainingArguments = $true)]
-    [string[]]$Arguments
+    [string[]]$Arguments,
+    [switch]$ImportOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -21,12 +22,109 @@ function Test-WaitSeconds([string]$Value) {
 }
 
 function Get-UURemotePaths {
-    $root = 'C:\Program Files\Netease\GameViewer'
+    $root = Join-Path $env:ProgramFiles 'Netease\GameViewer'
     [pscustomobject]@{
         InstallRoot = $root
         LauncherPath = Join-Path $root 'GameViewer.exe'
         CliPath = Join-Path $root 'bin\uuyc-cli.exe'
     }
+}
+
+function Get-UURemoteGameViewerProcess {
+    return @(Get-Process -Name 'GameViewer' -ErrorAction SilentlyContinue)
+}
+
+function Start-UURemoteGameViewerProcess {
+    param([pscustomobject]$Paths)
+
+    $null = Start-Process -FilePath $Paths.LauncherPath -WorkingDirectory $Paths.InstallRoot
+}
+
+function Invoke-UURemoteDeviceIdCli([string]$Path) {
+    $output = @(& $Path --device-id 2>&1)
+    $exitCode = $LASTEXITCODE
+    return [pscustomobject]@{
+        ExitCode = $exitCode
+        Output = $output
+    }
+}
+
+function Get-UURemoteNow {
+    return Get-Date
+}
+
+function Wait-UURemotePoll([int]$Milliseconds) {
+    Start-Sleep -Milliseconds $Milliseconds
+}
+
+function Assert-UURemotePaths([pscustomobject]$Paths) {
+    if (-not (Test-Path -LiteralPath $Paths.LauncherPath -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $Paths.CliPath -PathType Leaf)) {
+        throw 'UU Remote required executables are unavailable.'
+    }
+}
+
+function Get-UURemoteDeviceId([string]$CliPath) {
+    $result = Invoke-UURemoteDeviceIdCli -Path $CliPath
+    if ($result.ExitCode -ne 0) {
+        return $null
+    }
+
+    $deviceId = (@($result.Output) -join [Environment]::NewLine).Trim()
+    if ([string]::IsNullOrWhiteSpace($deviceId)) {
+        return $null
+    }
+    return $deviceId
+}
+
+function Start-UURemoteAndWaitDevice {
+    param(
+        [int]$TimeoutSeconds = 60,
+        [int]$PollMilliseconds = 500
+    )
+
+    if ($TimeoutSeconds -lt 1 -or $PollMilliseconds -lt 1) {
+        throw 'UU Remote readiness timing values are invalid.'
+    }
+
+    $paths = Get-UURemotePaths
+    Assert-UURemotePaths -Paths $paths
+
+    if (@(Get-UURemoteGameViewerProcess).Count -eq 0) {
+        Start-UURemoteGameViewerProcess -Paths $paths
+    }
+
+    $deadline = (Get-UURemoteNow).AddSeconds($TimeoutSeconds)
+    $attempts = 0
+    while ($true) {
+        $attempts++
+        $deviceId = Get-UURemoteDeviceId -CliPath $paths.CliPath
+        if (-not [string]::IsNullOrWhiteSpace($deviceId)) {
+            Write-Output 'DEVICE_ID_STATE=ready'
+            return
+        }
+
+        if ((Get-UURemoteNow) -ge $deadline) {
+            throw "UU Remote device readiness timed out after $attempts attempts."
+        }
+        Wait-UURemotePoll -Milliseconds $PollMilliseconds
+    }
+}
+
+function Assert-UURemoteReadiness {
+    $paths = Get-UURemotePaths
+    Assert-UURemotePaths -Paths $paths
+
+    if (@(Get-UURemoteGameViewerProcess).Count -eq 0) {
+        throw 'UU Remote unattended readiness failed.'
+    }
+
+    $deviceId = Get-UURemoteDeviceId -CliPath $paths.CliPath
+    if ([string]::IsNullOrWhiteSpace($deviceId)) {
+        throw 'UU Remote unattended readiness failed.'
+    }
+
+    Write-Output 'UNATTENDED_READINESS=verified'
 }
 
 function Set-UURemoteCustomCode {
@@ -80,9 +178,10 @@ function Invoke-ShutdownWaiter {
     }
 }
 
-$argumentCount = if ($null -eq $Arguments) { 0 } else { $Arguments.Count }
+function Invoke-WindowsHelperRoute {
+    $argumentCount = if ($null -eq $Arguments) { 0 } else { $Arguments.Count }
 
-switch ($Mode) {
+    switch ($Mode) {
     'validate-custom-code' {
         if ($argumentCount -ne 0) {
             [Console]::Error.WriteLine('Usage error.')
@@ -115,6 +214,34 @@ switch ($Mode) {
         }
         catch {
             [Console]::Error.WriteLine('UU Remote custom-code configuration failed.')
+            exit 1
+        }
+        exit 0
+    }
+    'launch-and-wait-device' {
+        if ($argumentCount -ne 0) {
+            [Console]::Error.WriteLine('Usage error.')
+            exit 2
+        }
+        try {
+            Start-UURemoteAndWaitDevice
+        }
+        catch {
+            [Console]::Error.WriteLine($_.Exception.Message)
+            exit 1
+        }
+        exit 0
+    }
+    'verify-unattended-readiness' {
+        if ($argumentCount -ne 0) {
+            [Console]::Error.WriteLine('Usage error.')
+            exit 2
+        }
+        try {
+            Assert-UURemoteReadiness
+        }
+        catch {
+            [Console]::Error.WriteLine('UU Remote unattended readiness failed.')
             exit 1
         }
         exit 0
@@ -166,4 +293,9 @@ switch ($Mode) {
         [Console]::Error.WriteLine('Usage error.')
         exit 2
     }
+    }
+}
+
+if (-not $ImportOnly) {
+    Invoke-WindowsHelperRoute
 }

@@ -58,25 +58,9 @@ jobs:
       - name: Launch GameViewer
         shell: pwsh
         run: |
-            $installRoot = 'C:\Program Files\Netease\GameViewer'
-            $launcherPath = Join-Path $installRoot 'GameViewer.exe'
-            $cliPath = Join-Path $installRoot 'bin\uuyc-cli.exe'
-            $timeoutSeconds = 60
-            Write-Host "Launching $launcherPath ..."
-            Start-Process -FilePath $launcherPath -WorkingDirectory $installRoot
-            $deadline = (Get-Date).AddSeconds($timeoutSeconds)
-            while ($true) {
-                Write-Host "Waiting $launcherPath ..."
-                if ((Get-Date) -ge $deadline) {
-                    throw "Wait GameViewer timed out after $timeoutSeconds seconds"
-                }
-                Start-Sleep -Milliseconds 500
-                $deviceId = @(& $cliPath --device-id 2>&1)
-                if ($LASTEXITCODE -ne 0) {
-                    continue
-                }
-                Write-Host "deviceId: $deviceId"
-                break
+            & .github/workflows/windows.ps1 launch-and-wait-device
+            if ($LASTEXITCODE -ne 0) {
+                exit $LASTEXITCODE
             }
 
       - name: Configure UU Remote custom code
@@ -97,6 +81,14 @@ jobs:
             }
             finally {
                 Remove-Item Env:\UUREMOTE_CUSTOM_CODE -ErrorAction SilentlyContinue
+            }
+
+      - name: Verify unattended readiness
+        shell: pwsh
+        run: |
+            & .github/workflows/windows.ps1 verify-unattended-readiness
+            if ($LASTEXITCODE -ne 0) {
+                exit $LASTEXITCODE
             }
 
       - name: Wait connections
