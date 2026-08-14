@@ -1,5 +1,7 @@
 # UU Remote macOS Host Bootstrap Implementation Plan
 
+[English](2026-08-10-uuremote-host-bootstrap.md) | [简体中文](2026-08-10-uuremote-host-bootstrap-zh_CN.md)
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Prepare the active macOS graphical account, root password state, login keychains, automatic-login password, Singapore language/region preferences, and bilingual UU Remote permissions from one idempotent workflow input.

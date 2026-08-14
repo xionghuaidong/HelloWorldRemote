@@ -86,5 +86,43 @@ class EntryPointContractTests(unittest.TestCase):
             )
 
 
+class BilingualDocumentationContractTests(unittest.TestCase):
+    def markdown_files(self) -> list[Path]:
+        return sorted(ROOT.glob("*.md")) + sorted((ROOT / "docs").rglob("*.md"))
+
+    def counterparts(self, path: Path) -> tuple[Path, Path]:
+        if path.stem.endswith("-zh_CN"):
+            english = path.with_name(path.stem.removesuffix("-zh_CN") + ".md")
+            return english, path
+        return path, path.with_name(path.stem + "-zh_CN.md")
+
+    def test_every_markdown_file_has_exactly_one_counterpart(self):
+        for path in self.markdown_files():
+            english, chinese = self.counterparts(path)
+            with self.subTest(path=path.relative_to(ROOT).as_posix()):
+                self.assertTrue(english.is_file())
+                self.assertTrue(chinese.is_file())
+                self.assertNotIn("-zh_CN-zh_CN", path.name)
+
+    def test_every_markdown_file_has_exact_navigation(self):
+        checked: set[Path] = set()
+        for path in self.markdown_files():
+            english, chinese = self.counterparts(path)
+            if english in checked:
+                continue
+            checked.add(english)
+            expected = (
+                f"[English]({english.name}) | "
+                f"[简体中文]({chinese.name})"
+            )
+            for version in (english, chinese):
+                lines = text(version).splitlines()
+                with self.subTest(path=version.relative_to(ROOT).as_posix()):
+                    self.assertTrue(lines[0].startswith("# "))
+                    self.assertEqual(lines[1], "")
+                    self.assertEqual(lines[2], expected)
+                    self.assertEqual(lines[3], "")
+
+
 if __name__ == "__main__":
     unittest.main()

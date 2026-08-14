@@ -1,5 +1,7 @@
 # UU Remote Desktop Finalization and Custom Code Secret Implementation Plan
 
+[English](2026-08-11-uuremote-desktop-finalization-and-custom-code-secret.md) | [简体中文](2026-08-11-uuremote-desktop-finalization-and-custom-code-secret-zh_CN.md)
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make the active macOS desktop immediately ready for UU Remote control with all permission dialogs closed, UU Remote minimized, System Settings closed, localized Finder and clock UI, productive Terminal and keyboard preferences, and a validated secret-backed custom code.

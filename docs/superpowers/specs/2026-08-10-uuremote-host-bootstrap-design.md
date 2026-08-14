@@ -1,5 +1,7 @@
 # UU Remote macOS Host Bootstrap Design
 
+[English](2026-08-10-uuremote-host-bootstrap-design.md) | [简体中文](2026-08-10-uuremote-host-bootstrap-design-zh_CN.md)
+
 **Date:** 2026-08-10  
 **Status:** Approved in conversation; awaiting written-spec review  
 **Scope:** `.github/workflows/macos.yml` and `.github/workflows/apple.sh`

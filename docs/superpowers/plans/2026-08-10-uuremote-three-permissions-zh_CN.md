@@ -1,16 +1,16 @@
-# UU远程 macOS 三项被控权限 Implementation Plan
+# UU远程 macOS 三项被控权限实施计划
 
 [English](2026-08-10-uuremote-three-permissions.md) | [简体中文](2026-08-10-uuremote-three-permissions-zh_CN.md)
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **供智能体工作者使用：** 必须使用子技能：使用 superpowers:subagent-driven-development（推荐）或 superpowers:executing-plans，逐项任务实施本计划。步骤使用复选框（`- [ ]`）语法进行跟踪。
 
-**Goal:** 让 `apple.sh` 独立完成“允许本设备被控”、辅助功能、录屏与系统录音，并在 GitHub Actions 同一 runner 上验证首次执行和幂等执行均成功。
+**目标：** 让 `apple.sh` 独立完成“允许本设备被控”、辅助功能、录屏与系统录音，并在 GitHub Actions 同一 runner 上验证首次执行和幂等执行均成功。
 
-**Architecture:** Shell 层负责启动 UU远程、CLI 重试和最终状态验证；嵌入式 AppleScript 提供一个参数化权限处理器，依次处理 Accessibility 与 Screen Capture。workflow 只负责安装、调用两次脚本、上传诊断截图和成功后的保活。
+**架构：** Shell 层负责启动 UU远程、CLI 重试和最终状态验证；嵌入式 AppleScript 提供一个参数化权限处理器，依次处理 Accessibility 与 Screen Capture。workflow 只负责安装、调用两次脚本、上传诊断截图和成功后的保活。
 
-**Tech Stack:** Bash、AppleScript/System Events、UU远程 CLI、GitHub Actions、`actions/upload-artifact@v4`、macOS 26 System Settings。
+**技术栈：** Bash、AppleScript/System Events、UU远程 CLI、GitHub Actions、`actions/upload-artifact@v4`、macOS 26 System Settings。
 
-## Global Constraints
+## 全局约束
 
 - 目标应用固定为 `/Applications/UURemote.app`，CLI 固定为 `/Applications/UURemote.app/Contents/Helpers/uuyc-cli`。
 - 系统权限页面为 `Privacy_Accessibility` 和 `Privacy_ScreenCapture`。
@@ -21,17 +21,17 @@
 
 ---
 
-### Task 1: 将“允许本设备被控”收拢到 apple.sh
+### 任务 1：将“允许本设备被控”收拢到 apple.sh
 
-**Files:**
-- Modify: `.github/workflows/apple.sh`
-- Modify: `.github/workflows/macos.yml`
+**文件：**
+- 修改：`.github/workflows/apple.sh`
+- 修改：`.github/workflows/macos.yml`
 
-**Interfaces:**
-- Consumes: `run_in_gui()`、`CLI`、当前图形桌面 UID。
-- Produces: Bash 函数 `wait_for_cli()` 和 `ensure_assist_allowed()`；后续权限处理可假定 UU远程进程和 CLI 已就绪。
+**接口：**
+- 输入：`run_in_gui()`、`CLI`、当前图形桌面 UID。
+- 输出：Bash 函数 `wait_for_cli()` 和 `ensure_assist_allowed()`；后续权限处理可假定 UU远程进程和 CLI 已就绪。
 
-- [ ] **Step 1: 记录当前失败基线**
+- [ ] **步骤 1：记录当前失败基线**
 
 运行：
 
@@ -42,7 +42,7 @@ grep -n "assist allow on" .github/workflows/macos.yml
 
 预期：第一条没有匹配，第二条显示设置逻辑仍散落在 workflow，证明 `apple.sh` 不能独立完成三项设置。
 
-- [ ] **Step 2: 在 apple.sh 增加 CLI 就绪和允许被控函数**
+- [ ] **步骤 2：在 apple.sh 增加 CLI 就绪和允许被控函数**
 
 在 `run_in_gui()` 后增加以下接口，调用者通过返回码判断成功：
 
@@ -84,11 +84,11 @@ ensure_assist_allowed() {
 
 启动 UU远程后先调用 `wait_for_cli`，再调用 `ensure_assist_allowed`；任一失败都输出不含敏感值的明确错误并退出 1。
 
-- [ ] **Step 3: 删除 workflow 中重复的 allow 循环**
+- [ ] **步骤 3：删除 workflow 中重复的 allow 循环**
 
 从 `.github/workflows/macos.yml` 的 `Launch GameViewer` 中删除整个 `Waiting allow` 循环，保留设备 ID、验证码设置和 `.github/workflows/apple.sh` 调用。
 
-- [ ] **Step 4: 运行静态验证**
+- [ ] **步骤 4：运行静态验证**
 
 运行：
 
@@ -100,7 +100,7 @@ test "$(grep -R -l "assist allow on" .github/workflows/apple.sh .github/workflow
 
 预期：全部退出 0，且 `assist allow on` 只存在于 `apple.sh`。
 
-- [ ] **Step 5: 提交**
+- [ ] **步骤 5：提交**
 
 ```bash
 git add .github/workflows/apple.sh .github/workflows/macos.yml
@@ -109,22 +109,22 @@ git commit -m "centralize uuremote unattended access"
 
 ---
 
-### Task 2: 抽取可复用的系统权限处理器
+### 任务 2：抽取可复用的系统权限处理器
 
-**Files:**
-- Modify: `.github/workflows/apple.sh`
+**文件：**
+- 修改：`.github/workflows/apple.sh`
 
-**Interfaces:**
-- Consumes: `authorizationPassword`、`screenshotDirectory`、`settingsProcessName`、`targetApplicationPath` 和现有 UI 辅助函数。
-- Produces: AppleScript 处理器 `ensurePermission(permissionURL, permissionWindowTitle, permissionLabel, screenshotPrefix, authorizationPassword, screenshotDirectory)`，成功返回文本结果，失败抛出包含 `permissionLabel` 的错误。
+**接口：**
+- 输入：`authorizationPassword`、`screenshotDirectory`、`settingsProcessName`、`targetApplicationPath` 和现有 UI 辅助函数。
+- 输出：AppleScript 处理器 `ensurePermission(permissionURL, permissionWindowTitle, permissionLabel, screenshotPrefix, authorizationPassword, screenshotDirectory)`，成功返回文本结果，失败抛出包含 `permissionLabel` 的错误。
 
-- [ ] **Step 1: 用当前 workflow 记录辅助功能失败基线**
+- [ ] **步骤 1：用当前 workflow 记录辅助功能失败基线**
 
 运行现有 `macOS` workflow，并在手机客户端连接后尝试键鼠控制。
 
 预期：录屏可用，但客户端提示“该设备未开启辅助设备系统权限”，证明 Accessibility 尚未处理。
 
-- [ ] **Step 2: 把单权限主流程移动到 ensurePermission**
+- [ ] **步骤 2：把单权限主流程移动到 ensurePermission**
 
 将当前 AppleScript `on run argv` 中从打开页面、等待窗口、查找 outline、添加应用、处理管理员认证、状态驱动确认 Go to Folder、处理 `Quit & Reopen`、定位并确认开关的逻辑移动到：
 
@@ -140,7 +140,7 @@ end ensurePermission
 
 所有原本写死 `Screen & System Audio Recording` 的进度与错误文本改用 `permissionLabel`；截图文件名使用 `screenshotPrefix`，避免两项权限互相覆盖。
 
-- [ ] **Step 3: 让 on run 依次处理两项权限**
+- [ ] **步骤 3：让 on run 依次处理两项权限**
 
 `on run argv` 保留参数校验，然后严格按以下顺序调用：
 
@@ -164,7 +164,7 @@ my ensurePermission(¬
 
 权限处理器不得在单项完成后重启应用；两项全部成功后由 Bash 统一停止、打开 UU远程并调用 `wait_for_cli`。
 
-- [ ] **Step 4: 使行和按钮搜索不依赖权限页面名称**
+- [ ] **步骤 4：使行和按钮搜索不依赖权限页面名称**
 
 保留以下通用规则：
 
@@ -174,7 +174,7 @@ my ensurePermission(¬
 - 首次添加通过添加前后标题差集寻找新行。
 - 文件选择器 Return 次数由 `AXFocusedUIElement` 是否仍为 `AXTextField` 决定，最多 6 次。
 
-- [ ] **Step 5: 加入权限级截图和错误信息**
+- [ ] **步骤 5：加入权限级截图和错误信息**
 
 每项权限生成：
 
@@ -188,7 +188,7 @@ ${RUNNER_TEMP}/uuremote-permission-screenshots/
 
 任一超时错误必须包含 `Accessibility` 或 `Screen & System Audio Recording`，使 Actions 日志能定位具体失败页面。
 
-- [ ] **Step 6: 运行语法和差异检查**
+- [ ] **步骤 6：运行语法和差异检查**
 
 运行：
 
@@ -202,7 +202,7 @@ grep -n "on ensurePermission" .github/workflows/apple.sh
 
 预期：命令全部成功，两项 URL 和复用处理器各有明确匹配。
 
-- [ ] **Step 7: 提交**
+- [ ] **步骤 7：提交**
 
 ```bash
 git add .github/workflows/apple.sh
@@ -211,16 +211,16 @@ git commit -m "enable uuremote macos privacy permissions"
 
 ---
 
-### Task 3: GitHub Actions 首次执行、幂等和远程控制验收
+### 任务 3：GitHub Actions 首次执行、幂等和远程控制验收
 
-**Files:**
-- Modify: `.github/workflows/macos.yml`（仅在现有验证步骤需要调整时）
+**文件：**
+- 修改：`.github/workflows/macos.yml`（仅在现有验证步骤需要调整时）
 
-**Interfaces:**
-- Consumes: Task 1 的完整 CLI 设置和 Task 2 的 `ensurePermission(...)`。
-- Produces: 一次可复核的 workflow 成功运行、截图 artifact，以及手机客户端画面和键鼠均可用的验收结果。
+**接口：**
+- 输入：任务 1 的完整 CLI 设置和任务 2 的 `ensurePermission(...)`。
+- 输出：一次可复核的 workflow 成功运行、截图 artifact，以及手机客户端画面和键鼠均可用的验收结果。
 
-- [ ] **Step 1: 校验 workflow 结构**
+- [ ] **步骤 1：校验 workflow 结构**
 
 确认步骤顺序为：
 
@@ -239,7 +239,7 @@ git diff --check
 grep -n "Verify permission idempotency\|Upload permission screenshots\|Keep runner alive" .github/workflows/macos.yml
 ```
 
-- [ ] **Step 2: 推送并启动 macOS workflow**
+- [ ] **步骤 2：推送并启动 macOS workflow**
 
 ```bash
 git push
@@ -247,7 +247,7 @@ git push
 
 在已登录 GitHub 的 Actions 页面触发 `macOS` workflow。一次只运行一个 workflow，避免多个 GUI 自动化任务竞争 runner。
 
-- [ ] **Step 3: 验证首次执行日志**
+- [ ] **步骤 3：验证首次执行日志**
 
 `Launch GameViewer` 必须包含以下证据并以退出码 0 完成：
 
@@ -260,7 +260,7 @@ UURemote restarted successfully
 
 若失败，先下载 `uuremote-permission-screenshots` artifact，根据具体权限页面截图修复；不得绕过失败继续保活。
 
-- [ ] **Step 4: 验证同机第二次执行**
+- [ ] **步骤 4：验证同机第二次执行**
 
 `Verify permission idempotency` 必须以退出码 0 完成，日志同时表明：
 
@@ -272,7 +272,7 @@ enabled : true
 
 不得出现再次添加应用、再次要求管理员密码或关闭任何开关。
 
-- [ ] **Step 5: 验证 artifact 和手机客户端**
+- [ ] **步骤 5：验证 artifact 和手机客户端**
 
 确认 `Upload permission screenshots` 成功并能下载 JPEG。进入 `Keep runner alive` 后，用手机客户端验证：
 
@@ -281,7 +281,7 @@ enabled : true
 3. 可以向被控端输入键盘字符。
 4. 客户端不再显示录屏或辅助设备权限缺失提示。
 
-- [ ] **Step 6: 最终仓库验证**
+- [ ] **步骤 6：最终仓库验证**
 
 ```bash
 bash -n .github/workflows/apple.sh

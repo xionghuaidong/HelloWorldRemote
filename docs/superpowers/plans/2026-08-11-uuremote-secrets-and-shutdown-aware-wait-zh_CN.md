@@ -1,47 +1,47 @@
-# UU Remote Secrets and Shutdown-Aware Wait Implementation Plan
+# UU Remote Secrets 与关机感知等待实施计划
 
 [English](2026-08-11-uuremote-secrets-and-shutdown-aware-wait.md) | [简体中文](2026-08-11-uuremote-secrets-and-shutdown-aware-wait-zh_CN.md)
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **供智能体工作者使用：** 必须使用子技能：使用 superpowers:subagent-driven-development（推荐）或 superpowers:executing-plans，逐项任务实施本计划。步骤使用复选框（`- [ ]`）语法进行跟踪。
 
-**Goal:** Source the macOS account password exclusively from a GitHub Actions secret and let `Wait connections` finish on timeout or an actual macOS shutdown/restart event.
+**目标：** 仅从 GitHub Actions secret 获取 macOS 账户密码，并让 `Wait connections` 在超时或实际 macOS 关机/重启事件发生时结束。
 
-**Architecture:** `macos.yml` injects the repository secret only into host configuration and delegates waiting to `apple.sh`. The shell validates the duration, compiles a focused Swift/AppKit watcher into a private temporary directory, and runs it in the active GUI session. Only a `systemDefined` event with subtype `powerOff` is an early-success signal.
+**架构：** `macos.yml` 仅将 repository secret 注入主机配置，并将等待委托给 `apple.sh`。shell 验证持续时间，将一个专用 Swift/AppKit watcher 编译到私有临时目录，并在活跃 GUI 会话中运行它。只有 subtype 为 `powerOff` 的 `systemDefined` 事件才是提前成功信号。
 
-**Tech Stack:** GitHub Actions YAML, Bash 3.2, Swift/AppKit, Python `unittest`.
+**技术栈：** GitHub Actions YAML、Bash 3.2、Swift/AppKit、Python `unittest`。
 
-## Global Constraints
+## 全局约束
 
-- The secret name is exactly `UUREMOTE_ACCOUNT_PASSWORD`.
-- No plaintext password input, fallback password, or password log output remains.
-- The same secret configures the console user, disabled root account, available login keychains, and `/etc/kcpassword`.
-- Direct root login remains disabled.
-- `wait_connections_seconds` defaults to 300 and accepts integers from 0 through 21000 inclusive.
-- Shutdown and restart finish early; logout, UU state, process state, and network state do not count as successful early completion.
-- Existing debug-level gating remains unchanged; level 0 receives no diagnostic self-test overhead.
-- Work directly on `main`, as the user explicitly requested for this temporary task.
+- secret 名称恰好为 `UUREMOTE_ACCOUNT_PASSWORD`。
+- 不再保留明文密码输入、fallback 密码或密码日志输出。
+- 同一个 secret 配置 console user、禁用的 root 账户、可用的 login keychain 和 `/etc/kcpassword`。
+- 直接 root 登录保持禁用。
+- `wait_connections_seconds` 默认为 300，并接受包含端点的 0 到 21000 之间的整数。
+- 关机和重启会提前结束；注销、UU 状态、进程状态和网络状态不算作成功的提前完成。
+- 现有 debug-level gating 保持不变；level 0 不承担诊断 self-test 开销。
+- 按照用户对此临时任务的明确要求，直接在 `main` 上工作。
 
-## File Structure
+## 文件结构
 
-- Modify `.github/workflows/macos.yml`: secret injection, diagnostic watcher self-test, and production wait invocation.
-- Modify `.github/workflows/apple.sh`: validation, routing, temporary compilation, GUI execution, and self-test routing.
-- Create `.github/workflows/uuremote-shutdown-wait.swift`: focused AppKit watcher and internal test-event injection.
-- Modify `tests/test_uuremote_host_bootstrap.py`: secret-scoping and missing-secret contracts.
-- Create `tests/test_uuremote_wait.py`: workflow, routing, predicate, validation, and macOS behavior tests.
+- 修改 `.github/workflows/macos.yml`：secret 注入、诊断 watcher self-test 和 production wait 调用。
+- 修改 `.github/workflows/apple.sh`：验证、路由、临时编译、GUI 执行和 self-test 路由。
+- 创建 `.github/workflows/uuremote-shutdown-wait.swift`：专用 AppKit watcher 和内部 test-event 注入。
+- 修改 `tests/test_uuremote_host_bootstrap.py`：secret-scoping 和 missing-secret contract。
+- 创建 `tests/test_uuremote_wait.py`：workflow、路由、predicate、验证和 macOS 行为测试。
 
 ---
 
-### Task 1: Replace the Visible Password Input with an Actions Secret
+### 任务 1：用 Actions Secret 替换可见密码输入
 
-**Files:**
-- Modify: `tests/test_uuremote_host_bootstrap.py:17-46`
-- Modify: `.github/workflows/macos.yml:21-56`
+**文件：**
+- 修改：`tests/test_uuremote_host_bootstrap.py:17-46`
+- 修改：`.github/workflows/macos.yml:21-56`
 
-**Interfaces:**
-- Consumes: repository secret `UUREMOTE_ACCOUNT_PASSWORD`.
-- Produces: a step-scoped environment variable of the same name for `apple.sh configure-host`.
+**接口：**
+- 输入：repository secret `UUREMOTE_ACCOUNT_PASSWORD`。
+- 输出：供 `apple.sh configure-host` 使用的同名 step-scoped 环境变量。
 
-- [ ] **Step 1: Replace the old password-input tests with failing secret tests**
+- [ ] **步骤 1：用失败的 secret 测试替换旧 password-input 测试**
 
 ```python
 def test_password_is_not_a_workflow_dispatch_input(self):
@@ -70,19 +70,19 @@ def test_password_secret_is_scoped_masked_and_required(self):
     self.assertNotIn("inputs.account_password", block)
 ```
 
-- [ ] **Step 2: Run the focused tests and verify the old workflow fails**
+- [ ] **步骤 2：运行聚焦测试并验证旧 workflow 失败**
 
-Run:
+运行：
 
 ```bash
 python3 -m unittest tests.test_uuremote_host_bootstrap.WorkflowContractTests -v
 ```
 
-Expected: failures show that the visible input remains and the secret is absent.
+预期：失败表明可见输入仍然存在，而 secret 不存在。
 
-- [ ] **Step 3: Remove the input and inject the secret only into host configuration**
+- [ ] **步骤 3：移除输入并仅向主机配置注入 secret**
 
-Use this exact step shape:
+使用以下精确步骤结构：
 
 ```yaml
       - name: Configure macOS host
@@ -100,33 +100,33 @@ Use this exact step shape:
             unset UUREMOTE_ACCOUNT_PASSWORD
 ```
 
-Do not put the secret in job-level `env` and do not keep a default password.
+不得将 secret 放入 job-level `env`，也不得保留默认密码。
 
-- [ ] **Step 4: Run the focused tests and verify they pass**
+- [ ] **步骤 4：运行聚焦测试并验证其通过**
 
-Run the Step 2 command. Expected: all `WorkflowContractTests` pass.
+运行步骤 2 的命令。预期：所有 `WorkflowContractTests` 均通过。
 
-- [ ] **Step 5: Commit the secret migration**
+- [ ] **步骤 5：提交 secret 迁移**
 
 ```bash
 git add .github/workflows/macos.yml tests/test_uuremote_host_bootstrap.py
 git commit -m "security: source macOS password from Actions secret"
 ```
 
-### Task 2: Define the Wait Contract and Shell Routing
+### 任务 2：定义等待 Contract 和 Shell 路由
 
-**Files:**
-- Create: `tests/test_uuremote_wait.py`
-- Modify: `.github/workflows/apple.sh:4-6,982-990`
-- Modify: `.github/workflows/macos.yml:125-142`
+**文件：**
+- 创建：`tests/test_uuremote_wait.py`
+- 修改：`.github/workflows/apple.sh:4-6,982-990`
+- 修改：`.github/workflows/macos.yml:125-142`
 
-**Interfaces:**
-- Consumes: `apple.sh wait-connections <seconds>` with an integer in `0...21000`.
-- Produces: exit 0 for zero without AppKit, exit 2 for invalid input, and watcher execution for a positive value.
+**接口：**
+- 输入：`apple.sh wait-connections <seconds>`，其中整数在 `0...21000` 范围内。
+- 输出：值为零时不使用 AppKit 并退出 0；无效输入时退出 2；正值时执行 watcher。
 
-- [ ] **Step 1: Add failing workflow and shell-routing tests**
+- [ ] **步骤 1：添加失败的 workflow 和 shell-routing 测试**
 
-Create `tests/test_uuremote_wait.py`:
+创建 `tests/test_uuremote_wait.py`：
 
 ```python
 from pathlib import Path
@@ -188,17 +188,17 @@ class WaitShellContractTests(unittest.TestCase):
         )
 ```
 
-- [ ] **Step 2: Run the tests and verify they fail for the missing route**
+- [ ] **步骤 2：运行测试并验证其因缺失路由而失败**
 
 ```bash
 python3 -m unittest tests.test_uuremote_wait -v
 ```
 
-Expected: the workflow, zero, invalid-value, and routing assertions fail.
+预期：workflow、zero、invalid-value 和 routing assertion 失败。
 
-- [ ] **Step 3: Add validation, zero handling, and preflight routing**
+- [ ] **步骤 3：添加验证、零值处理和 preflight 路由**
 
-Add:
+添加：
 
 ```bash
 validate_wait_connections_seconds() {
@@ -231,7 +231,7 @@ wait_connections() {
 }
 ```
 
-Route before application preflight:
+在 application preflight 前路由：
 
 ```bash
 if [ "$mode" = "wait-connections" ]; then
@@ -240,44 +240,44 @@ if [ "$mode" = "wait-connections" ]; then
 fi
 ```
 
-- [ ] **Step 4: Replace only the fixed workflow sleep with delegation**
+- [ ] **步骤 4：仅用委托替换固定 workflow sleep**
 
 ```bash
 echo "Waiting connections for $wait_seconds seconds ..."
 .github/workflows/apple.sh wait-connections "$wait_seconds"
 ```
 
-- [ ] **Step 5: Run the Task 2 tests and Bash syntax check**
+- [ ] **步骤 5：运行任务 2 测试和 Bash 语法检查**
 
 ```bash
 python3 -m unittest tests.test_uuremote_wait -v
 bash -n .github/workflows/apple.sh
 ```
 
-Expected: all Task 2 tests and syntax checks pass; positive waits still fail explicitly through the temporary stub.
+预期：所有任务 2 测试和语法检查均通过；正值等待仍通过临时 stub 明确失败。
 
-- [ ] **Step 6: Commit the wait contract and routing**
+- [ ] **步骤 6：提交等待 contract 和路由**
 
 ```bash
 git add .github/workflows/apple.sh .github/workflows/macos.yml tests/test_uuremote_wait.py
 git commit -m "feat: route connection waits through apple script"
 ```
 
-### Task 3: Implement and Behavior-Test the AppKit Watcher
+### 任务 3：实施并对 AppKit Watcher 进行行为测试
 
-**Files:**
-- Create: `.github/workflows/uuremote-shutdown-wait.swift`
-- Modify: `.github/workflows/apple.sh` wait helper functions
-- Modify: `tests/test_uuremote_wait.py`
+**文件：**
+- 创建：`.github/workflows/uuremote-shutdown-wait.swift`
+- 修改：`.github/workflows/apple.sh` 等待 helper 函数
+- 修改：`tests/test_uuremote_wait.py`
 
-**Interfaces:**
-- Consumes: watcher arguments `<seconds> [none|ordinary|power-off]`; production passes `none`.
-- Produces: one `WAIT_RESULT=timeout` or `WAIT_RESULT=shutdown/restart` line and exit 0.
-- Produces: `apple.sh self-test-wait-connections` for timeout, unrelated-event, and power-off scenarios.
+**接口：**
+- 输入：watcher 参数 `<seconds> [none|ordinary|power-off]`；production 传递 `none`。
+- 输出：一行 `WAIT_RESULT=timeout` 或 `WAIT_RESULT=shutdown/restart`，并退出 0。
+- 输出：用于 timeout、unrelated-event 和 power-off 场景的 `apple.sh self-test-wait-connections`。
 
-- [ ] **Step 1: Add failing predicate and macOS behavior tests**
+- [ ] **步骤 1：添加失败的 predicate 和 macOS 行为测试**
 
-Append:
+追加：
 
 ```python
 class WaitWatcherSourceTests(unittest.TestCase):
@@ -300,13 +300,13 @@ class WaitWatcherBehaviorTests(unittest.TestCase):
         self.assertIn("shutdown-aware wait self-test passed", result.stdout)
 ```
 
-- [ ] **Step 2: Run tests and verify the missing Swift source fails**
+- [ ] **步骤 2：运行测试并验证缺失 Swift 源文件导致失败**
 
-Run the Task 2 test command. Expected: the source test errors; AppKit behavior is skipped off macOS.
+运行任务 2 测试命令。预期：源文件测试报错；非 macOS 上跳过 AppKit 行为。
 
-- [ ] **Step 3: Create the Swift watcher with an exact event predicate**
+- [ ] **步骤 3：创建具有精确事件 predicate 的 Swift watcher**
 
-Implement `ShutdownWaiter` with these core operations:
+使用以下核心操作实施 `ShutdownWaiter`：
 
 ```swift
 import AppKit
@@ -398,12 +398,11 @@ guard let injectedEvent = InjectedEvent(rawValue: eventText) else {
 ShutdownWaiter(seconds: seconds, injectedEvent: injectedEvent).run()
 ```
 
-The injected-event argument is reachable only through the shell self-test;
-production `wait-connections` always passes `none`.
+injected-event 参数只能通过 shell self-test 触达；production `wait-connections` 始终传递 `none`。
 
-- [ ] **Step 4: Replace the shell stub with private compilation and GUI execution**
+- [ ] **步骤 4：用私有编译和 GUI 执行替换 shell stub**
 
-Implement a subshell function so cleanup always runs:
+实施 subshell 函数，以确保 cleanup 始终运行：
 
 ```bash
 run_shutdown_waiter() (
@@ -426,9 +425,9 @@ run_shutdown_waiter() (
 )
 ```
 
-- [ ] **Step 5: Add the shell self-test route**
+- [ ] **步骤 5：添加 shell self-test 路由**
 
-Add:
+添加：
 
 ```bash
 self_test_wait_connections() {
@@ -456,36 +455,35 @@ self_test_wait_connections() {
 }
 ```
 
-Route `self-test-wait-connections` before UU application/debug preflight beside
-`self-test-kcpassword`.
+在 UU application/debug preflight 前、`self-test-kcpassword` 旁边路由 `self-test-wait-connections`。
 
-- [ ] **Step 6: Run static tests and Bash syntax off macOS**
+- [ ] **步骤 6：在非 macOS 上运行静态测试和 Bash 语法检查**
 
 ```bash
 python3 -m unittest tests.test_uuremote_wait -v
 bash -n .github/workflows/apple.sh
 ```
 
-Expected: source/routing tests pass, the AppKit test is skipped off macOS, and Bash syntax passes.
+预期：source/routing 测试通过，非 macOS 上跳过 AppKit 测试，并且 Bash 语法通过。
 
-- [ ] **Step 7: Commit the watcher implementation**
+- [ ] **步骤 7：提交 watcher 实施**
 
 ```bash
 git add .github/workflows/apple.sh .github/workflows/uuremote-shutdown-wait.swift tests/test_uuremote_wait.py
 git commit -m "feat: stop connection wait on macOS power off"
 ```
 
-### Task 4: Add Diagnostic macOS Coverage and Verify End to End
+### 任务 4：添加诊断 macOS 覆盖并进行端到端验证
 
-**Files:**
-- Modify: `.github/workflows/macos.yml` after Checkout
-- Modify: `tests/test_uuremote_wait.py`
+**文件：**
+- 修改：`.github/workflows/macos.yml` 中 Checkout 之后的位置
+- 修改：`tests/test_uuremote_wait.py`
 
-**Interfaces:**
-- Consumes: `UUREMOTE_DEBUG` and `self-test-wait-connections`.
-- Produces: AppKit behavior coverage at debug levels 1-3 with no level-0 overhead.
+**接口：**
+- 输入：`UUREMOTE_DEBUG` 和 `self-test-wait-connections`。
+- 输出：debug level 1–3 下的 AppKit 行为覆盖，且 level 0 没有额外开销。
 
-- [ ] **Step 1: Add a failing diagnostic-step contract**
+- [ ] **步骤 1：添加失败的 diagnostic-step contract**
 
 ```python
 def test_appkit_self_test_is_diagnostic_only(self):
@@ -495,15 +493,15 @@ def test_appkit_self_test_is_diagnostic_only(self):
     self.assertIn(".github/workflows/apple.sh self-test-wait-connections", block)
 ```
 
-- [ ] **Step 2: Run the focused test and verify the step is absent**
+- [ ] **步骤 2：运行聚焦测试并验证该步骤不存在**
 
 ```bash
 python3 -m unittest tests.test_uuremote_wait.WaitWorkflowContractTests.test_appkit_self_test_is_diagnostic_only -v
 ```
 
-Expected: error locating the missing step.
+预期：查找缺失步骤时出错。
 
-- [ ] **Step 3: Add the diagnostic-only workflow step immediately after Checkout**
+- [ ] **步骤 3：紧接 Checkout 后添加仅用于诊断的 workflow 步骤**
 
 ```yaml
       - name: Test shutdown-aware wait
@@ -513,7 +511,7 @@ Expected: error locating the missing step.
             .github/workflows/apple.sh self-test-wait-connections
 ```
 
-- [ ] **Step 4: Run the full local verification set**
+- [ ] **步骤 4：运行完整本地验证集**
 
 ```bash
 python3 -m unittest discover -s tests -v
@@ -521,15 +519,13 @@ bash -n .github/workflows/apple.sh
 git diff --check
 ```
 
-Expected: all non-AppKit tests pass, the Darwin behavior test is skipped off macOS, and syntax/whitespace checks pass.
+预期：所有非 AppKit 测试通过，非 macOS 上跳过 Darwin 行为测试，并且 syntax/whitespace 检查通过。
 
-- [ ] **Step 5: Configure the repository Actions secret without logging it**
+- [ ] **步骤 5：配置 repository Actions secret 且不记录其值**
 
-Create or update `UUREMOTE_ACCOUNT_PASSWORD` in GitHub repository Actions
-secrets using the temporary password already approved by the owner. Do not put
-its value in a command line, commit, workflow input, screenshot, or response.
+在 GitHub repository Actions secrets 中，使用所有者已批准的临时密码创建或更新 `UUREMOTE_ACCOUNT_PASSWORD`。不得将其值放入命令行、commit、workflow 输入、截图或回复中。
 
-- [ ] **Step 6: Commit and push diagnostic coverage**
+- [ ] **步骤 6：提交并推送诊断覆盖**
 
 ```bash
 git add .github/workflows/macos.yml tests/test_uuremote_wait.py
@@ -537,10 +533,9 @@ git commit -m "test: exercise shutdown watcher on diagnostic runs"
 git push origin main
 ```
 
-- [ ] **Step 7: Dispatch a diagnostic workflow run**
+- [ ] **步骤 7：分派一次诊断 workflow run**
 
-Run `macOS` with `debug_level=1` and `wait_connections_seconds=0`. Expected in
-`Test shutdown-aware wait`:
+使用 `debug_level=1` 和 `wait_connections_seconds=0` 运行 `macOS`。`Test shutdown-aware wait` 中预期出现：
 
 ```text
 WAIT_RESULT=timeout
@@ -549,18 +544,18 @@ WAIT_RESULT=shutdown/restart
 shutdown-aware wait self-test passed
 ```
 
-The full workflow must succeed and the password must appear only as `***`, if represented at all.
+完整 workflow 必须成功；如果密码有任何表示，也只能显示为 `***`。
 
-- [ ] **Step 8: Dispatch the default fast workflow run**
+- [ ] **步骤 8：分派默认快速 workflow run**
 
-Run `macOS` with `debug_level=0` and `wait_connections_seconds=5`. Expected:
+使用 `debug_level=0` 和 `wait_connections_seconds=5` 运行 `macOS`。预期：
 
-- watcher self-test skipped;
-- UU installation and permission configuration succeed;
-- `Wait connections` prints `WAIT_RESULT=timeout` after about five seconds;
-- no screenshot artifact is uploaded.
+- 跳过 watcher self-test；
+- UU 安装和权限配置成功；
+- `Wait connections` 在约五秒后打印 `WAIT_RESULT=timeout`；
+- 不上传截图 artifact。
 
-- [ ] **Step 9: Perform final repository verification**
+- [ ] **步骤 9：执行最终 repository 验证**
 
 ```bash
 python3 -m unittest discover -s tests -v
@@ -571,4 +566,4 @@ git rev-parse HEAD
 git rev-parse origin/main
 ```
 
-Expected: tests and syntax pass, the tree is clean at `main...origin/main`, and both hashes match.
+预期：测试和语法检查通过，`main...origin/main` 上的工作树干净，并且两个 hash 相匹配。

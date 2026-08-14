@@ -1,5 +1,7 @@
 # UU Remote Secrets and Shutdown-Aware Wait Design
 
+[English](2026-08-11-uuremote-secrets-and-shutdown-aware-wait-design.md) | [简体中文](2026-08-11-uuremote-secrets-and-shutdown-aware-wait-design-zh_CN.md)
+
 ## Goal
 
 Remove the plaintext account-password workflow input and make `Wait connections`

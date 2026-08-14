@@ -1,5 +1,7 @@
 # UU Remote Desktop Finalization and Custom Code Secret Design
 
+[English](2026-08-11-uuremote-desktop-finalization-and-custom-code-secret-design.md) | [简体中文](2026-08-11-uuremote-desktop-finalization-and-custom-code-secret-design-zh_CN.md)
+
 ## Goal
 
 Leave the active macOS graphical session ready for immediate UU Remote control
