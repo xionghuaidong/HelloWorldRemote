@@ -60,5 +60,31 @@ class AgentInstructionContractTests(unittest.TestCase):
                 self.assertEqual(lines[3], "")
 
 
+class EntryPointContractTests(unittest.TestCase):
+    def test_readmes_have_navigation(self):
+        for name in ("README.md", "README-zh_CN.md"):
+            lines = text(ROOT / name).splitlines()
+            self.assertEqual(lines[1], "")
+            self.assertEqual(
+                lines[2],
+                "[English](README.md) | [简体中文](README-zh_CN.md)",
+            )
+
+    def test_capture_prompts_have_navigation(self):
+        for name in (
+            "capture-conversation.md",
+            "capture-conversation-zh_CN.md",
+        ):
+            lines = text(ROOT / "docs/prompts" / name).splitlines()
+            self.assertEqual(lines[1], "")
+            self.assertEqual(
+                lines[2],
+                (
+                    "[English](capture-conversation.md) | "
+                    "[简体中文](capture-conversation-zh_CN.md)"
+                ),
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
