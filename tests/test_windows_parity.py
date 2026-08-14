@@ -441,20 +441,6 @@ class WindowsDiagnosticContractTests(unittest.TestCase):
         self.assertIn("windows.ps1 snapshot $label", live)
         self.assertIn("Start-Sleep -Seconds 15", live)
 
-    def test_window_enumeration_fails_closed_when_native_enumeration_fails(self):
-        helper = text(WINDOWS_HELPER)
-        interop_start = helper.index("public static class DesktopWindowInterop")
-        interop_end = helper.index("'@", interop_start)
-        interop = helper[interop_start:interop_end]
-
-        self.assertIn('[DllImport("user32.dll", SetLastError = true)]', interop)
-        self.assertIn("public static extern bool IsWindow(IntPtr windowHandle);", interop)
-        self.assertIn("if (!EnumWindows(", interop)
-        self.assertIn("if (GetWindowThreadProcessId(windowHandle, out processId) == 0)", interop)
-        self.assertIn("return !IsWindow(windowHandle);", interop)
-        self.assertIn('throw new InvalidOperationException("UU Remote window enumeration failed.");', interop)
-
-
 @unittest.skipUnless(
     WINDOWS_NATIVE_CAPABILITY_AVAILABLE,
     "requires Windows and a PowerShell runtime",
@@ -463,6 +449,107 @@ class WindowsDiagnosticBehaviorTests(unittest.TestCase):
     def run_controlled_helper(self, body: str, environment: dict[str, str] | None = None):
         helper = str(WINDOWS_HELPER).replace("'", "''")
         return run_windows_script(f". '{helper}'\n{body}", environment=environment)
+
+    def run_managed_window_enumeration(self, body: str):
+        return self.run_controlled_helper(
+            r"""
+Initialize-UURemoteWindowInterop
+$interopType = [UURemote.DesktopWindowInterop]
+$methodFlags = [System.Reflection.BindingFlags]::NonPublic -bor [System.Reflection.BindingFlags]::Static
+$beginEnumeration = $interopType.GetMethod('BeginWindowEnumeration', $methodFlags)
+$observeWindow = $interopType.GetMethod('ObserveWindow', $methodFlags)
+$completeEnumeration = $interopType.GetMethod('CompleteWindowEnumeration', $methodFlags)
+"""
+            + body
+        )
+
+    def assert_fixed_enumeration_failure(self, result, prefix: list[str] | None = None):
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(
+            result.stdout.splitlines(),
+            (prefix or [])
+            + [
+                "FAILURE_TYPE=System.InvalidOperationException",
+                "FAILURE_MESSAGE=UU Remote window enumeration failed.",
+            ],
+        )
+        self.assertEqual(result.stderr, "")
+
+    def test_managed_enumeration_false_fails_closed(self):
+        result = self.run_managed_window_enumeration(
+            r"""
+try {
+    $state = $beginEnumeration.Invoke($null, [object[]]@(,[int[]]@(41)))
+    $null = $completeEnumeration.Invoke($null, [object[]]@($state, $false))
+    Write-Output 'UNEXPECTED=ready'
+    exit 0
+}
+catch {
+    $failure = $_.Exception
+    while ($null -ne $failure.InnerException) {
+        $failure = $failure.InnerException
+    }
+    Write-Output "FAILURE_TYPE=$($failure.GetType().FullName)"
+    Write-Output "FAILURE_MESSAGE=$($failure.Message)"
+    exit 1
+}
+"""
+        )
+        self.assert_fixed_enumeration_failure(result)
+
+    def test_managed_process_lookup_failure_for_a_valid_window_stops_and_fails(self):
+        result = self.run_managed_window_enumeration(
+            r"""
+try {
+    $state = $beginEnumeration.Invoke($null, [object[]]@(,[int[]]@(41)))
+    $continue = $observeWindow.Invoke(
+        $null,
+        [object[]]@($state, [IntPtr]101, [uint32]0, [uint32]0, $true, $false)
+    )
+    Write-Output "CONTINUE=$continue"
+    $null = $completeEnumeration.Invoke($null, [object[]]@($state, $continue))
+    Write-Output 'UNEXPECTED=ready'
+    exit 0
+}
+catch {
+    $failure = $_.Exception
+    while ($null -ne $failure.InnerException) {
+        $failure = $failure.InnerException
+    }
+    Write-Output "FAILURE_TYPE=$($failure.GetType().FullName)"
+    Write-Output "FAILURE_MESSAGE=$($failure.Message)"
+    exit 1
+}
+"""
+        )
+        self.assert_fixed_enumeration_failure(result, ["CONTINUE=False"])
+
+    def test_managed_process_lookup_failure_for_a_disappeared_window_continues(self):
+        result = self.run_managed_window_enumeration(
+            r"""
+$state = $beginEnumeration.Invoke($null, [object[]]@(,[int[]]@(41)))
+$continue = $observeWindow.Invoke(
+    $null,
+    [object[]]@($state, [IntPtr]101, [uint32]0, [uint32]0, $false, $false)
+)
+$handles = $completeEnumeration.Invoke($null, [object[]]@($state, $true))
+Write-Output "CONTINUE=$continue"
+Write-Output "HANDLE_COUNT=$($handles.Count)"
+"""
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines(), ["CONTINUE=True", "HANDLE_COUNT=0"])
+
+    def test_managed_empty_enumeration_is_a_valid_zero_window_result(self):
+        result = self.run_managed_window_enumeration(
+            r"""
+$state = $beginEnumeration.Invoke($null, [object[]]@(,[int[]]@(41)))
+$handles = $completeEnumeration.Invoke($null, [object[]]@($state, $true))
+Write-Output "HANDLE_COUNT=$($handles.Count)"
+"""
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "HANDLE_COUNT=0")
 
     def test_minimization_reenumerates_and_verifies_a_replacement_handle(self):
         result = self.run_controlled_helper(

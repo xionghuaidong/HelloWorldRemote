@@ -234,6 +234,12 @@ namespace UURemote
 {
     public static class DesktopWindowInterop
     {
+        internal sealed class WindowEnumerationState
+        {
+            internal readonly HashSet<uint> RequestedProcessIds = new HashSet<uint>();
+            internal readonly List<IntPtr> Handles = new List<IntPtr>();
+        }
+
         public delegate bool EnumWindowsCallback(IntPtr windowHandle, IntPtr parameter);
 
         [DllImport("user32.dll", SetLastError = true)]
@@ -254,37 +260,69 @@ namespace UURemote
         [DllImport("user32.dll", SetLastError = true)]
         public static extern bool IsIconic(IntPtr windowHandle);
 
-        public static IntPtr[] GetVisibleTopLevelWindowHandles(int[] processIds)
+        internal static WindowEnumerationState BeginWindowEnumeration(int[] processIds)
         {
-            HashSet<uint> requestedProcessIds = new HashSet<uint>();
+            WindowEnumerationState state = new WindowEnumerationState();
             foreach (int processId in processIds)
             {
                 if (processId > 0)
                 {
-                    requestedProcessIds.Add((uint)processId);
+                    state.RequestedProcessIds.Add((uint)processId);
                 }
             }
+            return state;
+        }
 
-            List<IntPtr> handles = new List<IntPtr>();
-            if (!EnumWindows(
-                delegate(IntPtr windowHandle, IntPtr parameter)
-                {
-                    uint processId;
-                    if (GetWindowThreadProcessId(windowHandle, out processId) == 0)
-                    {
-                        return !IsWindow(windowHandle);
-                    }
-                    if (requestedProcessIds.Contains(processId) && IsWindowVisible(windowHandle))
-                    {
-                        handles.Add(windowHandle);
-                    }
-                    return true;
-                },
-                IntPtr.Zero))
+        internal static bool ObserveWindow(
+            WindowEnumerationState state,
+            IntPtr windowHandle,
+            uint processLookupResult,
+            uint processId,
+            bool windowStillExists,
+            bool windowIsVisible)
+        {
+            if (processLookupResult == 0)
+            {
+                return !windowStillExists;
+            }
+            if (state.RequestedProcessIds.Contains(processId) && windowIsVisible)
+            {
+                state.Handles.Add(windowHandle);
+            }
+            return true;
+        }
+
+        internal static IntPtr[] CompleteWindowEnumeration(
+            WindowEnumerationState state,
+            bool enumerationSucceeded)
+        {
+            if (!enumerationSucceeded)
             {
                 throw new InvalidOperationException("UU Remote window enumeration failed.");
             }
-            return handles.ToArray();
+            return state.Handles.ToArray();
+        }
+
+        public static IntPtr[] GetVisibleTopLevelWindowHandles(int[] processIds)
+        {
+            WindowEnumerationState state = BeginWindowEnumeration(processIds);
+            bool enumerationSucceeded = EnumWindows(
+                delegate(IntPtr windowHandle, IntPtr parameter)
+                {
+                    uint processId;
+                    uint processLookupResult = GetWindowThreadProcessId(windowHandle, out processId);
+                    bool windowStillExists = processLookupResult != 0 || IsWindow(windowHandle);
+                    bool windowIsVisible = processLookupResult != 0 && IsWindowVisible(windowHandle);
+                    return ObserveWindow(
+                        state,
+                        windowHandle,
+                        processLookupResult,
+                        processId,
+                        windowStillExists,
+                        windowIsVisible);
+                },
+                IntPtr.Zero);
+            return CompleteWindowEnumeration(state, enumerationSucceeded);
         }
     }
 }
