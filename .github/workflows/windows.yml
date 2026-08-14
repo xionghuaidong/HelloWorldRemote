@@ -33,6 +33,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      - name: Test shutdown-aware wait
+        if: success() && env.UUREMOTE_DEBUG != '0'
+        shell: pwsh
+        run: |
+            & .github/workflows/windows.ps1 self-test-wait-connections
+            if ($LASTEXITCODE -ne 0) {
+                exit $LASTEXITCODE
+            }
+
       - name: Install GameViewer
         shell: pwsh
         run: |
@@ -94,13 +103,7 @@ jobs:
         if: success() && env.UUREMOTE_DEBUG == '0'
         shell: pwsh
         run: |
-            $waitSeconds = $env:UUREMOTE_WAIT_CONNECTIONS_SECONDS
-            if ($waitSeconds -notmatch '^-?\d+$') {
-                throw "wait_connections_seconds must be an integer in the range 0-21000; got: $waitSeconds"
+            & .github/workflows/windows.ps1 wait-connections "$env:UUREMOTE_WAIT_CONNECTIONS_SECONDS"
+            if ($LASTEXITCODE -ne 0) {
+                exit $LASTEXITCODE
             }
-            $waitSeconds = [int]$waitSeconds
-            if ($waitSeconds -lt 0 -or $waitSeconds -gt 21000) {
-                throw "wait_connections_seconds must be in the range 0-21000; got: $waitSeconds"
-            }
-            Write-Host "Waiting connections for $waitSeconds seconds ..."
-            Start-Sleep -Seconds $waitSeconds

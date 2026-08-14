@@ -91,3 +91,15 @@ class WindowsValidationBehaviorTests(unittest.TestCase):
             self.assertEqual(run_windows_helper("validate-wait-seconds", value).returncode, 0)
         for value in ("-1", "21001", "1.5", "text", ""):
             self.assertEqual(run_windows_helper("validate-wait-seconds", value).returncode, 2)
+
+
+class WindowsWaitBehaviorTests(unittest.TestCase):
+    def test_zero_wait_returns_without_loading_the_watcher(self):
+        result = run_windows_helper("wait-connections", "0")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("WAIT_RESULT=timeout", result.stdout)
+
+    def test_injected_wait_self_test_passes(self):
+        result = run_windows_helper("self-test-wait-connections")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("shutdown-aware wait self-test passed", result.stdout)
