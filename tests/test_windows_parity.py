@@ -182,6 +182,21 @@ class WindowsValidationBehaviorTests(unittest.TestCase):
 
 
 class WindowsWaitBehaviorTests(unittest.TestCase):
+    def run_self_test_with_injected_waiter(self, body: str):
+        helper = str(WINDOWS_HELPER).replace("'", "''")
+        return run_windows_script(
+            f"""
+. '{helper}'
+function Invoke-ShutdownWaiter {{
+    param([int]$Seconds, [string]$InjectedEvent)
+    {body}
+}}
+$script:HelperMode = 'self-test-wait-connections'
+$script:Arguments = @()
+Invoke-WindowsHelperRoute
+"""
+        )
+
     @unittest.skipUnless(POWERSHELL_AVAILABLE, "requires a PowerShell runtime")
     def test_zero_wait_returns_without_loading_the_watcher(self):
         result = run_windows_helper("wait-connections", "0")
@@ -196,6 +211,53 @@ class WindowsWaitBehaviorTests(unittest.TestCase):
         result = run_windows_helper("self-test-wait-connections")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("shutdown-aware wait self-test passed", result.stdout)
+
+    @unittest.skipUnless(POWERSHELL_AVAILABLE, "requires a PowerShell runtime")
+    def test_self_test_mismatch_reports_only_normalized_observations(self):
+        result = self.run_self_test_with_injected_waiter(
+            r"""
+switch ($InjectedEvent) {
+    'none' { 'WAIT_RESULT=timeout'; break }
+    'ordinary' { 'device-id-fixture custom-code-fixture arbitrary-external-output'; break }
+    'shutdown' { 'WAIT_RESULT=shutdown/restart'; break }
+}
+"""
+        )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(
+            result.stderr.splitlines(),
+            [
+                "shutdown-aware wait self-test failed",
+                "WAIT_SELF_TEST_TIMEOUT=timeout",
+                "WAIT_SELF_TEST_ORDINARY=unexpected",
+                "WAIT_SELF_TEST_SHUTDOWN=shutdown/restart",
+            ],
+        )
+        self.assertEqual(result.stdout, "")
+        for value in ("device-id-fixture", "custom-code-fixture", "arbitrary-external-output"):
+            self.assertNotIn(value, result.stdout + result.stderr)
+
+    @unittest.skipUnless(POWERSHELL_AVAILABLE, "requires a PowerShell runtime")
+    def test_self_test_catch_reports_safe_exception_category_without_raw_message(self):
+        result = self.run_self_test_with_injected_waiter(
+            "throw [System.InvalidOperationException]::new('device-id-fixture custom-code-fixture arbitrary-external-output')"
+        )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(
+            result.stderr.splitlines(),
+            [
+                "shutdown-aware wait self-test failed",
+                "WAIT_SELF_TEST_TIMEOUT=not-observed",
+                "WAIT_SELF_TEST_ORDINARY=not-observed",
+                "WAIT_SELF_TEST_SHUTDOWN=not-observed",
+                "WAIT_SELF_TEST_EXCEPTION=invalid-operation",
+            ],
+        )
+        self.assertEqual(result.stdout, "")
+        for value in ("device-id-fixture", "custom-code-fixture", "arbitrary-external-output"):
+            self.assertNotIn(value, result.stdout + result.stderr)
 
 
 class WindowsReadinessContractTests(unittest.TestCase):

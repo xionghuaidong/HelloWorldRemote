@@ -408,6 +408,36 @@ function Invoke-ShutdownWaiter {
     }
 }
 
+function Get-SafeWaitSelfTestObservation([object]$Value) {
+    if ($null -eq $Value) {
+        return 'not-observed'
+    }
+
+    $values = @($Value)
+    if ($values.Count -ne 1) {
+        return 'unexpected'
+    }
+
+    switch ($values[0]) {
+        'WAIT_RESULT=timeout' { return 'timeout' }
+        'WAIT_RESULT=shutdown/restart' { return 'shutdown/restart' }
+        default { return 'unexpected' }
+    }
+}
+
+function Get-SafeWaitSelfTestExceptionCategory([System.Exception]$Exception) {
+    if ($Exception -is [System.InvalidOperationException]) {
+        return 'invalid-operation'
+    }
+    if ($Exception -is [System.Management.Automation.RuntimeException]) {
+        return 'runtime'
+    }
+    if ($Exception -is [System.IO.FileNotFoundException]) {
+        return 'file-not-found'
+    }
+    return 'unexpected'
+}
+
 function Invoke-WindowsHelperRoute {
     $argumentCount = if ($null -eq $Arguments) { 0 } else { $Arguments.Count }
 
@@ -527,6 +557,9 @@ function Invoke-WindowsHelperRoute {
             [Console]::Error.WriteLine('Usage error.')
             exit 2
         }
+        $timeout = $null
+        $ordinary = $null
+        $shutdown = $null
         try {
             $timeout = Invoke-ShutdownWaiter -Seconds 1 -InjectedEvent 'none'
             $ordinary = Invoke-ShutdownWaiter -Seconds 1 -InjectedEvent 'ordinary'
@@ -540,6 +573,12 @@ function Invoke-WindowsHelperRoute {
         }
         catch {
             [Console]::Error.WriteLine('shutdown-aware wait self-test failed')
+            [Console]::Error.WriteLine("WAIT_SELF_TEST_TIMEOUT=$(Get-SafeWaitSelfTestObservation $timeout)")
+            [Console]::Error.WriteLine("WAIT_SELF_TEST_ORDINARY=$(Get-SafeWaitSelfTestObservation $ordinary)")
+            [Console]::Error.WriteLine("WAIT_SELF_TEST_SHUTDOWN=$(Get-SafeWaitSelfTestObservation $shutdown)")
+            if ($null -eq $timeout -or $null -eq $ordinary -or $null -eq $shutdown) {
+                [Console]::Error.WriteLine("WAIT_SELF_TEST_EXCEPTION=$(Get-SafeWaitSelfTestExceptionCategory $_.Exception)")
+            }
             exit 1
         }
         exit 0
