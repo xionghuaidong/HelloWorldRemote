@@ -9,6 +9,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_PATH = ROOT / ".github/workflows/macos.yml"
 SCRIPT_PATH = ROOT / ".github/workflows/apple.sh"
+BASH_AVAILABLE = Path("/bin/bash").exists()
 
 
 def text(path: Path) -> str:
@@ -45,6 +46,7 @@ class CustomCodeWorkflowTests(unittest.TestCase):
         self.assertNotIn('echo "customCode: $output"', combined)
 
 
+@unittest.skipUnless(BASH_AVAILABLE, "requires /bin/bash")
 class CustomCodeValidationTests(unittest.TestCase):
     def validate(self, value: str | None) -> subprocess.CompletedProcess[str]:
         environment = os.environ.copy()
@@ -87,6 +89,7 @@ class CustomCodeValidationTests(unittest.TestCase):
                     self.assertNotIn(value, result.stdout + result.stderr)
 
 
+@unittest.skipUnless(BASH_AVAILABLE, "requires /bin/bash")
 class DesktopPreferenceBehaviorTests(unittest.TestCase):
     def test_terminal_transform_updates_every_profile_and_preserves_other_data(self):
         source_preferences = {
@@ -368,9 +371,11 @@ class DiagnosticStateContractTests(unittest.TestCase):
 
     def test_debug_zero_keeps_screenshot_and_artifact_paths_disabled(self):
         workflow = text(WORKFLOW_PATH)
-        upload = step_block(workflow, "Upload permission screenshots")
+        upload = step_block(workflow, "Upload UU Remote diagnostics")
 
         self.assertIn("env.UUREMOTE_DEBUG != '0'", upload)
+        self.assertIn("name: uuremote-diagnostics", upload)
+        self.assertIn("${{ runner.temp }}/uuremote-diagnostics/", upload)
 
 
 if __name__ == "__main__":

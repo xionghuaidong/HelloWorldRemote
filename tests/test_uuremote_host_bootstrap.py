@@ -7,6 +7,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_PATH = ROOT / ".github/workflows/macos.yml"
 SCRIPT_PATH = ROOT / ".github/workflows/apple.sh"
+BASH_AVAILABLE = Path("/bin/bash").exists()
 
 
 def text(path: Path) -> str:
@@ -62,6 +63,7 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertNotIn("configure-host", block)
 
 
+@unittest.skipUnless(BASH_AVAILABLE, "requires /bin/bash")
 class ScriptRoutingAndCodecTests(unittest.TestCase):
     def test_configure_host_is_dispatched_before_uuremote_app_preflight(self):
         script = text(SCRIPT_PATH)

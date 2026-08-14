@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_PATH = ROOT / ".github/workflows/macos.yml"
 SCRIPT_PATH = ROOT / ".github/workflows/apple.sh"
 WATCHER_PATH = ROOT / ".github/workflows/uuremote-shutdown-wait.swift"
+BASH_AVAILABLE = Path("/bin/bash").exists()
 
 
 def text(path: Path) -> str:
@@ -45,6 +46,7 @@ class WaitWorkflowContractTests(unittest.TestCase):
         )
 
 
+@unittest.skipUnless(BASH_AVAILABLE, "requires /bin/bash")
 class WaitShellContractTests(unittest.TestCase):
     def run_script(self, *args: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(

@@ -75,7 +75,7 @@ jobs:
                 then
                     if [ -n "$device_id" ]
                     then
-                        echo "deviceId: $device_id"
+                        echo "DEVICE_ID_STATE=ready"
                         break
                     fi
                     echo "设备 ID 为空，500 毫秒后重试" >&2
@@ -142,10 +142,10 @@ jobs:
             echo "Waiting connections for $wait_seconds seconds ..."
             .github/workflows/apple.sh wait-connections "$wait_seconds"
 
-      - name: Upload permission screenshots
+      - name: Upload UU Remote diagnostics
         if: always() && env.UUREMOTE_DEBUG != '0'
         uses: actions/upload-artifact@v4
         with:
-          name: uuremote-permission-screenshots
-          path: ${{ runner.temp }}/uuremote-permission-screenshots/
+          name: uuremote-diagnostics
+          path: ${{ runner.temp }}/uuremote-diagnostics/
           if-no-files-found: error

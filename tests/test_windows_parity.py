@@ -72,6 +72,45 @@ def run_windows_script(script: str, environment: dict[str, str] | None = None):
 
 
 class SharedWorkflowContractTests(unittest.TestCase):
+    def test_both_workflows_use_the_shared_artifact_contract(self):
+        for path in (MACOS_WORKFLOW, WINDOWS_WORKFLOW):
+            workflow = text(path)
+            self.assertIn("name: uuremote-diagnostics", workflow)
+            self.assertIn("${{ runner.temp }}/uuremote-diagnostics/", workflow)
+
+    def test_both_workflows_keep_the_shared_lifecycle_order(self):
+        workflow_steps = {
+            MACOS_WORKFLOW: (
+                "Checkout",
+                "Test shutdown-aware wait",
+                "Configure macOS host",
+                "Install GameViewer",
+                "Launch GameViewer",
+                "Configure UU Remote custom code",
+                "Configure UU Remote permissions",
+                "Verify permission idempotency",
+                "Wait connections",
+                "Upload UU Remote diagnostics",
+            ),
+            WINDOWS_WORKFLOW: (
+                "Checkout",
+                "Test shutdown-aware wait",
+                "Install GameViewer",
+                "Launch GameViewer",
+                "Configure UU Remote custom code",
+                "Verify unattended readiness",
+                "Verify configuration idempotency",
+                "Finalize desktop and capture diagnostics",
+                "Wait connections",
+                "Upload UU Remote diagnostics",
+            ),
+        }
+
+        for path, steps in workflow_steps.items():
+            workflow = text(path)
+            positions = [workflow.index(f"      - name: {step}") for step in steps]
+            self.assertEqual(positions, sorted(positions), path.name)
+
     def test_windows_exposes_the_shared_dispatch_inputs(self):
         workflow = text(WINDOWS_WORKFLOW)
         self.assertIn("      debug_level:\n", workflow)

@@ -1392,7 +1392,7 @@ if [ "$mode" = "wait-connections" ]; then
 fi
 
 debug_level="${UUREMOTE_DEBUG:-0}"
-evidence_dir="${RUNNER_TEMP:-/tmp}/uuremote-permission-screenshots"
+evidence_dir="${RUNNER_TEMP:-/tmp}/uuremote-diagnostics"
 diagnostic_log="$evidence_dir/diagnostics.log"
 
 case "$debug_level" in
