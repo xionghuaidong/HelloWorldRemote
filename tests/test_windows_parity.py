@@ -13,7 +13,19 @@ MACOS_WORKFLOW = ROOT / ".github/workflows/macos.yml"
 WINDOWS_WORKFLOW = ROOT / ".github/workflows/windows.yml"
 WINDOWS_HELPER = ROOT / ".github/workflows/windows.ps1"
 WINDOWS_HELPER_HARNESS = ROOT / "tests/windows_helper_harness.ps1"
-POWERSHELL = shutil.which("pwsh") or shutil.which("powershell.exe") or shutil.which("powershell")
+
+
+def path_powershell_runtimes() -> tuple[str, ...]:
+    runtimes = []
+    for command in ("pwsh", "powershell.exe", "powershell"):
+        runtime = shutil.which(command)
+        if runtime is not None and runtime not in runtimes:
+            runtimes.append(runtime)
+    return tuple(runtimes)
+
+
+POWERSHELL_RUNTIMES = path_powershell_runtimes()
+POWERSHELL = POWERSHELL_RUNTIMES[0] if POWERSHELL_RUNTIMES else None
 
 
 def powershell_runtime_available(powershell_path: str | None) -> bool:
@@ -50,13 +62,19 @@ def step_block(workflow: str, name: str) -> str:
     return workflow[start:] if next_step < 0 else workflow[start:next_step]
 
 
-def run_windows_helper(mode: str, *args: str, environment: dict[str, str] | None = None):
-    if POWERSHELL is None:
+def run_windows_helper(
+    mode: str,
+    *args: str,
+    environment: dict[str, str] | None = None,
+    powershell: str | None = None,
+):
+    runtime = POWERSHELL if powershell is None else powershell
+    if runtime is None:
         raise RuntimeError("A PowerShell runtime is required to run the Windows helper tests.")
 
     return subprocess.run(
         [
-            POWERSHELL,
+            runtime,
             "-NoProfile",
             "-ExecutionPolicy",
             "Bypass",
@@ -213,6 +231,14 @@ Invoke-WindowsHelperRoute
         self.assertIn("shutdown-aware wait self-test passed", result.stdout)
 
     @unittest.skipUnless(POWERSHELL_AVAILABLE, "requires a PowerShell runtime")
+    def test_self_test_passes_for_each_path_discovered_runtime(self):
+        for runtime in POWERSHELL_RUNTIMES:
+            with self.subTest(runtime=runtime):
+                result = run_windows_helper("self-test-wait-connections", powershell=runtime)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("shutdown-aware wait self-test passed", result.stdout)
+
+    @unittest.skipUnless(POWERSHELL_AVAILABLE, "requires a PowerShell runtime")
     def test_self_test_mismatch_reports_only_normalized_observations(self):
         result = self.run_self_test_with_injected_waiter(
             r"""
@@ -289,6 +315,19 @@ public static class WaiterFailureFixture {
         self.assertEqual(result.stdout, "")
         for value in ("device-id-fixture", "custom-code-fixture", "arbitrary-external-output"):
             self.assertNotIn(value, result.stdout + result.stderr)
+
+
+class WindowsWaitCompilationContractTests(unittest.TestCase):
+    def test_core_watcher_compilation_adds_required_primitives_references(self):
+        helper = text(WINDOWS_HELPER)
+        start = helper.index("if ($null -eq ('UURemote.ShutdownWaiter' -as [type])) {")
+        compilation = helper[start : helper.index("    try {", start)]
+
+        self.assertIn("$references = @('System.Windows.Forms.dll')", compilation)
+        self.assertIn("if ($PSVersionTable.PSEdition -eq 'Core')", compilation)
+        self.assertIn("'System.Windows.Forms.Primitives.dll'", compilation)
+        self.assertIn("'System.ComponentModel.Primitives.dll'", compilation)
+        self.assertIn("Add-Type -Path $watcherSource -ReferencedAssemblies $references", compilation)
 
 
 class WindowsReadinessContractTests(unittest.TestCase):

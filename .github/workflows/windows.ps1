@@ -395,7 +395,14 @@ function Invoke-ShutdownWaiter {
     }
 
     if ($null -eq ('UURemote.ShutdownWaiter' -as [type])) {
-        Add-Type -Path $watcherSource -ReferencedAssemblies 'System.Windows.Forms.dll'
+        $references = @('System.Windows.Forms.dll')
+        if ($PSVersionTable.PSEdition -eq 'Core') {
+            $references += @(
+                'System.Windows.Forms.Primitives.dll',
+                'System.ComponentModel.Primitives.dll'
+            )
+        }
+        Add-Type -Path $watcherSource -ReferencedAssemblies $references
     }
 
     try {
