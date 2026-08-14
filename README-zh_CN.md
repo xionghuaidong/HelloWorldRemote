@@ -4,46 +4,46 @@
 
 ## 用途
 
-HelloWorldRemote 会在 GitHub Actions 的 macOS runner 上自动运行 UU Remote/GameViewer：配置主机、启动应用程序，并让 runner 保持可供远程连接。
+HelloWorldRemote 为 UU Remote/GameViewer 自动化 GitHub Actions runner。macOS 和 Windows 工作流会配置各自的平台主机、启动应用程序、应用 repository custom code，并在共享同一公开工作流 contract 的同时使 runner 保持可供远程连接。
 
 ## 工作流
 
-- [macOS 工作流](.github/workflows/macos.yml) 通过手动触发运行，是当前功能完整的工作流。
-- [Windows 工作流](.github/workflows/windows.yml) 会安装并启动 GameViewer，但目前功能较少。它计划与 macOS 达成功能一致，当前不会使用 macOS 的 secrets 或 inputs。
+- [macOS 工作流](.github/workflows/macos.yml) 和 [Windows 工作流](.github/workflows/windows.yml) 都是手动触发的特定平台工作流。
+- 两个工作流都提供必填的 `workflow_dispatch` inputs：`debug_level` 可取 `0` 到 `3`，默认值为 `0`；`wait_connections_seconds` 为从 `0` 到 `21000` 的整数，默认值为 `300`。
+- 两个工作流都需要 `UUREMOTE_CUSTOM_CODE` repository secret。只有 macOS 还需要 `UUREMOTE_ACCOUNT_PASSWORD` repository secret 来配置其主机。
 
-## 必需的 secrets
+## 诊断与连接等待
 
-macOS 工作流需要以下 GitHub repository secrets：
+两个平台的 debug level 均为累积式：
 
-- `UUREMOTE_ACCOUNT_PASSWORD`：用于配置 macOS 主机帐户。
-- `UUREMOTE_CUSTOM_CODE`：用于配置 UU Remote 自定义代码。
+- `0`：快速生产路径；不生成截图或诊断 artifact；执行连接等待。
+- `1`：运行诊断 self-test 并捕获完成 finalization 的 desktop。
+- `2`：包含 level 1，并重复配置且验证 idempotency。
+- `3`：包含 level 2，并以 15 秒间隔采集 20 个保持状态的实时样本。
 
-macOS 工作流会在使用前检查这两个 secret 并对其进行遮蔽。触发 macOS 工作流前，请在仓库的 Actions secrets 中配置它们。
+两个平台仅在 `debug_level` 非零时上传 `uuremote-diagnostics` artifact。在 level `0` 时，`wait_connections_seconds` 控制连接等待。
 
-## 输入与诊断
+## 平台安全边界
 
-macOS 的 `workflow_dispatch` 接口提供：
+请将 repository secret 视为秘密：不要将其写入 repository 文件、issue、日志、截图或 artifact。工作流会先遮蔽 secret，并仅在需要它们的步骤中使用。
 
-- `debug_level`：诊断级别 `0` 到 `3`（默认值为 `0`；更高级别会按工作流说明启用截图、幂等性验证或实时采样）。
-- `wait_connections_seconds`：等待连接的整数秒数，范围为 `0` 到 `21000`（默认值为 `300`）。仅当 `debug_level` 为 `0` 时使用该等待时间。
-
-## 安全说明
-
-请将两个必需值都作为 secret 处理：不要把它们放入仓库文件、issue 或日志。请仔细审核工作流修改，因为它们会在托管的 macOS 或 Windows 机器上以 `contents: write` 权限运行，并下载 GameViewer 安装程序。
+Windows 不会更改用户或 Administrator 密码、启用 automatic login、使用 `UUREMOTE_ACCOUNT_PASSWORD`，或更改 UAC、Windows Firewall 或 SSH policy。它也不会削弱任何 operating-system permission boundary，或虚构未记录的 UU Remote CLI command。
 
 ## 仓库结构
 
-- `.github/workflows/` 包含 macOS 与 Windows Actions 工作流，以及 macOS 辅助脚本。
-- `AGENTS.md` 与 `CLAUDE.md` 是英文 agent 指令；对应的 `-zh_CN` 文件是简体中文翻译。
+- `.github/workflows/` 包含 macOS 和 Windows Actions 工作流及其各自的平台 helper。
+- `AGENTS.md` 和 `CLAUDE.md` 包含英文 agent instructions；其 `-zh_CN` counterpart 包含简体中文翻译。
 - `docs/prompts/` 包含可复用的会话捕获说明。
-- `tests/` 包含工作流和仓库契约测试。
+- `tests/` 包含工作流和 repository-contract tests。
 
-## 验证
+## 验证与端到端验收
 
-可使用 Python 的 unittest runner 在本地运行聚焦的 agent 环境契约测试，例如：
+请使用以下命令运行本地验证：
 
 ```powershell
-python -m unittest tests.test_agent_work_environment -v
+python -m unittest discover -s tests -v
 ```
 
-如需进行端到端运行，请配置两个 macOS repository secret，并从 GitHub Actions 手动触发 macOS 工作流，传入所需的诊断 inputs。
+仅限平台的行为只会在不兼容的 host 上跳过；在兼容的 host 上必须执行。
+
+端到端验收需要适用的 GitHub repository secrets 以及手动 dispatch 的 macOS 或 Windows workflow。未经当前授权，请勿 dispatch workflow 或暴露 secret。在该手动运行中，验证所选平台预期的诊断行为以及真实 remote client connectivity。
