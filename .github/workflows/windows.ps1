@@ -244,25 +244,42 @@ namespace UURemote
     }
 }
 
-function Minimize-UURemoteWindows {
-    Initialize-UURemoteWindowInterop
-
-    $windowHandles = @(
+function Get-UURemoteWindowHandles {
+    return @(
         Get-UURemoteGameViewerProcess |
             ForEach-Object { $_.MainWindowHandle } |
             Where-Object { $_ -ne [IntPtr]::Zero }
     )
+}
 
-    foreach ($windowHandle in $windowHandles) {
-        $null = [UURemote.DesktopWindowInterop]::ShowWindowAsync($windowHandle, 6)
+function Request-UURemoteWindowMinimize([IntPtr]$WindowHandle) {
+    $null = [UURemote.DesktopWindowInterop]::ShowWindowAsync($WindowHandle, 6)
+}
+
+function Test-UURemoteWindowMinimized([IntPtr]$WindowHandle) {
+    return [UURemote.DesktopWindowInterop]::IsIconic($WindowHandle)
+}
+
+function Minimize-UURemoteWindows {
+    Initialize-UURemoteWindowInterop
+
+    foreach ($windowHandle in @(Get-UURemoteWindowHandles)) {
+        Request-UURemoteWindowMinimize -WindowHandle $windowHandle
     }
 
-    $deadline = (Get-Date).AddSeconds(5)
-    while (@($windowHandles | Where-Object { -not [UURemote.DesktopWindowInterop]::IsIconic($_) }).Count -gt 0) {
-        if ((Get-Date) -ge $deadline) {
+    $deadline = (Get-UURemoteNow).AddSeconds(5)
+    while ($true) {
+        $visibleHandles = @(
+            Get-UURemoteWindowHandles |
+                Where-Object { -not (Test-UURemoteWindowMinimized -WindowHandle $_) }
+        )
+        if ($visibleHandles.Count -eq 0) {
+            break
+        }
+        if ((Get-UURemoteNow) -ge $deadline) {
             throw 'UU Remote desktop finalization failed.'
         }
-        Start-Sleep -Milliseconds 100
+        Wait-UURemotePoll -Milliseconds 100
     }
 
     Write-Output 'FINAL_DESKTOP_STATE=ready'
@@ -272,14 +289,7 @@ function Test-UURemoteSnapshotLabel([string]$Value) {
     return $null -ne $Value -and $Value -cmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
 }
 
-function Save-DesktopSnapshot([string]$Label) {
-    if (-not (Test-UURemoteSnapshotLabel $Label)) {
-        throw 'Invalid desktop snapshot label.'
-    }
-    if ([string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
-        throw 'Runner temporary directory is unavailable.'
-    }
-
+function Write-UURemoteDesktopSnapshot([string]$SnapshotPath) {
     Add-Type -AssemblyName System.Windows.Forms
     Add-Type -AssemblyName System.Drawing
 
@@ -288,9 +298,6 @@ function Save-DesktopSnapshot([string]$Label) {
         throw 'Desktop snapshot dimensions are invalid.'
     }
 
-    $diagnosticDirectory = Join-Path $env:RUNNER_TEMP 'uuremote-diagnostics'
-    $null = New-Item -ItemType Directory -Path $diagnosticDirectory -Force
-    $snapshotPath = Join-Path $diagnosticDirectory "$Label.png"
     $bitmap = $null
     $graphics = $null
     try {
@@ -303,7 +310,7 @@ function Save-DesktopSnapshot([string]$Label) {
             0,
             $virtualScreen.Size
         )
-        $bitmap.Save($snapshotPath, [System.Drawing.Imaging.ImageFormat]::Png)
+        $bitmap.Save($SnapshotPath, [System.Drawing.Imaging.ImageFormat]::Png)
     }
     finally {
         if ($null -ne $graphics) {
@@ -312,6 +319,34 @@ function Save-DesktopSnapshot([string]$Label) {
         if ($null -ne $bitmap) {
             $bitmap.Dispose()
         }
+    }
+}
+
+function Save-DesktopSnapshot([string]$Label) {
+    if (-not (Test-UURemoteSnapshotLabel $Label)) {
+        throw 'Invalid desktop snapshot label.'
+    }
+    if ([string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
+        throw 'Runner temporary directory is unavailable.'
+    }
+
+    $diagnosticDirectory = Join-Path $env:RUNNER_TEMP 'uuremote-diagnostics'
+    $null = New-Item -ItemType Directory -Path $diagnosticDirectory -Force
+    $snapshotPath = Join-Path $diagnosticDirectory "$Label.png"
+    $temporaryName = ".$Label.$([Guid]::NewGuid().ToString('N')).tmp.png"
+    $temporaryPath = Join-Path $diagnosticDirectory $temporaryName
+    try {
+        Write-UURemoteDesktopSnapshot -SnapshotPath $temporaryPath
+        if (Test-Path -LiteralPath $snapshotPath -PathType Leaf) {
+            $nullBackupPath = [System.Management.Automation.Language.NullString]::Value
+            [System.IO.File]::Replace($temporaryPath, $snapshotPath, $nullBackupPath)
+        }
+        else {
+            [System.IO.File]::Move($temporaryPath, $snapshotPath)
+        }
+    }
+    finally {
+        Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
     }
 }
 

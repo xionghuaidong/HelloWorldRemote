@@ -50,6 +50,27 @@ def run_windows_helper(mode: str, *args: str, environment: dict[str, str] | None
     )
 
 
+def run_windows_script(script: str, environment: dict[str, str] | None = None):
+    if POWERSHELL is None:
+        raise RuntimeError("A PowerShell runtime is required to run the Windows helper tests.")
+
+    return subprocess.run(
+        [
+            POWERSHELL,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            script,
+        ],
+        cwd=ROOT,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
 class SharedWorkflowContractTests(unittest.TestCase):
     def test_windows_exposes_the_shared_dispatch_inputs(self):
         workflow = text(WINDOWS_WORKFLOW)
@@ -222,6 +243,112 @@ class WindowsDiagnosticContractTests(unittest.TestCase):
 
 @unittest.skipUnless(platform.system() == "Windows", "requires a Windows desktop")
 class WindowsDiagnosticBehaviorTests(unittest.TestCase):
+    def run_controlled_helper(self, body: str, environment: dict[str, str] | None = None):
+        helper = str(WINDOWS_HELPER).replace("'", "''")
+        return run_windows_script(f". '{helper}'\n{body}", environment=environment)
+
+    def test_minimization_reenumerates_and_verifies_a_replacement_handle(self):
+        result = self.run_controlled_helper(
+            r"""
+$script:enumerations = 0
+$script:requests = @()
+$script:checks = @()
+function Initialize-UURemoteWindowInterop {}
+function Get-UURemoteWindowHandles {
+    $script:enumerations++
+    if ($script:enumerations -eq 1) {
+        return [IntPtr]101
+    }
+    return [IntPtr]202
+}
+function Request-UURemoteWindowMinimize([IntPtr]$WindowHandle) {
+    $script:requests += $WindowHandle.ToInt64()
+}
+function Test-UURemoteWindowMinimized([IntPtr]$WindowHandle) {
+    $script:checks += $WindowHandle.ToInt64()
+    return $script:checks.Count -gt 1
+}
+function Wait-UURemotePoll([int]$Milliseconds) {}
+Minimize-UURemoteWindows
+Write-Output "ENUMERATIONS=$script:enumerations"
+Write-Output "REQUESTS=$($script:requests -join ',')"
+Write-Output "CHECKS=$($script:checks -join ',')"
+"""
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("FINAL_DESKTOP_STATE=ready", result.stdout)
+        self.assertIn("ENUMERATIONS=3", result.stdout)
+        self.assertIn("REQUESTS=101", result.stdout)
+        self.assertIn("CHECKS=202,202", result.stdout)
+
+    def test_minimization_accepts_no_current_top_level_window(self):
+        result = self.run_controlled_helper(
+            r"""
+$script:enumerations = 0
+$script:requests = @()
+$script:checks = 0
+function Initialize-UURemoteWindowInterop {}
+function Get-UURemoteWindowHandles {
+    $script:enumerations++
+    if ($script:enumerations -eq 1) {
+        return [IntPtr]101
+    }
+    return
+}
+function Request-UURemoteWindowMinimize([IntPtr]$WindowHandle) {
+    $script:requests += $WindowHandle.ToInt64()
+}
+function Test-UURemoteWindowMinimized([IntPtr]$WindowHandle) {
+    $script:checks++
+    return $false
+}
+Minimize-UURemoteWindows
+Write-Output "ENUMERATIONS=$script:enumerations"
+Write-Output "REQUESTS=$($script:requests -join ',')"
+Write-Output "CHECKS=$script:checks"
+"""
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("FINAL_DESKTOP_STATE=ready", result.stdout)
+        self.assertIn("ENUMERATIONS=2", result.stdout)
+        self.assertIn("REQUESTS=101", result.stdout)
+        self.assertIn("CHECKS=0", result.stdout)
+
+    def test_failed_snapshot_removes_final_and_temporary_png_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            environment = os.environ.copy()
+            environment["RUNNER_TEMP"] = directory
+            result = self.run_controlled_helper(
+                r"""
+$script:captureAttempts = 0
+function Write-UURemoteDesktopSnapshot([string]$SnapshotPath) {
+    $script:captureAttempts++
+    [System.IO.File]::WriteAllText($SnapshotPath, 'partial')
+    throw 'injected capture failure'
+}
+$caught = $false
+try {
+    Save-DesktopSnapshot -Label 'failure-test'
+}
+catch {
+    $caught = $true
+}
+$diagnosticDirectory = Join-Path $env:RUNNER_TEMP 'uuremote-diagnostics'
+$pngFiles = @(Get-ChildItem -LiteralPath $diagnosticDirectory -Filter '*.png' -ErrorAction SilentlyContinue)
+Write-Output "CAPTURE_ATTEMPTS=$script:captureAttempts"
+Write-Output "CAUGHT=$caught"
+Write-Output "PNG_COUNT=$($pngFiles.Count)"
+if ($script:captureAttempts -ne 1 -or -not $caught -or $pngFiles.Count -ne 0) {
+    exit 1
+}
+""",
+                environment=environment,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("CAPTURE_ATTEMPTS=1", result.stdout)
+            self.assertIn("CAUGHT=True", result.stdout)
+            self.assertIn("PNG_COUNT=0", result.stdout)
+
     def test_snapshot_writes_a_real_png_under_runner_temp(self):
         with tempfile.TemporaryDirectory() as directory:
             environment = os.environ.copy()
@@ -231,6 +358,18 @@ class WindowsDiagnosticBehaviorTests(unittest.TestCase):
             image = Path(directory, "uuremote-diagnostics", "contract-test.png")
             self.assertTrue(image.is_file())
             self.assertEqual(image.read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
+
+    def test_repeated_snapshot_label_replaces_with_a_real_png(self):
+        with tempfile.TemporaryDirectory() as directory:
+            environment = os.environ.copy()
+            environment["RUNNER_TEMP"] = directory
+            for _ in range(2):
+                result = run_windows_helper("snapshot", "repeat", environment=environment)
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+            images = list(Path(directory, "uuremote-diagnostics").glob("*.png"))
+            self.assertEqual([image.name for image in images], ["repeat.png"])
+            self.assertEqual(images[0].read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
 
     def test_invalid_snapshot_label_returns_two_without_creating_a_file(self):
         with tempfile.TemporaryDirectory() as directory:
