@@ -159,13 +159,16 @@ Before completion, verify:
 - every document has the required H1/navigation/blank-line structure;
 - no recursively suffixed `-zh_CN-zh_CN.md` file exists;
 - `.claude/settings.json` parses as JSON and enables only the expected Superpowers plugin;
-- the Codex and Claude Code instruction pairs contain the complete shared workflow and project rules;
+- automated checks cover machine-readable structure only: JSON validity, required ignore entries, counterpart existence, exact navigation format, and relative-link resolution;
+- task review confirms that the Codex and Claude Code instruction pairs contain the complete shared workflow and project rules, that the README files state current workflow facts accurately, and that the capture prompts preserve the reference semantics;
 - existing English plans and specifications differ only by the addition of language navigation;
 - currently runnable repository tests still pass;
 - `git diff --check` passes; and
 - the final diff contains only the approved environment and documentation changes.
 
 If any counterpart is missing, any navigation link is invalid, any configuration cannot be parsed, or the shared instruction policies are inconsistent, the migration is incomplete and must not be committed as finished.
+
+Exact-word or required-token assertions against human prose are prohibited because they are brittle change detectors rather than behavioral tests. Markdown, JSON, and ignore-file authoring is explicitly exempt from strict test-first development. Any new Python validation behavior still follows red-green-refactor and exercises real repository structure rather than asserting prose content.
 
 ## 10. Non-Goals
 

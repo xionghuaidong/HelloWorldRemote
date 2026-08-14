@@ -19,6 +19,8 @@
 - 源码、配置、scripts、tests 和代码示例中的注释使用英文。
 - 不修改 `.github/workflows/*`、`apple.sh`、Swift watcher 或现有运行时行为。
 - 不硬编码或暴露账户密码、自定义连接码或远程设备连接信息。
+- 自动 tests 可以断言机器可读结构，但不得断言人类 prose 中的 required words 或 tokens；语义完整性与翻译等价性由 task review 负责。
+- Markdown、JSON 和 ignore-file 编写豁免严格 test-first development；新增 Python 验证行为仍要求 red-green-refactor。
 - 对人工编写的仓库编辑使用 `apply_patch`；机械性的参考文件复制和格式化可以使用专用命令。
 - 每个 implementation commit 使用 Conventional Commits。
 
@@ -28,7 +30,7 @@
 
 **文件：**
 - 新建：`.claude/settings.json`
-- 新建：`.gitignore`
+- 修改：`.gitignore`
 - 新建：`tests/test_agent_work_environment.py`
 
 **接口：**
@@ -87,7 +89,7 @@ if __name__ == "__main__":
 python -m unittest tests.test_agent_work_environment.BaseConfigurationContractTests -v
 ```
 
-预期：因缺少 `.claude/settings.json` 和 `.gitignore` 产生两个 errors。
+预期：因缺少 `.claude/settings.json` 产生一个 error，并且因为 `.gitignore` 只有 worktree 安全 entry 而产生一个 failure。
 
 - [ ] **步骤 3：增加最小 settings 与 ignore 文件**
 
@@ -101,7 +103,7 @@ python -m unittest tests.test_agent_work_environment.BaseConfigurationContractTe
 }
 ```
 
-创建 `.gitignore`：
+扩充现有 `.gitignore`，保留 `.worktrees/` 并加入其余 entries，使完整文件为：
 
 ```gitignore
 .superpowers/
@@ -170,35 +172,6 @@ class AgentInstructionContractTests(unittest.TestCase):
                 )
                 self.assertEqual(lines[3], "")
 
-    def test_all_instruction_files_define_the_shared_workflow(self):
-        required_tokens = (
-            "brainstorming",
-            "using-git-worktrees",
-            "writing-plans",
-            "subagent-driven-development",
-            "executing-plans",
-            "test-driven-development",
-            "systematic-debugging",
-            "requesting-code-review",
-            "receiving-code-review",
-            "verification-before-completion",
-            "finishing-a-development-branch",
-            "Conventional Commits",
-            "UUREMOTE_ACCOUNT_PASSWORD",
-            "UUREMOTE_CUSTOM_CODE",
-        )
-        for name in self.FILES:
-            content = text(ROOT / name)
-            for token in required_tokens:
-                with self.subTest(name=name, token=token):
-                    self.assertIn(token, content)
-
-    def test_harness_specific_startup_instructions_are_present(self):
-        self.assertIn("Open `/plugins`", text(ROOT / "AGENTS.md"))
-        self.assertIn(
-            "superpowers@claude-plugins-official",
-            text(ROOT / "CLAUDE.md"),
-        )
 ```
 
 - [ ] **步骤 2：运行聚焦 class 并确认预期失败**
@@ -250,11 +223,11 @@ python -m unittest tests.test_agent_work_environment.AgentInstructionContractTes
 python -m unittest tests.test_agent_work_environment.BaseConfigurationContractTests tests.test_agent_work_environment.AgentInstructionContractTests -v
 ```
 
-预期：`Ran 5 tests` 和 `OK`。
+预期：`Ran 3 tests` 和 `OK`。
 
 - [ ] **步骤 7：审查跨 harness 等价性并提交**
 
-逐节比较英文 pair 与中文 pair。仅允许 harness 特定的 plugin naming、安装、reload 和 startup instructions 不同。
+逐节比较英文 pair 与中文 pair。手动确认设计中的每个 workflow skill、secret-handling rule、项目安全边界、验证要求和文档规则都存在。仅允许 harness 特定的 plugin naming、安装、reload 和 startup instructions 不同。
 
 ```powershell
 git add -- AGENTS.md AGENTS-zh_CN.md CLAUDE.md CLAUDE-zh_CN.md tests/test_agent_work_environment.py
@@ -282,41 +255,29 @@ git commit -m "docs: add bilingual agent instructions"
 
 ```python
 class EntryPointContractTests(unittest.TestCase):
-    def test_readmes_have_navigation_and_required_facts(self):
+    def test_readmes_have_navigation(self):
         for name in ("README.md", "README-zh_CN.md"):
-            content = text(ROOT / name)
-            lines = content.splitlines()
+            lines = text(ROOT / name).splitlines()
             self.assertEqual(lines[1], "")
             self.assertEqual(
                 lines[2],
                 "[English](README.md) | [简体中文](README-zh_CN.md)",
             )
-            for token in (
-                "macos.yml",
-                "windows.yml",
-                "UUREMOTE_ACCOUNT_PASSWORD",
-                "UUREMOTE_CUSTOM_CODE",
-                "debug_level",
-                "wait_connections_seconds",
-            ):
-                with self.subTest(name=name, token=token):
-                    self.assertIn(token, content)
 
-    def test_capture_prompts_preserve_required_sections(self):
-        files = (
-            ROOT / "docs/prompts/capture-conversation.md",
-            ROOT / "docs/prompts/capture-conversation-zh_CN.md",
-        )
-        for path in files:
-            content = text(path)
-            for token in (
-                "## Conversation",
-                "Capture note:",
-                "docs/conversations/",
-                "YYYY-MM-DD-brief-english-slug",
-            ):
-                with self.subTest(path=path.name, token=token):
-                    self.assertIn(token, content)
+    def test_capture_prompts_have_navigation(self):
+        for name in (
+            "capture-conversation.md",
+            "capture-conversation-zh_CN.md",
+        ):
+            lines = text(ROOT / "docs/prompts" / name).splitlines()
+            self.assertEqual(lines[1], "")
+            self.assertEqual(
+                lines[2],
+                (
+                    "[English](capture-conversation.md) | "
+                    "[简体中文](capture-conversation-zh_CN.md)"
+                ),
+            )
 ```
 
 - [ ] **步骤 2：运行入口 tests 并确认失败**
@@ -361,6 +322,8 @@ python -m unittest tests.test_agent_work_environment.EntryPointContractTests -v
 预期：`Ran 2 tests` 和 `OK`。
 
 - [ ] **步骤 7：提交入口文档**
+
+提交前，根据当前 workflow YAML 审查两份 README，并根据 `scratchpad` 提交 `21fd7b173587547384c8757c67c8a01459709b42` 审查两份 capture prompts。该语义 review 取代脆弱的 required-token tests。
 
 ```powershell
 git add -- README.md README-zh_CN.md docs/prompts/capture-conversation.md docs/prompts/capture-conversation-zh_CN.md tests/test_agent_work_environment.py
@@ -542,11 +505,11 @@ Get-ChildItem -Recurse -File -Filter '*-zh_CN-zh_CN.md'
 - [ ] **步骤 5：检查 commits 与 worktree state**
 
 ```powershell
-git log --oneline e30a65b..HEAD
+git log --oneline 64d91d5..HEAD
 git status --short
 ```
 
-预期：`e30a65b` 之后有本计划 commit 和 4 个聚焦 implementation commits，worktree clean。
+预期：`64d91d5` 之后有一个已批准 plan-correction commit 和 4 个聚焦 implementation commits，worktree clean。
 
 - [ ] **步骤 6：请求最终 code review 并完成 branch**
 

@@ -19,6 +19,8 @@
 - Keep comments in source, configuration, scripts, tests, and code examples in English.
 - Do not change `.github/workflows/*`, `apple.sh`, the Swift watcher, or existing runtime behavior.
 - Do not hard-code or expose account passwords, custom codes, or remote-device connection information.
+- Automated tests may assert machine-readable structure but must not assert required words or tokens in human prose; semantic completeness and translation equivalence are task-review responsibilities.
+- Markdown, JSON, and ignore-file authoring is exempt from strict test-first development; new Python validation behavior still requires red-green-refactor.
 - Use `apply_patch` for authored repository edits; mechanical reference-file copying and formatting may use purpose-built commands.
 - Use Conventional Commits for every implementation commit.
 
@@ -28,7 +30,7 @@
 
 **Files:**
 - Create: `.claude/settings.json`
-- Create: `.gitignore`
+- Modify: `.gitignore`
 - Create: `tests/test_agent_work_environment.py`
 
 **Interfaces:**
@@ -89,7 +91,7 @@ Run:
 python -m unittest tests.test_agent_work_environment.BaseConfigurationContractTests -v
 ```
 
-Expected: two errors caused by missing `.claude/settings.json` and `.gitignore`.
+Expected: one error caused by missing `.claude/settings.json` and one failure because `.gitignore` contains only the worktree safety entry.
 
 - [ ] **Step 3: Add the minimal settings and ignore files**
 
@@ -103,7 +105,7 @@ Create `.claude/settings.json`:
 }
 ```
 
-Create `.gitignore`:
+Extend the existing `.gitignore`, retaining `.worktrees/` and adding the remaining entries so the complete file is:
 
 ```gitignore
 .superpowers/
@@ -174,35 +176,6 @@ class AgentInstructionContractTests(unittest.TestCase):
                 )
                 self.assertEqual(lines[3], "")
 
-    def test_all_instruction_files_define_the_shared_workflow(self):
-        required_tokens = (
-            "brainstorming",
-            "using-git-worktrees",
-            "writing-plans",
-            "subagent-driven-development",
-            "executing-plans",
-            "test-driven-development",
-            "systematic-debugging",
-            "requesting-code-review",
-            "receiving-code-review",
-            "verification-before-completion",
-            "finishing-a-development-branch",
-            "Conventional Commits",
-            "UUREMOTE_ACCOUNT_PASSWORD",
-            "UUREMOTE_CUSTOM_CODE",
-        )
-        for name in self.FILES:
-            content = text(ROOT / name)
-            for token in required_tokens:
-                with self.subTest(name=name, token=token):
-                    self.assertIn(token, content)
-
-    def test_harness_specific_startup_instructions_are_present(self):
-        self.assertIn("Open `/plugins`", text(ROOT / "AGENTS.md"))
-        self.assertIn(
-            "superpowers@claude-plugins-official",
-            text(ROOT / "CLAUDE.md"),
-        )
 ```
 
 - [ ] **Step 2: Run the focused class and verify the expected failure**
@@ -258,11 +231,11 @@ Run:
 python -m unittest tests.test_agent_work_environment.BaseConfigurationContractTests tests.test_agent_work_environment.AgentInstructionContractTests -v
 ```
 
-Expected: `Ran 5 tests` and `OK`.
+Expected: `Ran 3 tests` and `OK`.
 
 - [ ] **Step 7: Review cross-harness equivalence and commit**
 
-Compare the English pair and Chinese pair section by section. The only policy differences allowed are harness-specific plugin naming, installation, reload, and startup instructions.
+Compare the English pair and Chinese pair section by section. Confirm manually that every workflow skill, secret-handling rule, project safety boundary, validation requirement, and documentation rule from the design is present. The only policy differences allowed are harness-specific plugin naming, installation, reload, and startup instructions.
 
 ```powershell
 git add -- AGENTS.md AGENTS-zh_CN.md CLAUDE.md CLAUDE-zh_CN.md tests/test_agent_work_environment.py
@@ -290,41 +263,29 @@ Insert this class before the module entry point:
 
 ```python
 class EntryPointContractTests(unittest.TestCase):
-    def test_readmes_have_navigation_and_required_facts(self):
+    def test_readmes_have_navigation(self):
         for name in ("README.md", "README-zh_CN.md"):
-            content = text(ROOT / name)
-            lines = content.splitlines()
+            lines = text(ROOT / name).splitlines()
             self.assertEqual(lines[1], "")
             self.assertEqual(
                 lines[2],
                 "[English](README.md) | [简体中文](README-zh_CN.md)",
             )
-            for token in (
-                "macos.yml",
-                "windows.yml",
-                "UUREMOTE_ACCOUNT_PASSWORD",
-                "UUREMOTE_CUSTOM_CODE",
-                "debug_level",
-                "wait_connections_seconds",
-            ):
-                with self.subTest(name=name, token=token):
-                    self.assertIn(token, content)
 
-    def test_capture_prompts_preserve_required_sections(self):
-        files = (
-            ROOT / "docs/prompts/capture-conversation.md",
-            ROOT / "docs/prompts/capture-conversation-zh_CN.md",
-        )
-        for path in files:
-            content = text(path)
-            for token in (
-                "## Conversation",
-                "Capture note:",
-                "docs/conversations/",
-                "YYYY-MM-DD-brief-english-slug",
-            ):
-                with self.subTest(path=path.name, token=token):
-                    self.assertIn(token, content)
+    def test_capture_prompts_have_navigation(self):
+        for name in (
+            "capture-conversation.md",
+            "capture-conversation-zh_CN.md",
+        ):
+            lines = text(ROOT / "docs/prompts" / name).splitlines()
+            self.assertEqual(lines[1], "")
+            self.assertEqual(
+                lines[2],
+                (
+                    "[English](capture-conversation.md) | "
+                    "[简体中文](capture-conversation-zh_CN.md)"
+                ),
+            )
 ```
 
 - [ ] **Step 2: Run the entry-point tests and verify failure**
@@ -373,6 +334,8 @@ python -m unittest tests.test_agent_work_environment.EntryPointContractTests -v
 Expected: `Ran 2 tests` and `OK`.
 
 - [ ] **Step 7: Commit the entry-point documentation**
+
+Before committing, review both README files against the current workflow YAML and review both capture prompts against `scratchpad` commit `21fd7b173587547384c8757c67c8a01459709b42`. This semantic review replaces brittle required-token tests.
 
 ```powershell
 git add -- README.md README-zh_CN.md docs/prompts/capture-conversation.md docs/prompts/capture-conversation-zh_CN.md tests/test_agent_work_environment.py
@@ -560,11 +523,11 @@ Expected: no newly added plaintext secret value, no newly added secret assignmen
 - [ ] **Step 5: Inspect commit and worktree state**
 
 ```powershell
-git log --oneline e30a65b..HEAD
+git log --oneline 64d91d5..HEAD
 git status --short
 ```
 
-Expected: the plan commit and four focused implementation commits appear after `e30a65b`, and the worktree is clean.
+Expected: one approved plan-correction commit and four focused implementation commits appear after `64d91d5`, and the worktree is clean.
 
 - [ ] **Step 6: Request final code review and finish the branch**
 
