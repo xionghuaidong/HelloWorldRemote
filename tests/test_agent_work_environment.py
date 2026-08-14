@@ -35,5 +35,30 @@ class BaseConfigurationContractTests(unittest.TestCase):
         )
 
 
+class AgentInstructionContractTests(unittest.TestCase):
+    FILES = (
+        "AGENTS.md",
+        "AGENTS-zh_CN.md",
+        "CLAUDE.md",
+        "CLAUDE-zh_CN.md",
+    )
+
+    def test_instruction_files_exist_with_language_navigation(self):
+        for name in self.FILES:
+            with self.subTest(name=name):
+                lines = text(ROOT / name).splitlines()
+                self.assertTrue(lines[0].startswith("# "))
+                self.assertEqual(lines[1], "")
+                self.assertEqual(
+                    lines[2],
+                    (
+                        "[English](AGENTS.md) | [简体中文](AGENTS-zh_CN.md)"
+                        if name.startswith("AGENTS")
+                        else "[English](CLAUDE.md) | [简体中文](CLAUDE-zh_CN.md)"
+                    ),
+                )
+                self.assertEqual(lines[3], "")
+
+
 if __name__ == "__main__":
     unittest.main()
