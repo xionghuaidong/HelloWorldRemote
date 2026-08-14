@@ -269,11 +269,71 @@ wait_connections() {
     validate_wait_connections_seconds "$wait_seconds" || return "$?"
 
     if [ "$wait_seconds" -eq 0 ]; then
-        echo "Wait connections disabled (0 seconds)"
+        echo "WAIT_RESULT=timeout"
         return 0
     fi
 
     run_shutdown_waiter "$wait_seconds" none
+}
+
+capture_cli_diagnostics() {
+    local cli_output=""
+    local cli_status
+    local cli_state
+
+    if cli_output="$(run_in_gui "$CLI" status 2>/dev/null)"; then
+        cli_status=0
+        if printf '%s' "$cli_output" | /usr/bin/grep -Eq '"success"[[:space:]]*:[[:space:]]*true'; then
+            cli_state="ready"
+        else
+            cli_state="unavailable"
+        fi
+    else
+        cli_status="$?"
+        cli_state="error"
+    fi
+
+    printf 'CLI_STATUS_STATE=%s\n' "$cli_state"
+    printf 'CLI_STATUS_EXIT=%s\n' "$cli_status"
+    unset cli_output
+
+    if cli_output="$(run_in_gui "$CLI" assist id 2>/dev/null)"; then
+        cli_status=0
+        if [ -n "$cli_output" ]; then
+            cli_state="ready"
+        else
+            cli_state="empty"
+        fi
+    else
+        cli_status="$?"
+        cli_state="error"
+    fi
+
+    printf 'DEVICE_ID_STATE=%s\n' "$cli_state"
+    printf 'DEVICE_ID_EXIT=%s\n' "$cli_status"
+    unset cli_output
+}
+
+self_test_diagnostic_redaction() {
+    local test_cli="${UUREMOTE_DIAGNOSTIC_TEST_CLI:-}"
+
+    if [ -z "$test_cli" ] || [ ! -r "$test_cli" ]; then
+        echo "UUREMOTE_DIAGNOSTIC_TEST_CLI must name a readable Bash fixture" >&2
+        return 2
+    fi
+
+    CLI="$test_cli"
+    evidence_dir="${RUNNER_TEMP:-/tmp}/uuremote-diagnostics"
+    diagnostic_log="$evidence_dir/diagnostics.log"
+
+    run_in_gui() {
+        local fixture_cli="$1"
+        shift
+        /bin/bash "$fixture_cli" "$@"
+    }
+
+    /bin/mkdir -p "$evidence_dir"
+    capture_cli_diagnostics | /usr/bin/tee -a "$diagnostic_log"
 }
 
 run_as_console_user() {
@@ -1381,6 +1441,11 @@ if [ "$mode" = "self-test-wait-connections" ]; then
     exit 0
 fi
 
+if [ "$mode" = "self-test-diagnostic-redaction" ]; then
+    self_test_diagnostic_redaction
+    exit $?
+fi
+
 if [ "$mode" = "configure-host" ]; then
     configure_host
     exit 0
@@ -1500,6 +1565,28 @@ capture_tcc_database() {
     fi
 }
 
+capture_uuremote_process_states() {
+    local process_output=""
+    local process_status
+
+    if process_output="$(/bin/ps -axo comm=,state= 2>/dev/null)"; then
+        process_status=0
+    else
+        process_status="$?"
+    fi
+
+    if [ "$process_status" -eq 0 ]; then
+        if ! printf '%s\n' "$process_output" | /usr/bin/grep -Ei '[U]URemote|[u]uyc-cli'; then
+            echo "No UU process matched"
+        fi
+    else
+        echo "UU process state unavailable"
+    fi
+
+    printf 'PROCESS_LIST_EXIT=%s\n' "$process_status"
+    unset process_output
+}
+
 capture_snapshot() {
     local requested_label="${1:-manual}"
     local safe_label
@@ -1528,8 +1615,8 @@ capture_snapshot() {
     {
         echo
         echo "========== SNAPSHOT $safe_label $timestamp =========="
-        echo "--- UU processes ---"
-        /bin/ps -axo pid=,ppid=,uid=,user=,comm=,args= | /usr/bin/grep -Ei '[U]URemote|[u]uyc-cli' || echo "No UU process matched"
+        echo "--- UU process states ---"
+        capture_uuremote_process_states
 
         echo "--- Code signing ---"
         for executable in \
@@ -1550,10 +1637,8 @@ capture_snapshot() {
         capture_tcc_database "$user_tcc_database" "user"
         capture_tcc_database "/Library/Application Support/com.apple.TCC/TCC.db" "system"
 
-        echo "--- CLI status ---"
-        run_in_gui "$CLI" status 2>&1 || true
-        echo "--- Assist ID ---"
-        run_in_gui "$CLI" assist id 2>&1 || true
+        echo "--- Sanitized CLI state ---"
+        capture_cli_diagnostics
     } | /usr/bin/tee -a "$diagnostic_log"
 
     if ! run_in_gui /usr/sbin/screencapture -x -t png "$png_path"; then

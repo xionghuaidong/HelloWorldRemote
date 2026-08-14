@@ -60,7 +60,7 @@ class WaitShellContractTests(unittest.TestCase):
     def test_zero_returns_without_watcher_or_app_preflight(self):
         result = self.run_script("wait-connections", "0")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("disabled (0 seconds)", result.stdout)
+        self.assertEqual(result.stdout.splitlines(), ["WAIT_RESULT=timeout"])
 
     def test_invalid_values_return_two(self):
         for value in ("-1", "21001", "1.5", "text", ""):

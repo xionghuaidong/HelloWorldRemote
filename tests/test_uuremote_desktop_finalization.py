@@ -9,6 +9,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_PATH = ROOT / ".github/workflows/macos.yml"
 SCRIPT_PATH = ROOT / ".github/workflows/apple.sh"
+DIAGNOSTIC_HARNESS_PATH = ROOT / "tests/test_macos_diagnostic_redaction.sh"
 BASH_AVAILABLE = Path("/bin/bash").exists()
 
 
@@ -44,6 +45,15 @@ class CustomCodeWorkflowTests(unittest.TestCase):
         combined = text(WORKFLOW_PATH) + text(SCRIPT_PATH)
         self.assertNotIn("johnDOE123", combined)
         self.assertNotIn('echo "customCode: $output"', combined)
+
+    def test_device_id_readiness_fails_closed_after_bounded_polling(self):
+        workflow = text(WORKFLOW_PATH)
+        block = step_block(workflow, "Launch GameViewer")
+
+        self.assertIn("device_id_ready=0", block)
+        self.assertIn("device_id_ready=1", block)
+        self.assertIn('if [ "$device_id_ready" -ne 1 ]', block)
+        self.assertIn("UU Remote device readiness failed after 120 attempts", block)
 
 
 @unittest.skipUnless(BASH_AVAILABLE, "requires /bin/bash")
@@ -87,6 +97,18 @@ class CustomCodeValidationTests(unittest.TestCase):
 
                 if value:
                     self.assertNotIn(value, result.stdout + result.stderr)
+
+    def test_diagnostic_artifact_redacts_device_and_custom_code_values(self):
+        result = subprocess.run(
+            ["/bin/bash", str(DIAGNOSTIC_HARNESS_PATH)],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("diagnostic redaction self-test passed", result.stdout)
 
 
 @unittest.skipUnless(BASH_AVAILABLE, "requires /bin/bash")
