@@ -16,6 +16,29 @@ WINDOWS_HELPER_HARNESS = ROOT / "tests/windows_helper_harness.ps1"
 POWERSHELL = shutil.which("pwsh") or shutil.which("powershell.exe") or shutil.which("powershell")
 
 
+def powershell_runtime_available(powershell_path: str | None) -> bool:
+    return powershell_path is not None
+
+
+def native_windows_capability_available(system_name: str, powershell_path: str | None) -> bool:
+    return system_name == "Windows" and powershell_runtime_available(powershell_path)
+
+
+POWERSHELL_AVAILABLE = powershell_runtime_available(POWERSHELL)
+WINDOWS_NATIVE_CAPABILITY_AVAILABLE = native_windows_capability_available(
+    platform.system(), POWERSHELL
+)
+
+
+class WindowsCapabilitySignalTests(unittest.TestCase):
+    def test_powershell_and_native_windows_availability_are_distinct(self):
+        self.assertTrue(powershell_runtime_available("pwsh"))
+        self.assertFalse(powershell_runtime_available(None))
+        self.assertTrue(native_windows_capability_available("Windows", "pwsh"))
+        self.assertFalse(native_windows_capability_available("Linux", "pwsh"))
+        self.assertFalse(native_windows_capability_available("Windows", None))
+
+
 def text(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
@@ -131,6 +154,7 @@ class SharedWorkflowContractTests(unittest.TestCase):
         self.assertNotIn("johnDOE123", workflow)
 
 
+@unittest.skipUnless(POWERSHELL_AVAILABLE, "requires a PowerShell runtime")
 class WindowsValidationBehaviorTests(unittest.TestCase):
     def test_custom_code_accepts_only_ascii_alphanumeric_8_through_16(self):
         for value in ("Abcdef12", "12345678", "A1b2C3d4E5f6G7h8"):
@@ -158,11 +182,16 @@ class WindowsValidationBehaviorTests(unittest.TestCase):
 
 
 class WindowsWaitBehaviorTests(unittest.TestCase):
+    @unittest.skipUnless(POWERSHELL_AVAILABLE, "requires a PowerShell runtime")
     def test_zero_wait_returns_without_loading_the_watcher(self):
         result = run_windows_helper("wait-connections", "0")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("WAIT_RESULT=timeout", result.stdout)
 
+    @unittest.skipUnless(
+        WINDOWS_NATIVE_CAPABILITY_AVAILABLE,
+        "requires Windows and a PowerShell runtime",
+    )
     def test_injected_wait_self_test_passes(self):
         result = run_windows_helper("self-test-wait-connections")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -184,6 +213,7 @@ class WindowsReadinessContractTests(unittest.TestCase):
         )
 
 
+@unittest.skipUnless(POWERSHELL_AVAILABLE, "requires a PowerShell runtime")
 class WindowsReadinessBehaviorTests(unittest.TestCase):
     def run_harness(self, mode: str):
         if POWERSHELL is None:
@@ -280,7 +310,10 @@ class WindowsDiagnosticContractTests(unittest.TestCase):
         self.assertIn("Start-Sleep -Seconds 15", live)
 
 
-@unittest.skipUnless(platform.system() == "Windows", "requires a Windows desktop")
+@unittest.skipUnless(
+    WINDOWS_NATIVE_CAPABILITY_AVAILABLE,
+    "requires Windows and a PowerShell runtime",
+)
 class WindowsDiagnosticBehaviorTests(unittest.TestCase):
     def run_controlled_helper(self, body: str, environment: dict[str, str] | None = None):
         helper = str(WINDOWS_HELPER).replace("'", "''")
