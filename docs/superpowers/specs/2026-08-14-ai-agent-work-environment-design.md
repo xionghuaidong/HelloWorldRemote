@@ -142,11 +142,11 @@ Implementation proceeds in this order:
 3. Expand the English README and add its meaning-equivalent Chinese counterpart.
 4. Add the bilingual conversation-capture prompts.
 5. Add language navigation to every existing English plan and specification.
-6. Translate every existing plan and specification into a `-zh_CN.md` counterpart without changing its technical conclusions.
+6. Translate every existing plan and specification into a `-zh_CN.md` counterpart without changing its technical conclusions, except for the authorized custom-code redaction described below.
 7. Validate the complete documentation graph and configuration.
 8. Commit the environment configuration as one coherent change.
 
-Translation must preserve historical content. Obsolete or questionable statements in an existing design are not corrected silently during translation; any semantic correction requires a separate, explicitly scoped change.
+Translation must preserve historical content except for one security-governed redaction: the known plaintext UU Remote custom code is represented as exactly `xxxxxx` in every English and Chinese document. This authorized placeholder replacement takes precedence over byte-for-byte historical preservation. Other obsolete or questionable statements in an existing design are not corrected silently during translation; any other semantic correction requires a separate, explicitly scoped change.
 
 The implementation does not modify `.github/workflows/*`, `.github/workflows/apple.sh`, the Swift shutdown watcher, or existing runtime tests.
 
@@ -161,9 +161,9 @@ Before completion, verify:
 - `.claude/settings.json` parses as JSON and enables only the expected Superpowers plugin;
 - automated checks cover machine-readable structure only: JSON validity, required ignore entries, counterpart existence, exact navigation format, and relative-link resolution;
 - task review confirms that the Codex and Claude Code instruction pairs contain the complete shared workflow and project rules, that the README files state current workflow facts accurately, and that the capture prompts preserve the reference semantics;
-- existing English plans and specifications differ only by the addition of language navigation;
+- existing English plans and specifications differ from the base versions only by language navigation and the authorized replacement of the known plaintext custom code with `xxxxxx`;
 - currently runnable repository tests still pass;
-- `git diff --check` passes; and
+- `git diff --check e30a65b..HEAD` passes; and
 - the final diff contains only the approved environment and documentation changes.
 
 If any counterpart is missing, any navigation link is invalid, any configuration cannot be parsed, or the shared instruction policies are inconsistent, the migration is incomplete and must not be committed as finished.
@@ -178,7 +178,7 @@ This task does not:
 - change UU Remote installation, launch, permission, custom-code, or wait behavior;
 - introduce personal Codex or Claude configuration;
 - install plugins on the user's machine;
-- rewrite historical technical decisions while translating them; or
+- rewrite historical technical decisions while translating them, except for the authorized `xxxxxx` security redaction; or
 - add unrelated repository tooling.
 
 After this environment task is implemented and verified, work returns to the separately approved functional-parity approach B.

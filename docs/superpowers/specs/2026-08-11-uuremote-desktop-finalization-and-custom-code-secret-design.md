@@ -132,7 +132,7 @@ seen by a newly connected remote client.
 
 ## Custom Code Secret
 
-Remove the hard-coded `johnDOE123` value. The workflow will require this
+Remove the hard-coded `xxxxxx` value. The workflow will require this
 repository Actions secret:
 
 ```text
@@ -184,7 +184,7 @@ No failure path restarts or logs out the machine.
 
 Python contract tests will verify that:
 
-- `johnDOE123` is absent from the workflow and scripts;
+- `xxxxxx` is absent from the workflow and scripts;
 - `UUREMOTE_CUSTOM_CODE` is a step-scoped required secret and is masked;
 - the exact validation expression accepts only 8-16 ASCII alphanumeric
   characters;

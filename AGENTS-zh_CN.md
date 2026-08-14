@@ -51,7 +51,7 @@
 * 主机配置必须具备 idempotence。变更前验证 system state，变更后验证结果；在安全恢复信息可用时，按相反顺序回滚当前运行作出的变更。
 * 在允许平台特定内部实现的同时，保持对外可见的 macOS 与 Windows workflow contracts 一致。
 * 完成前，确认每个根目录和 `docs/**` 下的 Markdown 文件都恰有一个正确命名的对应版本；语言导航链接解析为存在的相对路径；每份文档都具有要求的 H1、导航和空行结构；并且不存在递归后缀 `-zh_CN-zh_CN.md` 文件。
-* 同时确认 `.claude/settings.json` 可解析为 JSON 且只启用预期的 Superpowers plugin；automated checks 只覆盖 machine-readable structure；review 确认共享 instructions 完整、README workflow facts 准确、capture prompts 忠实；现有英文 plans 和 specifications 仅增加语言导航；当前可运行的 repository tests 通过；`git diff --check` 通过；最终 diff 仅包含获批准的环境和文档变更。
+* 同时确认 `.claude/settings.json` 可解析为 JSON 且只启用预期的 Superpowers plugin；automated checks 只覆盖 machine-readable structure；review 确认共享 instructions 完整、README workflow facts 准确、capture prompts 忠实；历史英文文档与其 base versions 原则上仅有语言导航差异，但本次获授权迁移允许将已知自定义码替换为恰好六个小写 x 字符 `xxxxxx`；当前可运行的 repository tests 通过；`git diff --check e30a65b..HEAD` 通过；最终 diff 仅包含获批准的环境和文档变更。
 * 如果任何对应版本缺失、任何导航链接无效、任何配置无法解析，或共享 instructions 政策不一致，则迁移尚未完成，不得作为已完成状态提交。
 
 ## 语言和文档规则

@@ -6,7 +6,7 @@
 
 **Goal:** Configure HelloWorldRemote with the complete bilingual Codex and Claude Code agent environment adopted from the first three `scratchpad` commits.
 
-**Architecture:** Repository policy is expressed through paired root instruction documents, project-level Claude settings, and paired README and prompt documents. A focused Python contract test enforces machine-checkable structure, while the eight historical Superpowers documents are migrated without changing their English technical content.
+**Architecture:** Repository policy is expressed through paired root instruction documents, project-level Claude settings, and paired README and prompt documents. A focused Python contract test enforces machine-checkable structure, while the eight historical Superpowers documents retain their English technical content except for the authorized `xxxxxx` security redaction.
 
 **Tech Stack:** Markdown, JSON, Git, Python 3 `unittest`, PowerShell validation commands
 
@@ -18,7 +18,7 @@
 - Put `[English](...) | [简体中文](...)` immediately after each H1 with exactly one blank line before and after it.
 - Keep comments in source, configuration, scripts, tests, and code examples in English.
 - Do not change `.github/workflows/*`, `apple.sh`, the Swift watcher, or existing runtime behavior.
-- Do not hard-code or expose account passwords, custom codes, or remote-device connection information.
+- Do not hard-code or expose account passwords, custom codes, or remote-device connection information. Security takes precedence over historical fidelity: represent the known plaintext custom code as exactly `xxxxxx` in every English and Chinese document.
 - Automated tests may assert machine-readable structure but must not assert required words or tokens in human prose; semantic completeness and translation equivalence are task-review responsibilities.
 - Markdown, JSON, and ignore-file authoring is exempt from strict test-first development; new Python validation behavior still requires red-green-refactor.
 - Use `apply_patch` for authored repository edits; mechanical reference-file copying and formatting may use purpose-built commands.
@@ -368,7 +368,7 @@ git commit -m "docs: add bilingual project entry points"
 - Modify: `tests/test_agent_work_environment.py`
 
 **Interfaces:**
-- Consumes: The eight historical English documents at base commit `e30a65b`; the already-paired environment design and implementation plan.
+- Consumes: The eight historical English documents at base commit `e30a65b`; the already-paired environment design and implementation plan; the authorized `xxxxxx` custom-code redaction exception.
 - Produces: A complete bilingual Markdown graph enforced by `BilingualDocumentationContractTests`.
 
 - [ ] **Step 1: Add the failing repository-wide bilingual contract**
@@ -424,9 +424,9 @@ python -m unittest tests.test_agent_work_environment.BilingualDocumentationContr
 
 Expected: failures identify the eight historical English documents whose Chinese counterparts or navigation lines are absent.
 
-- [ ] **Step 3: Add navigation without changing historical English bodies**
+- [ ] **Step 3: Add navigation and apply the authorized security redaction**
 
-For each of the eight English files listed under `Files`, keep the existing H1 as line 1, replace the original blank line 2 with a blank line, the exact pair-specific navigation line, and another blank line, then keep the original content beginning at its previous line 3. Do not correct spelling, dates, encoded UI strings, commands, or superseded design choices.
+For each of the eight English files listed under `Files`, keep the existing H1 as line 1, replace the original blank line 2 with a blank line, the exact pair-specific navigation line, and another blank line, then keep the original content beginning at its previous line 3. The only authorized historical-body change is to replace every occurrence of the known plaintext custom code with exactly `xxxxxx`. Do not correct spelling, dates, encoded UI strings, commands, or superseded design choices.
 
 Example for the host-bootstrap design:
 
@@ -440,11 +440,11 @@ Example for the host-bootstrap design:
 
 - [ ] **Step 4: Translate the four plan files**
 
-Create the four `-zh_CN.md` plan counterparts listed under `Files`. Translate headings, prose, expected test descriptions, and explanatory comments. Preserve code, paths, command lines, identifiers, hashes, secret names, regular expressions, and quoted UI strings exactly unless the original document itself supplies a Chinese UI equivalent.
+Create the four `-zh_CN.md` plan counterparts listed under `Files`. Translate headings, prose, expected test descriptions, and explanatory comments. Preserve code, paths, command lines, identifiers, hashes, secret names, regular expressions, and quoted UI strings exactly unless the original document itself supplies a Chinese UI equivalent. Apply the same authorized replacement of the known plaintext custom code with exactly `xxxxxx` in the Chinese counterparts.
 
 - [ ] **Step 5: Translate the four historical spec files**
 
-Create the four `-zh_CN.md` spec counterparts listed under `Files` using the same preservation rules. Keep section numbering, tables, ordered steps, non-goals, and reference links aligned one-to-one with English.
+Create the four `-zh_CN.md` spec counterparts listed under `Files` using the same preservation and security-redaction rules. Keep section numbering, tables, ordered steps, non-goals, and reference links aligned one-to-one with English.
 
 - [ ] **Step 6: Run the entire agent-environment contract suite**
 
@@ -458,7 +458,7 @@ Expected: all base, instruction, entry-point, and bilingual documentation tests 
 
 - [ ] **Step 7: Verify historical English content preservation**
 
-For each of the eight historical English paths, use `git show` with commit `e30a65b` and the exact path listed in this task to obtain the base version. Replace working-version lines 2 through 4 with one blank line; the resulting UTF-8 text must equal the base-commit file with no semantic or formatting changes.
+For each of the eight historical English paths, use `git show` with commit `e30a65b` and the exact path listed in this task to obtain the base version. Replace working-version lines 2 through 4 with one blank line. For the known historical custom-code positions only, compare the working `xxxxxx` placeholder with the corresponding base token read from `git show` in memory; never hard-code or write that base token into tracked documentation. After accounting for this authorized redaction, the resulting UTF-8 text must equal the base-commit file with no other semantic or formatting changes.
 
 Review the resulting diff:
 
@@ -466,7 +466,7 @@ Review the resulting diff:
 git diff e30a65b -- docs/superpowers/plans docs/superpowers/specs
 ```
 
-Expected: each historical English file adds only one blank line, the navigation line, and one blank line after its H1; new Chinese files contain faithful translations.
+Expected: each historical English file adds only one blank line, the navigation line, and one blank line after its H1, plus the authorized `xxxxxx` substitutions at the known custom-code positions; new Chinese files contain faithful translations with the same redaction.
 
 - [ ] **Step 8: Commit the historical documentation migration**
 
@@ -505,16 +505,16 @@ Expected: exit code 0 and no output.
 - [ ] **Step 3: Check whitespace and unintended runtime changes**
 
 ```powershell
-git diff --check
+git diff --check e30a65b..HEAD
 git diff e30a65b --name-only
 ```
 
-Expected: `git diff --check` exits 0. The name list contains only `.claude/settings.json`, `.gitignore`, the six root Markdown instruction/README files, `docs/prompts/*`, paired `docs/superpowers/*` documents, and `tests/test_agent_work_environment.py`; it contains no `.github/workflows/*` path.
+Expected: `git diff --check e30a65b..HEAD` exits 0. The name list contains only `.claude/settings.json`, `.gitignore`, the six root Markdown instruction/README files, `docs/prompts/*`, paired `docs/superpowers/*` documents, and `tests/test_agent_work_environment.py`; it contains no `.github/workflows/*` path.
 
 - [ ] **Step 4: Review secrets and recursively suffixed filenames**
 
 ```powershell
-rg -n 'johnDOE123|UUREMOTE_ACCOUNT_PASSWORD\s*[:=]\s*[^$]|UUREMOTE_CUSTOM_CODE\s*[:=]\s*[^$]' --glob '!docs/superpowers/**' .
+rg --pcre2 -n '(?<![\w${])UUREMOTE_(ACCOUNT_PASSWORD|CUSTOM_CODE)\s*[:=]\h*+(?!\$)' --glob '!docs/superpowers/**' .
 Get-ChildItem -Recurse -File -Filter '*-zh_CN-zh_CN.md'
 ```
 
@@ -527,7 +527,7 @@ git log --oneline 64d91d5..HEAD
 git status --short
 ```
 
-Expected: one approved plan-correction commit and four focused implementation commits appear after `64d91d5`, and the worktree is clean.
+Expected: exactly six commits appear after `64d91d5`: one approved plan-correction commit, four focused implementation commits, and one approved security-redaction commit; the worktree is clean.
 
 - [ ] **Step 6: Request final code review and finish the branch**
 

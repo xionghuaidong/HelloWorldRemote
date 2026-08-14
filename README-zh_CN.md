@@ -40,7 +40,7 @@ macOS 的 `workflow_dispatch` 接口提供：
 
 ## 验证
 
-可使用 Python 的 unittest runner 在本地运行聚焦的工作流测试，例如：
+可使用 Python 的 unittest runner 在本地运行聚焦的 agent 环境契约测试，例如：
 
 ```powershell
 python -m unittest tests.test_agent_work_environment -v

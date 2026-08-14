@@ -80,7 +80,7 @@ class CustomCodeWorkflowTests(unittest.TestCase):
 
     def test_hard_coded_custom_code_and_cli_echo_are_absent(self):
         combined = read(WORKFLOW) + read(SCRIPT)
-        self.assertNotIn("johnDOE123", combined)
+        self.assertNotIn("xxxxxx", combined)
         self.assertNotIn("echo \"customCode: $output\"", combined)
 ```
 
@@ -92,7 +92,7 @@ Run:
 python3 -m unittest tests.test_uuremote_desktop_finalization.CustomCodeWorkflowTests -v
 ```
 
-Expected: FAIL because the dedicated workflow step and `set-custom-code` route do not exist and `johnDOE123` is still present.
+Expected: FAIL because the dedicated workflow step and `set-custom-code` route do not exist and `xxxxxx` is still present.
 
 - [ ] **Step 3: Write failing executable validation tests**
 

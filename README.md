@@ -40,7 +40,7 @@ Treat both required values as secrets: do not place them in repository files, is
 
 ## Validation
 
-Run the focused workflow tests locally with Python's unittest runner, for example:
+Run the focused agent-environment contract tests locally with Python's unittest runner, for example:
 
 ```powershell
 python -m unittest tests.test_agent_work_environment -v

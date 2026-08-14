@@ -142,11 +142,11 @@ Agent 指令必须建立以下 HelloWorldRemote 特定约束：
 3. 扩充英文 README，并增加含义等价的中文 counterpart。
 4. 增加双语 conversation capture prompts。
 5. 为每个现有英文 plan 和 specification 增加语言导航。
-6. 将每个现有 plan 和 specification 翻译为 `-zh_CN.md` counterpart，且不改变其技术结论。
+6. 将每个现有 plan 和 specification 翻译为 `-zh_CN.md` counterpart，且不改变其技术结论，但下述获授权的自定义连接码脱敏除外。
 7. 验证完整的文档关系和配置。
 8. 将环境配置作为一项完整变更提交。
 
-翻译必须保留历史内容。不得在翻译过程中静默修正现有设计中的过时或可疑陈述；任何语义修正都需要单独明确划定范围的变更。
+翻译必须保留历史内容，但有一项由安全规则决定的脱敏例外：已知的 UU 远程明文自定义连接码在每份英文和中文文档中都精确表示为 `xxxxxx`。这项获授权的占位符替换优先于逐字节历史保留。不得在翻译过程中静默修正现有设计中的其他过时或可疑陈述；任何其他语义修正都需要单独明确划定范围的变更。
 
 实现不会修改 `.github/workflows/*`、`.github/workflows/apple.sh`、Swift shutdown watcher 或现有运行时 tests。
 
@@ -161,9 +161,9 @@ Agent 指令必须建立以下 HelloWorldRemote 特定约束：
 - `.claude/settings.json` 可以被解析为 JSON，且只启用预期的 Superpowers 插件；
 - 自动检查只覆盖机器可读结构：JSON 合法性、必需 ignore entries、counterpart 存在性、准确的 navigation 格式和相对链接解析；
 - Task review 确认 Codex 与 Claude Code 指令对包含完整的共享工作流和项目规则，README 文件准确陈述当前 workflow facts，并且 capture prompts 保留参考语义；
-- 现有英文 plans 与 specifications 除增加语言导航外没有其他差异；
+- 现有英文 plans 与 specifications 相较 base versions，除增加语言导航和将已知明文自定义连接码替换为获授权的 `xxxxxx` 外，没有其他差异；
 - 当前可运行的仓库 tests 仍然通过；
-- `git diff --check` 通过；并且
+- `git diff --check e30a65b..HEAD` 通过；并且
 - 最终 diff 只包含获批的环境和文档变更。
 
 如果缺少任何 counterpart、任何导航链接无效、任何配置无法解析，或共享指令 policy 不一致，则迁移尚未完成，不得将其作为完成状态提交。
@@ -178,7 +178,7 @@ Agent 指令必须建立以下 HelloWorldRemote 特定约束：
 - 改变 UU 远程安装、启动、权限、自定义连接码或等待行为；
 - 引入个人 Codex 或 Claude 配置；
 - 在用户机器上安装 plugins；
-- 在翻译历史技术决策时重写它们；或
+- 在翻译历史技术决策时重写它们，但获授权的 `xxxxxx` 安全脱敏除外；或
 - 增加无关仓库工具。
 
 该环境任务完成实现并验证后，工作将返回已经单独批准的功能对齐方案 B。

@@ -6,7 +6,7 @@
 
 **目标：** 使用 `scratchpad` 最初三个提交采用的完整双语 Codex 与 Claude Code agent 环境配置 HelloWorldRemote。
 
-**架构：** 仓库 policy 通过成对的根目录指令文档、项目级 Claude 设置，以及成对的 README 和 prompt 文档表达。一个聚焦的 Python contract test 强制执行可机器检查的结构，同时在不改变英文技术内容的前提下迁移 8 份历史 Superpowers 文档。
+**架构：** 仓库 policy 通过成对的根目录指令文档、项目级 Claude 设置，以及成对的 README 和 prompt 文档表达。一个聚焦的 Python contract test 强制执行可机器检查的结构，同时保留 8 份历史 Superpowers 文档的英文技术内容，但获授权的 `xxxxxx` 安全脱敏除外。
 
 **技术栈：** Markdown、JSON、Git、Python 3 `unittest`、PowerShell 验证命令
 
@@ -18,7 +18,7 @@
 - 将 `[English](...) | [简体中文](...)` 紧接在每个 H1 后，其前后各有且仅有一个空行。
 - 源码、配置、scripts、tests 和代码示例中的注释使用英文。
 - 不修改 `.github/workflows/*`、`apple.sh`、Swift watcher 或现有运行时行为。
-- 不硬编码或暴露账户密码、自定义连接码或远程设备连接信息。
+- 不硬编码或暴露账户密码、自定义连接码或远程设备连接信息。安全规则优先于历史保真：在每份英文和中文文档中，将已知明文自定义连接码精确表示为 `xxxxxx`。
 - 自动 tests 可以断言机器可读结构，但不得断言人类 prose 中的 required words 或 tokens；语义完整性与翻译等价性由 task review 负责。
 - Markdown、JSON 和 ignore-file 编写豁免严格 test-first development；新增 Python 验证行为仍要求 red-green-refactor。
 - 对人工编写的仓库编辑使用 `apply_patch`；机械性的参考文件复制和格式化可以使用专用命令。
@@ -356,7 +356,7 @@ git commit -m "docs: add bilingual project entry points"
 - 修改：`tests/test_agent_work_environment.py`
 
 **接口：**
-- 消费：base commit `e30a65b` 中的 8 份历史英文文档；已经成对的环境设计与实施计划。
+- 消费：base commit `e30a65b` 中的 8 份历史英文文档；已经成对的环境设计与实施计划；获授权的 `xxxxxx` 自定义连接码脱敏例外。
 - 产出：由 `BilingualDocumentationContractTests` 强制执行的完整双语 Markdown 关系。
 
 - [ ] **步骤 1：增加失败的仓库级双语契约**
@@ -410,9 +410,9 @@ python -m unittest tests.test_agent_work_environment.BilingualDocumentationContr
 
 预期：failures 指出缺少中文 counterparts 或 navigation lines 的 8 份历史英文文档。
 
-- [ ] **步骤 3：增加 navigation 且不改变历史英文正文**
+- [ ] **步骤 3：增加 navigation 并应用获授权的安全脱敏**
 
-对本任务文件清单中的每个英文文件，保留现有 H1 为第 1 行，将原有空白第 2 行替换为一个空行、准确的 pair-specific navigation line 和另一个空行，然后从原第 3 行开始保留现有内容。不得更正 spelling、dates、encoded UI strings、commands 或已被后续取代的设计选择。
+对本任务文件清单中的每个英文文件，保留现有 H1 为第 1 行，将原有空白第 2 行替换为一个空行、准确的 pair-specific navigation line 和另一个空行，然后从原第 3 行开始保留现有内容。唯一获授权的历史正文变更是将已知明文自定义连接码的每次出现都精确替换为 `xxxxxx`。不得更正 spelling、dates、encoded UI strings、commands 或已被后续取代的设计选择。
 
 Host-bootstrap design 的变换示例：
 
@@ -426,11 +426,11 @@ Host-bootstrap design 的变换示例：
 
 - [ ] **步骤 4：翻译 4 份 plan 文件**
 
-创建本任务文件清单中的 4 份 `-zh_CN.md` plan counterparts。翻译 headings、prose、expected test descriptions 与 explanatory comments。Code、paths、commands、identifiers、hashes、secret names、regular expressions 和 quoted UI strings 保持不变，除非原文自己提供了中文 UI counterpart。
+创建本任务文件清单中的 4 份 `-zh_CN.md` plan counterparts。翻译 headings、prose、expected test descriptions 与 explanatory comments。Code、paths、commands、identifiers、hashes、secret names、regular expressions 和 quoted UI strings 保持不变，除非原文自己提供了中文 UI counterpart。在中文 counterparts 中同样应用获授权的替换，将已知明文自定义连接码精确替换为 `xxxxxx`。
 
 - [ ] **步骤 5：翻译 4 份 historical spec 文件**
 
-使用相同保留规则创建本任务文件清单中的 4 份 `-zh_CN.md` spec counterparts。Section numbering、tables、ordered steps、non-goals 与 reference links 同英文一一对齐。
+使用相同的保留与安全脱敏规则创建本任务文件清单中的 4 份 `-zh_CN.md` spec counterparts。Section numbering、tables、ordered steps、non-goals 与 reference links 同英文一一对齐。
 
 - [ ] **步骤 6：运行完整 agent-environment contract suite**
 
@@ -442,13 +442,13 @@ python -m unittest tests.test_agent_work_environment -v
 
 - [ ] **步骤 7：验证历史英文内容保留**
 
-对 8 个 historical English paths，使用 `git show`、commit `e30a65b` 和本任务列出的准确路径取得 base version。将 working-version 的第 2 至 4 行替换为一个空行；所得 UTF-8 文本必须与 base-commit file 相等，不得存在语义或格式修改。
+对 8 个 historical English paths，使用 `git show`、commit `e30a65b` 和本任务列出的准确路径取得 base version。将 working-version 的第 2 至 4 行替换为一个空行。仅对于已知的历史自定义连接码位置，在内存中将 working `xxxxxx` 占位符与从 `git show` 读取的对应 base token 比较；绝不得将该 base token 硬编码或写入 tracked documentation。计入这项获授权的脱敏后，所得 UTF-8 文本必须与 base-commit file 相等，不得存在其他语义或格式修改。
 
 ```powershell
 git diff e30a65b -- docs/superpowers/plans docs/superpowers/specs
 ```
 
-预期：每份历史英文文件仅在 H1 后增加一个空行、navigation line 和一个空行；新增中文文件是忠实翻译。
+预期：每份历史英文文件仅在 H1 后增加一个空行、navigation line 和一个空行，并在已知自定义连接码位置应用获授权的 `xxxxxx` 替换；新增中文文件是在相同脱敏条件下的忠实翻译。
 
 - [ ] **步骤 8：提交历史文档迁移**
 
@@ -487,16 +487,16 @@ Get-Content -Raw -LiteralPath '.claude\settings.json' | ConvertFrom-Json | Out-N
 - [ ] **步骤 3：检查 whitespace 与非预期 runtime changes**
 
 ```powershell
-git diff --check
+git diff --check e30a65b..HEAD
 git diff e30a65b --name-only
 ```
 
-预期：`git diff --check` exit 0。Name list 只包含 `.claude/settings.json`、`.gitignore`、6 份根目录 Markdown 指令/README 文件、`docs/prompts/*`、成对的 `docs/superpowers/*` 文档，以及 `tests/test_agent_work_environment.py`；不包含 `.github/workflows/*` path。
+预期：`git diff --check e30a65b..HEAD` exit 0。Name list 只包含 `.claude/settings.json`、`.gitignore`、6 份根目录 Markdown 指令/README 文件、`docs/prompts/*`、成对的 `docs/superpowers/*` 文档，以及 `tests/test_agent_work_environment.py`；不包含 `.github/workflows/*` path。
 
 - [ ] **步骤 4：审查 secrets 和递归后缀 filenames**
 
 ```powershell
-rg -n 'johnDOE123|UUREMOTE_ACCOUNT_PASSWORD\s*[:=]\s*[^$]|UUREMOTE_CUSTOM_CODE\s*[:=]\s*[^$]' --glob '!docs/superpowers/**' .
+rg --pcre2 -n '(?<![\w${])UUREMOTE_(ACCOUNT_PASSWORD|CUSTOM_CODE)\s*[:=]\h*+(?!\$)' --glob '!docs/superpowers/**' .
 Get-ChildItem -Recurse -File -Filter '*-zh_CN-zh_CN.md'
 ```
 
@@ -509,7 +509,7 @@ git log --oneline 64d91d5..HEAD
 git status --short
 ```
 
-预期：`64d91d5` 之后有一个已批准 plan-correction commit 和 4 个聚焦 implementation commits，worktree clean。
+预期：`64d91d5` 之后恰好有 6 个 commits：1 个已批准的 plan-correction commit、4 个聚焦 implementation commits 和 1 个已批准的 security-redaction commit；worktree clean。
 
 - [ ] **步骤 6：请求最终 code review 并完成 branch**
 

@@ -118,10 +118,12 @@ class BilingualDocumentationContractTests(unittest.TestCase):
             for version in (english, chinese):
                 lines = text(version).splitlines()
                 with self.subTest(path=version.relative_to(ROOT).as_posix()):
+                    self.assertGreaterEqual(len(lines), 5)
                     self.assertTrue(lines[0].startswith("# "))
                     self.assertEqual(lines[1], "")
                     self.assertEqual(lines[2], expected)
                     self.assertEqual(lines[3], "")
+                    self.assertTrue(lines[4].strip())
 
 
 if __name__ == "__main__":

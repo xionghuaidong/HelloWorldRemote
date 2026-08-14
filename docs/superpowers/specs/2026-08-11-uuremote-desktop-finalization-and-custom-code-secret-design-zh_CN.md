@@ -83,7 +83,7 @@
 
 ## 自定义代码 Secret
 
-移除硬编码的 `johnDOE123` 值。workflow 将要求以下 repository Actions secret：
+移除硬编码的 `xxxxxx` 值。workflow 将要求以下 repository Actions secret：
 
 ```text
 UUREMOTE_CUSTOM_CODE
@@ -126,7 +126,7 @@ workflow 只向调用 UU Remote CLI 的步骤公开该值。该步骤将：
 
 Python contract 测试将验证：
 
-- workflow 和脚本中不存在 `johnDOE123`；
+- workflow 和脚本中不存在 `xxxxxx`；
 - `UUREMOTE_CUSTOM_CODE` 是 step-scoped 的必需 secret，并且已被屏蔽；
 - 精确的验证表达式只接受 8–16 个 ASCII 字母数字字符；
 - 权限流程均不包含旧的添加后无条件 Return 操作；

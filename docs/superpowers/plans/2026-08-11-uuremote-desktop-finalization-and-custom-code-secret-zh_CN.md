@@ -80,7 +80,7 @@ class CustomCodeWorkflowTests(unittest.TestCase):
 
     def test_hard_coded_custom_code_and_cli_echo_are_absent(self):
         combined = read(WORKFLOW) + read(SCRIPT)
-        self.assertNotIn("johnDOE123", combined)
+        self.assertNotIn("xxxxxx", combined)
         self.assertNotIn("echo \"customCode: $output\"", combined)
 ```
 
@@ -92,7 +92,7 @@ class CustomCodeWorkflowTests(unittest.TestCase):
 python3 -m unittest tests.test_uuremote_desktop_finalization.CustomCodeWorkflowTests -v
 ```
 
-预期：失败，因为专用 workflow 步骤和 `set-custom-code` 路由尚不存在，并且 `johnDOE123` 仍然存在。
+预期：失败，因为专用 workflow 步骤和 `set-custom-code` 路由尚不存在，并且 `xxxxxx` 仍然存在。
 
 - [ ] **步骤 3：编写失败的可执行验证测试**
 
