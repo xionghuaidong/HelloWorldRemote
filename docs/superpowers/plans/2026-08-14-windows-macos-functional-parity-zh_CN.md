@@ -21,6 +21,8 @@
 - 两个平台都使用 artifact 名称 `uuremote-diagnostics`；debug level `0` 不创建也不上传诊断 artifact。
 - Wait results 必须精确为 `WAIT_RESULT=timeout` 和 `WAIT_RESULT=shutdown/restart`。
 - Runtime retries 必须有边界；device-ID readiness deadline 为 60 秒。
+- Automated tests 可以断言 machine-readable YAML structure。PowerShell 与 C# behavior tests 必须执行真实 helper 或 watcher，并断言 outputs、exit codes 或 filesystem effects；不得把 private source tokens 当作 behavior proxy。
+- 无法在本地 host 安全执行的 native GUI 细节由聚焦 code review 和 live-validation matrix 验证，不使用 source-text change detectors。
 - 所有 source、workflow、configuration 和 test comments 使用英文。
 - 先更新英文文档，并在同一 commit 中保持简体中文 counterpart 含义等价。
 - 每项 runtime 行为变更都使用 red-green-refactor，并采用 Conventional Commits。
@@ -33,6 +35,7 @@
 - `.github/workflows/macos.yml`：现有 macOS 编排，采用对齐后的公共 artifact 和敏感输出策略。
 - `.github/workflows/apple.sh`：现有 macOS 实现，采用对齐后的诊断目录。
 - `tests/test_windows_parity.py`：跨 workflow、Windows helper/watcher contracts 和 Windows behavior tests。
+- `tests/windows_helper_harness.ps1`：受控 external-boundary harness，通过 dot-source 真实 Windows helper，在不安装或启动 UU Remote 的情况下测试有边界 readiness。
 - `tests/test_uuremote_desktop_finalization.py`：macOS artifact、敏感输出 contract 更新及 Bash platform gates。
 - `tests/test_uuremote_host_bootstrap.py`：Bash-only behavior platform gate。
 - `tests/test_uuremote_wait.py`：Bash-only behavior platform gate 和共享 wait-result assertions。
@@ -273,21 +276,12 @@ git commit -m "feat: secure Windows UU Remote custom code"
 - 输入：`ShutdownWaiter.Run(int seconds, string injectedEvent)`，injected values 为 `none`、`ordinary` 和 `shutdown`。
 - 输出：精确 strings `WAIT_RESULT=timeout` 和 `WAIT_RESULT=shutdown/restart`；helper modes `self-test-wait-connections` 与 `wait-connections SECONDS`。
 
-- [ ] **步骤 1：编写失败的 source 与 behavior tests**
+- [ ] **步骤 1：编写失败的 wait behavior tests**
 
 添加要求 `WM_QUERYENDSESSION`、不取消关机、zero fast path 和 injected self-test 的 tests：
 
 ```python
-WATCHER = ROOT / ".github/workflows/uuremote-shutdown-wait.cs"
-
-
-class WindowsWaitContractTests(unittest.TestCase):
-    def test_watcher_uses_query_end_session_without_cancelling_shutdown(self):
-        source = text(WATCHER)
-        self.assertIn("WM_QUERYENDSESSION", source)
-        self.assertIn("m.Result = new IntPtr(1)", source)
-        self.assertNotIn("Win32_ComputerShutdownEvent", source)
-
+class WindowsWaitBehaviorTests(unittest.TestCase):
     def test_zero_wait_returns_without_loading_the_watcher(self):
         result = run_windows_helper("wait-connections", "0")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -302,10 +296,10 @@ class WindowsWaitContractTests(unittest.TestCase):
 - [ ] **步骤 2：运行 wait tests 并观察 RED**
 
 ```powershell
-python -m unittest tests.test_windows_parity.WindowsWaitContractTests -v
+python -m unittest tests.test_windows_parity.WindowsWaitBehaviorTests -v
 ```
 
-预期：watcher 和 modes 不存在，因此失败。
+预期：可执行 wait modes 不存在，因此失败。
 
 - [ ] **步骤 3：实施 watcher 与 helper orchestration**
 
@@ -346,7 +340,7 @@ Write-Output 'shutdown-aware wait self-test passed'
 - [ ] **步骤 4：运行 behavior 与 contract tests 并观察 GREEN**
 
 ```powershell
-python -m unittest tests.test_windows_parity.WindowsWaitContractTests tests.test_windows_parity.WindowsValidationBehaviorTests -v
+python -m unittest tests.test_windows_parity.WindowsWaitBehaviorTests tests.test_windows_parity.WindowsValidationBehaviorTests -v
 ```
 
 预期：所有 tests 在大约四秒内通过，不执行真实关机。
@@ -366,24 +360,18 @@ git commit -m "feat: add Windows shutdown-aware wait"
 - 修改：`.github/workflows/windows.ps1`
 - 修改：`.github/workflows/windows.yml`
 - 修改：`tests/test_windows_parity.py`
+- 创建：`tests/windows_helper_harness.ps1`
 
 **接口：**
 - 输入：`Get-UURemotePaths`、已安装 `GameViewer.exe`、已安装 `uuyc-cli.exe` 和 60 秒 deadline。
 - 输出：`Get-UURemoteDeviceId`、`Start-UURemoteAndWaitDevice`、`Assert-UURemoteReadiness`、modes `launch-and-wait-device` 与 `verify-unattended-readiness`，以及脱敏 tokens `DEVICE_ID_STATE=ready` 和 `UNATTENDED_READINESS=verified`。
 
-- [ ] **步骤 1：编写失败的 bounded-readiness contracts**
+- [ ] **步骤 1：编写失败的 bounded-readiness behavior tests**
 
 添加要求 60 秒 deadline、500 ms interval、通用 readiness token、无 device ID 输出和正确 workflow 顺序的 tests：
 
 ```python
 class WindowsReadinessContractTests(unittest.TestCase):
-    def test_readiness_is_bounded_and_never_prints_device_id(self):
-        script = text(WINDOWS_HELPER)
-        self.assertIn("AddSeconds(60)", script)
-        self.assertIn("DEVICE_ID_STATE=ready", script)
-        self.assertNotIn('Write-Host "deviceId:', script)
-        self.assertIn("Start-Sleep -Milliseconds 500", script)
-
     def test_workflow_delegates_launch_and_readiness(self):
         workflow = text(WINDOWS_WORKFLOW)
         launch = step_block(workflow, "Launch GameViewer")
@@ -392,19 +380,45 @@ class WindowsReadinessContractTests(unittest.TestCase):
         self.assertIn("windows.ps1 verify-unattended-readiness", readiness)
         self.assertLess(workflow.index("Launch GameViewer"), workflow.index("Configure UU Remote custom code"))
         self.assertLess(workflow.index("Configure UU Remote custom code"), workflow.index("Verify unattended readiness"))
+
+
+class WindowsReadinessBehaviorTests(unittest.TestCase):
+    def run_harness(self, mode: str):
+        return subprocess.run(
+            ["pwsh", "-NoProfile", "-File", str(ROOT / "tests/windows_helper_harness.ps1"), mode],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+    def test_readiness_retries_transient_failures_without_exposing_device_id(self):
+        result = self.run_harness("readiness-success")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("DEVICE_ID_STATE=ready", result.stdout)
+        self.assertIn("ATTEMPTS=3", result.stdout)
+        self.assertNotIn("device-id-fixture", result.stdout + result.stderr)
+
+    def test_readiness_timeout_is_bounded_and_sanitized(self):
+        result = self.run_harness("readiness-timeout")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("timed out", result.stderr.lower())
+        self.assertNotIn("device-id-fixture", result.stdout + result.stderr)
 ```
 
 - [ ] **步骤 2：运行 readiness tests 并观察 RED**
 
 ```powershell
-python -m unittest tests.test_windows_parity.WindowsReadinessContractTests -v
+python -m unittest tests.test_windows_parity.WindowsReadinessContractTests tests.test_windows_parity.WindowsReadinessBehaviorTests -v
 ```
 
 预期：launch logic 仍为 inline，helper modes 不存在，因此失败。
 
 - [ ] **步骤 3：实施有边界的 readiness**
 
-`Get-UURemoteDeviceId` 调用 `--device-id`，仅在 CLI 退出 zero 时返回 trimmed non-empty string，且绝不输出它。`Start-UURemoteAndWaitDevice` 验证两条 paths，复用 `Get-Process -Name GameViewer`；否则启动 launcher，并使用 `(Get-Date).AddSeconds(60)` deadline 和 500 ms interval 轮询。成功只输出 `DEVICE_ID_STATE=ready`；deadline failure 抛出包含尝试次数的通用错误。
+`Get-UURemoteDeviceId` 调用 `--device-id`，仅在 CLI 退出 zero 时返回 trimmed non-empty string，且绝不输出它。`Start-UURemoteAndWaitDevice` 接受内部 parameters `TimeoutSeconds = 60` 和 `PollMilliseconds = 500`，验证两条 paths，复用 `Get-Process -Name GameViewer`；否则启动 launcher，并轮询到 deadline。Runtime route 始终使用 defaults。成功只输出 `DEVICE_ID_STATE=ready`；deadline failure 抛出包含尝试次数的通用错误。
+
+Harness 通过 dot-source 加载真实 helper 但不执行 route，只把 external process/CLI boundaries 替换为 deterministic functions，并使用 `TimeoutSeconds = 1`、`PollMilliseconds = 10` 调用 `Start-UURemoteAndWaitDevice`。`readiness-success` 只在 attempt 3 返回 fixture 并输出 `ATTEMPTS=3`；`readiness-timeout` 永不返回 ID，并退出 `1`。Harness 不得复制 readiness logic。
 
 `Assert-UURemoteReadiness` 验证 launcher 和 CLI paths、要求正在运行的 `GameViewer` process，并要求 `Get-UURemoteDeviceId` 返回非空。它只输出 `UNATTENDED_READINESS=verified`，不得调用未公开命令或修改系统安全设置。
 
@@ -413,7 +427,7 @@ python -m unittest tests.test_windows_parity.WindowsReadinessContractTests -v
 - [ ] **步骤 4：运行聚焦 tests 并观察 GREEN**
 
 ```powershell
-python -m unittest tests.test_windows_parity.WindowsReadinessContractTests tests.test_windows_parity.SharedWorkflowContractTests -v
+python -m unittest tests.test_windows_parity.WindowsReadinessContractTests tests.test_windows_parity.WindowsReadinessBehaviorTests tests.test_windows_parity.SharedWorkflowContractTests -v
 ```
 
 预期：所有 tests 通过，workflow 不包含 device ID 输出。
@@ -421,7 +435,7 @@ python -m unittest tests.test_windows_parity.WindowsReadinessContractTests tests
 - [ ] **步骤 5：提交**
 
 ```powershell
-git add .github/workflows/windows.ps1 .github/workflows/windows.yml tests/test_windows_parity.py
+git add .github/workflows/windows.ps1 .github/workflows/windows.yml tests/test_windows_parity.py tests/windows_helper_harness.ps1
 git commit -m "feat: add bounded Windows readiness checks"
 ```
 
@@ -443,6 +457,10 @@ git commit -m "feat: add bounded Windows readiness checks"
 添加要求精确 debug gates、公共 artifact、runner temp path，并确保 snapshot function 不启动或 foreground UU Remote 的 tests：
 
 ```python
+import platform
+import tempfile
+
+
 class WindowsDiagnosticContractTests(unittest.TestCase):
     def test_debug_conditions_and_artifact_are_aligned(self):
         workflow = text(WINDOWS_WORKFLOW)
@@ -453,18 +471,33 @@ class WindowsDiagnosticContractTests(unittest.TestCase):
         self.assertIn("name: uuremote-diagnostics", upload)
         self.assertIn("${{ runner.temp }}/uuremote-diagnostics/", upload)
 
-    def test_snapshots_do_not_launch_or_foreground_uuremote(self):
-        script = text(WINDOWS_HELPER)
-        snapshot = script[script.index("function Save-DesktopSnapshot"):script.index("function Invoke-UURemoteIdempotencyCheck")]
-        self.assertNotIn("Start-Process", snapshot)
-        self.assertNotIn("SetForegroundWindow", snapshot)
-        self.assertIn("CopyFromScreen", snapshot)
+
+
+@unittest.skipUnless(platform.system() == "Windows", "requires a Windows desktop")
+class WindowsDiagnosticBehaviorTests(unittest.TestCase):
+    def test_snapshot_writes_a_real_png_under_runner_temp(self):
+        with tempfile.TemporaryDirectory() as directory:
+            environment = os.environ.copy()
+            environment["RUNNER_TEMP"] = directory
+            result = run_windows_helper("snapshot", "contract-test", environment=environment)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            image = Path(directory, "uuremote-diagnostics", "contract-test.png")
+            self.assertTrue(image.is_file())
+            self.assertEqual(image.read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
+
+    def test_invalid_snapshot_label_returns_two_without_creating_a_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            environment = os.environ.copy()
+            environment["RUNNER_TEMP"] = directory
+            result = run_windows_helper("snapshot", "../escape", environment=environment)
+            self.assertEqual(result.returncode, 2)
+            self.assertEqual(list(Path(directory).rglob("*.png")), [])
 ```
 
 - [ ] **步骤 2：运行 diagnostic tests 并观察 RED**
 
 ```powershell
-python -m unittest tests.test_windows_parity.WindowsDiagnosticContractTests -v
+python -m unittest tests.test_windows_parity.WindowsDiagnosticContractTests tests.test_windows_parity.WindowsDiagnosticBehaviorTests -v
 ```
 
 预期：steps 和 helper functions 不存在，因此失败。
@@ -534,10 +567,6 @@ git commit -m "feat: align Windows diagnostics and idempotency"
             self.assertIn("name: uuremote-diagnostics", workflow)
             self.assertIn("${{ runner.temp }}/uuremote-diagnostics/", workflow)
 
-    def test_neither_workflow_logs_the_device_id_value(self):
-        for path in (MACOS_WORKFLOW, WINDOWS_WORKFLOW):
-            self.assertNotIn('echo "deviceId:', text(path))
-            self.assertNotIn('Write-Host "deviceId:', text(path))
 ```
 
 新增 `BASH_AVAILABLE = Path("/bin/bash").exists()`，并只向以下 behavior classes 添加 `@unittest.skipUnless(BASH_AVAILABLE, "requires /bin/bash")`：
@@ -564,13 +593,16 @@ python -m unittest discover -s tests -v
 
 更新现有 artifact assertions，并应用步骤 1 列出的四个精确 Bash gates。不得跳过 static contract tests。
 
+从两份 workflows 删除 device-ID value logging。该敏感输出要求由 task reviewer 和下方显式 security scan 检查，不伪装成 source-token behavior test。
+
 - [ ] **步骤 4：运行完整本地 suite 并观察 GREEN**
 
 ```powershell
 python -m unittest discover -s tests -v
+rg -n -e 'echo "deviceId:' -e 'Write-Host "deviceId:' .github/workflows/macos.yml .github/workflows/windows.yml
 ```
 
-Windows 预期：全部可运行 tests 通过，Bash/AppKit-only behavior tests 报告 skips 而不是 errors。macOS 预期：Bash tests 正常执行，AppKit behavior 仍处于 active 状态。
+Windows 预期：全部可运行 tests 通过，Bash/AppKit-only behavior tests 报告 skips 而不是 errors，security scan 无匹配。macOS 预期：Bash tests 正常执行，AppKit behavior 仍处于 active 状态。
 
 - [ ] **步骤 5：提交**
 

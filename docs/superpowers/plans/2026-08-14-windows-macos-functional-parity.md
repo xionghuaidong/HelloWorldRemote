@@ -21,6 +21,8 @@
 - Both platforms use artifact name `uuremote-diagnostics`; debug level `0` creates and uploads no diagnostic artifact.
 - Wait results are exactly `WAIT_RESULT=timeout` and `WAIT_RESULT=shutdown/restart`.
 - Runtime retries are bounded; device-ID readiness has a 60-second deadline.
+- Automated tests may assert machine-readable YAML structure. PowerShell and C# behavior tests must execute the real helper or watcher and assert outputs, exit codes, or filesystem effects; they must not use private source tokens as behavior proxies.
+- Native GUI details that cannot be exercised safely on the local host are verified by focused code review and the live-validation matrix, not by source-text change detectors.
 - All source, workflow, configuration, and test comments are English.
 - Update English documentation first and keep the Simplified Chinese counterpart meaning-equivalent in the same commit.
 - Use red-green-refactor for every runtime behavior change and commit with Conventional Commits.
@@ -33,6 +35,7 @@
 - `.github/workflows/macos.yml`: existing macOS orchestration with aligned public artifact and sensitive-output policy.
 - `.github/workflows/apple.sh`: existing macOS implementation with aligned diagnostic directory.
 - `tests/test_windows_parity.py`: cross-workflow and Windows helper/watcher contracts and Windows behavior tests.
+- `tests/windows_helper_harness.ps1`: controlled external-boundary harness that dot-sources the real Windows helper for bounded readiness tests without installing or launching UU Remote.
 - `tests/test_uuremote_desktop_finalization.py`: macOS artifact and sensitive-output contract updates plus Bash platform gates.
 - `tests/test_uuremote_host_bootstrap.py`: Bash-only behavior platform gate.
 - `tests/test_uuremote_wait.py`: Bash-only behavior platform gate and shared wait-result assertions.
@@ -285,19 +288,10 @@ git commit -m "feat: secure Windows UU Remote custom code"
 - Consumes: `ShutdownWaiter.Run(int seconds, string injectedEvent)` with injected values `none`, `ordinary`, and `shutdown`.
 - Produces: exact strings `WAIT_RESULT=timeout` and `WAIT_RESULT=shutdown/restart`; helper modes `self-test-wait-connections` and `wait-connections SECONDS`.
 
-- [ ] **Step 1: Write failing source and behavior tests**
+- [ ] **Step 1: Write failing wait behavior tests**
 
 ```python
-WATCHER = ROOT / ".github/workflows/uuremote-shutdown-wait.cs"
-
-
-class WindowsWaitContractTests(unittest.TestCase):
-    def test_watcher_uses_query_end_session_without_cancelling_shutdown(self):
-        source = text(WATCHER)
-        self.assertIn("WM_QUERYENDSESSION", source)
-        self.assertIn("m.Result = new IntPtr(1)", source)
-        self.assertNotIn("Win32_ComputerShutdownEvent", source)
-
+class WindowsWaitBehaviorTests(unittest.TestCase):
     def test_zero_wait_returns_without_loading_the_watcher(self):
         result = run_windows_helper("wait-connections", "0")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -312,10 +306,10 @@ class WindowsWaitContractTests(unittest.TestCase):
 - [ ] **Step 2: Run the wait tests and observe RED**
 
 ```powershell
-python -m unittest tests.test_windows_parity.WindowsWaitContractTests -v
+python -m unittest tests.test_windows_parity.WindowsWaitBehaviorTests -v
 ```
 
-Expected: failures because the watcher and modes do not exist.
+Expected: failures because the executable wait modes do not exist.
 
 - [ ] **Step 3: Implement the watcher and helper orchestration**
 
@@ -356,7 +350,7 @@ Replace the temporary workflow sleep with `windows.ps1 wait-connections "$env:UU
 - [ ] **Step 4: Run behavior and contract tests and observe GREEN**
 
 ```powershell
-python -m unittest tests.test_windows_parity.WindowsWaitContractTests tests.test_windows_parity.WindowsValidationBehaviorTests -v
+python -m unittest tests.test_windows_parity.WindowsWaitBehaviorTests tests.test_windows_parity.WindowsValidationBehaviorTests -v
 ```
 
 Expected: all tests pass in approximately four seconds; no real shutdown occurs.
@@ -376,22 +370,16 @@ git commit -m "feat: add Windows shutdown-aware wait"
 - Modify: `.github/workflows/windows.ps1`
 - Modify: `.github/workflows/windows.yml`
 - Modify: `tests/test_windows_parity.py`
+- Create: `tests/windows_helper_harness.ps1`
 
 **Interfaces:**
 - Consumes: `Get-UURemotePaths`, installed `GameViewer.exe`, installed `uuyc-cli.exe`, and a 60-second deadline.
 - Produces: `Get-UURemoteDeviceId`, `Start-UURemoteAndWaitDevice`, `Assert-UURemoteReadiness`, modes `launch-and-wait-device` and `verify-unattended-readiness`, and sanitized tokens `DEVICE_ID_STATE=ready` and `UNATTENDED_READINESS=verified`.
 
-- [ ] **Step 1: Write failing bounded-readiness contracts**
+- [ ] **Step 1: Write failing bounded-readiness behavior tests**
 
 ```python
 class WindowsReadinessContractTests(unittest.TestCase):
-    def test_readiness_is_bounded_and_never_prints_device_id(self):
-        script = text(WINDOWS_HELPER)
-        self.assertIn("AddSeconds(60)", script)
-        self.assertIn("DEVICE_ID_STATE=ready", script)
-        self.assertNotIn('Write-Host "deviceId:', script)
-        self.assertIn("Start-Sleep -Milliseconds 500", script)
-
     def test_workflow_delegates_launch_and_readiness(self):
         workflow = text(WINDOWS_WORKFLOW)
         launch = step_block(workflow, "Launch GameViewer")
@@ -400,19 +388,45 @@ class WindowsReadinessContractTests(unittest.TestCase):
         self.assertIn("windows.ps1 verify-unattended-readiness", readiness)
         self.assertLess(workflow.index("Launch GameViewer"), workflow.index("Configure UU Remote custom code"))
         self.assertLess(workflow.index("Configure UU Remote custom code"), workflow.index("Verify unattended readiness"))
+
+
+class WindowsReadinessBehaviorTests(unittest.TestCase):
+    def run_harness(self, mode: str):
+        return subprocess.run(
+            ["pwsh", "-NoProfile", "-File", str(ROOT / "tests/windows_helper_harness.ps1"), mode],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+    def test_readiness_retries_transient_failures_without_exposing_device_id(self):
+        result = self.run_harness("readiness-success")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("DEVICE_ID_STATE=ready", result.stdout)
+        self.assertIn("ATTEMPTS=3", result.stdout)
+        self.assertNotIn("device-id-fixture", result.stdout + result.stderr)
+
+    def test_readiness_timeout_is_bounded_and_sanitized(self):
+        result = self.run_harness("readiness-timeout")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("timed out", result.stderr.lower())
+        self.assertNotIn("device-id-fixture", result.stdout + result.stderr)
 ```
 
 - [ ] **Step 2: Run the readiness tests and observe RED**
 
 ```powershell
-python -m unittest tests.test_windows_parity.WindowsReadinessContractTests -v
+python -m unittest tests.test_windows_parity.WindowsReadinessContractTests tests.test_windows_parity.WindowsReadinessBehaviorTests -v
 ```
 
 Expected: failures because launch logic remains inline and the helper modes are absent.
 
 - [ ] **Step 3: Implement bounded readiness**
 
-`Get-UURemoteDeviceId` invokes `--device-id`, returns a trimmed non-empty string only when the CLI exits zero, and never writes it. `Start-UURemoteAndWaitDevice` verifies both paths, reuses `Get-Process -Name GameViewer`, otherwise starts the launcher, and polls until `(Get-Date).AddSeconds(60)` with 500 ms intervals. Success prints only `DEVICE_ID_STATE=ready`; deadline failure throws a generic message with the attempt count.
+`Get-UURemoteDeviceId` invokes `--device-id`, returns a trimmed non-empty string only when the CLI exits zero, and never writes it. `Start-UURemoteAndWaitDevice` accepts internal parameters `TimeoutSeconds = 60` and `PollMilliseconds = 500`, verifies both paths, reuses `Get-Process -Name GameViewer`, otherwise starts the launcher, and polls until the deadline. The runtime route always uses the defaults. Success prints only `DEVICE_ID_STATE=ready`; deadline failure throws a generic message with the attempt count.
+
+The harness dot-sources the real helper without executing its route, replaces only the external process/CLI boundaries with deterministic functions, and calls `Start-UURemoteAndWaitDevice` with `TimeoutSeconds = 1` and `PollMilliseconds = 10`. `readiness-success` returns the fixture only on attempt 3 and prints `ATTEMPTS=3`; `readiness-timeout` never returns an ID and exits `1`. The harness must not copy readiness logic.
 
 `Assert-UURemoteReadiness` verifies the launcher and CLI paths, requires a running `GameViewer` process, and requires `Get-UURemoteDeviceId` to return non-empty. It prints only `UNATTENDED_READINESS=verified`. It must not invoke undocumented commands or modify system security settings.
 
@@ -421,7 +435,7 @@ Replace the inline launch loop with the helper mode and add the named readiness 
 - [ ] **Step 4: Run focused tests and observe GREEN**
 
 ```powershell
-python -m unittest tests.test_windows_parity.WindowsReadinessContractTests tests.test_windows_parity.SharedWorkflowContractTests -v
+python -m unittest tests.test_windows_parity.WindowsReadinessContractTests tests.test_windows_parity.WindowsReadinessBehaviorTests tests.test_windows_parity.SharedWorkflowContractTests -v
 ```
 
 Expected: all tests pass; workflow contains no device ID output.
@@ -429,7 +443,7 @@ Expected: all tests pass; workflow contains no device ID output.
 - [ ] **Step 5: Commit**
 
 ```powershell
-git add .github/workflows/windows.ps1 .github/workflows/windows.yml tests/test_windows_parity.py
+git add .github/workflows/windows.ps1 .github/workflows/windows.yml tests/test_windows_parity.py tests/windows_helper_harness.ps1
 git commit -m "feat: add bounded Windows readiness checks"
 ```
 
@@ -449,6 +463,10 @@ git commit -m "feat: add bounded Windows readiness checks"
 - [ ] **Step 1: Write failing diagnostic and idempotency contracts**
 
 ```python
+import platform
+import tempfile
+
+
 class WindowsDiagnosticContractTests(unittest.TestCase):
     def test_debug_conditions_and_artifact_are_aligned(self):
         workflow = text(WINDOWS_WORKFLOW)
@@ -459,18 +477,33 @@ class WindowsDiagnosticContractTests(unittest.TestCase):
         self.assertIn("name: uuremote-diagnostics", upload)
         self.assertIn("${{ runner.temp }}/uuremote-diagnostics/", upload)
 
-    def test_snapshots_do_not_launch_or_foreground_uuremote(self):
-        script = text(WINDOWS_HELPER)
-        snapshot = script[script.index("function Save-DesktopSnapshot"):script.index("function Invoke-UURemoteIdempotencyCheck")]
-        self.assertNotIn("Start-Process", snapshot)
-        self.assertNotIn("SetForegroundWindow", snapshot)
-        self.assertIn("CopyFromScreen", snapshot)
+
+
+@unittest.skipUnless(platform.system() == "Windows", "requires a Windows desktop")
+class WindowsDiagnosticBehaviorTests(unittest.TestCase):
+    def test_snapshot_writes_a_real_png_under_runner_temp(self):
+        with tempfile.TemporaryDirectory() as directory:
+            environment = os.environ.copy()
+            environment["RUNNER_TEMP"] = directory
+            result = run_windows_helper("snapshot", "contract-test", environment=environment)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            image = Path(directory, "uuremote-diagnostics", "contract-test.png")
+            self.assertTrue(image.is_file())
+            self.assertEqual(image.read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
+
+    def test_invalid_snapshot_label_returns_two_without_creating_a_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            environment = os.environ.copy()
+            environment["RUNNER_TEMP"] = directory
+            result = run_windows_helper("snapshot", "../escape", environment=environment)
+            self.assertEqual(result.returncode, 2)
+            self.assertEqual(list(Path(directory).rglob("*.png")), [])
 ```
 
 - [ ] **Step 2: Run diagnostic tests and observe RED**
 
 ```powershell
-python -m unittest tests.test_windows_parity.WindowsDiagnosticContractTests -v
+python -m unittest tests.test_windows_parity.WindowsDiagnosticContractTests tests.test_windows_parity.WindowsDiagnosticBehaviorTests -v
 ```
 
 Expected: failures because the steps and helper functions are absent.
@@ -540,10 +573,6 @@ Extend `SharedWorkflowContractTests`:
             self.assertIn("name: uuremote-diagnostics", workflow)
             self.assertIn("${{ runner.temp }}/uuremote-diagnostics/", workflow)
 
-    def test_neither_workflow_logs_the_device_id_value(self):
-        for path in (MACOS_WORKFLOW, WINDOWS_WORKFLOW):
-            self.assertNotIn('echo "deviceId:', text(path))
-            self.assertNotIn('Write-Host "deviceId:', text(path))
 ```
 
 Add `BASH_AVAILABLE = Path("/bin/bash").exists()` and `@unittest.skipUnless(BASH_AVAILABLE, "requires /bin/bash")` to exactly these behavior classes:
@@ -570,13 +599,16 @@ Change the macOS artifact name to `uuremote-diagnostics`, its workflow path to `
 
 Update existing artifact assertions and apply the four exact Bash gates listed in Step 1. Do not skip static contract tests that run correctly on Windows.
 
+Remove device-ID value logging from both workflows. This sensitive-output requirement is checked by the task reviewer and by the explicit security scan below; it is not represented as a source-token behavior test.
+
 - [ ] **Step 4: Run the full local suite and observe GREEN**
 
 ```powershell
 python -m unittest discover -s tests -v
+rg -n -e 'echo "deviceId:' -e 'Write-Host "deviceId:' .github/workflows/macos.yml .github/workflows/windows.yml
 ```
 
-Expected on Windows: all runnable tests pass; Bash/AppKit-only behavior tests are reported as skips, not errors. Expected on macOS: Bash tests execute normally and AppKit behavior remains active.
+Expected on Windows: all runnable tests pass; Bash/AppKit-only behavior tests are reported as skips, not errors; the security scan has no matches. Expected on macOS: Bash tests execute normally and AppKit behavior remains active.
 
 - [ ] **Step 5: Commit**
 
