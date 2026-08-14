@@ -223,6 +223,105 @@ function Assert-UURemoteReadiness {
     Write-Output 'UNATTENDED_READINESS=verified'
 }
 
+function Initialize-UURemoteWindowInterop {
+    if ($null -eq ('UURemote.DesktopWindowInterop' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+
+namespace UURemote
+{
+    public static class DesktopWindowInterop
+    {
+        [DllImport("user32.dll")]
+        public static extern bool ShowWindowAsync(IntPtr windowHandle, int command);
+
+        [DllImport("user32.dll")]
+        public static extern bool IsIconic(IntPtr windowHandle);
+    }
+}
+'@
+    }
+}
+
+function Minimize-UURemoteWindows {
+    Initialize-UURemoteWindowInterop
+
+    $windowHandles = @(
+        Get-UURemoteGameViewerProcess |
+            ForEach-Object { $_.MainWindowHandle } |
+            Where-Object { $_ -ne [IntPtr]::Zero }
+    )
+
+    foreach ($windowHandle in $windowHandles) {
+        $null = [UURemote.DesktopWindowInterop]::ShowWindowAsync($windowHandle, 6)
+    }
+
+    $deadline = (Get-Date).AddSeconds(5)
+    while (@($windowHandles | Where-Object { -not [UURemote.DesktopWindowInterop]::IsIconic($_) }).Count -gt 0) {
+        if ((Get-Date) -ge $deadline) {
+            throw 'UU Remote desktop finalization failed.'
+        }
+        Start-Sleep -Milliseconds 100
+    }
+
+    Write-Output 'FINAL_DESKTOP_STATE=ready'
+}
+
+function Test-UURemoteSnapshotLabel([string]$Value) {
+    return $null -ne $Value -and $Value -cmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
+}
+
+function Save-DesktopSnapshot([string]$Label) {
+    if (-not (Test-UURemoteSnapshotLabel $Label)) {
+        throw 'Invalid desktop snapshot label.'
+    }
+    if ([string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
+        throw 'Runner temporary directory is unavailable.'
+    }
+
+    Add-Type -AssemblyName System.Windows.Forms
+    Add-Type -AssemblyName System.Drawing
+
+    $virtualScreen = [System.Windows.Forms.SystemInformation]::VirtualScreen
+    if ($virtualScreen.Width -lt 1 -or $virtualScreen.Height -lt 1) {
+        throw 'Desktop snapshot dimensions are invalid.'
+    }
+
+    $diagnosticDirectory = Join-Path $env:RUNNER_TEMP 'uuremote-diagnostics'
+    $null = New-Item -ItemType Directory -Path $diagnosticDirectory -Force
+    $snapshotPath = Join-Path $diagnosticDirectory "$Label.png"
+    $bitmap = $null
+    $graphics = $null
+    try {
+        $bitmap = New-Object System.Drawing.Bitmap($virtualScreen.Width, $virtualScreen.Height)
+        $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+        $graphics.CopyFromScreen(
+            $virtualScreen.Left,
+            $virtualScreen.Top,
+            0,
+            0,
+            $virtualScreen.Size
+        )
+        $bitmap.Save($snapshotPath, [System.Drawing.Imaging.ImageFormat]::Png)
+    }
+    finally {
+        if ($null -ne $graphics) {
+            $graphics.Dispose()
+        }
+        if ($null -ne $bitmap) {
+            $bitmap.Dispose()
+        }
+    }
+}
+
+function Invoke-UURemoteIdempotencyCheck {
+    Assert-UURemoteReadiness
+    Set-UURemoteCustomCode
+    Assert-UURemoteReadiness
+    Minimize-UURemoteWindows
+}
+
 function Set-UURemoteCustomCode {
     $customCode = $env:UUREMOTE_CUSTOM_CODE
     if (-not (Test-UURemoteCustomCode $customCode)) {
@@ -338,6 +437,52 @@ function Invoke-WindowsHelperRoute {
         }
         catch {
             [Console]::Error.WriteLine('UU Remote unattended readiness failed.')
+            exit 1
+        }
+        exit 0
+    }
+    'verify-idempotency' {
+        if ($argumentCount -ne 0) {
+            [Console]::Error.WriteLine('Usage error.')
+            exit 2
+        }
+        if (-not (Test-UURemoteCustomCode $env:UUREMOTE_CUSTOM_CODE)) {
+            [Console]::Error.WriteLine('Invalid UU Remote custom code.')
+            exit 2
+        }
+        try {
+            Invoke-UURemoteIdempotencyCheck
+        }
+        catch {
+            [Console]::Error.WriteLine('UU Remote configuration idempotency check failed.')
+            exit 1
+        }
+        exit 0
+    }
+    'finalize-desktop' {
+        if ($argumentCount -ne 0) {
+            [Console]::Error.WriteLine('Usage error.')
+            exit 2
+        }
+        try {
+            Minimize-UURemoteWindows
+        }
+        catch {
+            [Console]::Error.WriteLine('UU Remote desktop finalization failed.')
+            exit 1
+        }
+        exit 0
+    }
+    'snapshot' {
+        if ($argumentCount -ne 1 -or -not (Test-UURemoteSnapshotLabel $Arguments[0])) {
+            [Console]::Error.WriteLine('Invalid desktop snapshot label.')
+            exit 2
+        }
+        try {
+            Save-DesktopSnapshot -Label $Arguments[0]
+        }
+        catch {
+            [Console]::Error.WriteLine('Desktop snapshot failed.')
             exit 1
         }
         exit 0

@@ -1,7 +1,9 @@
 import os
+import platform
 from pathlib import Path
 import shutil
 import subprocess
+import tempfile
 import time
 import unittest
 
@@ -188,3 +190,56 @@ class WindowsReadinessBehaviorTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("UNATTENDED_READINESS=verified", result.stdout)
         self.assertNotIn("device-id-fixture", result.stdout + result.stderr)
+
+
+class WindowsDiagnosticContractTests(unittest.TestCase):
+    def test_debug_conditions_and_artifact_are_aligned(self):
+        workflow = text(WINDOWS_WORKFLOW)
+        idempotency = step_block(workflow, "Verify configuration idempotency")
+        live = step_block(workflow, "Capture live diagnostics")
+        upload = step_block(workflow, "Upload UU Remote diagnostics")
+
+        self.assertIn("env.UUREMOTE_DEBUG == '2' || env.UUREMOTE_DEBUG == '3'", idempotency)
+        self.assertIn("env.UUREMOTE_DEBUG == '3'", live)
+        self.assertIn("always() && env.UUREMOTE_DEBUG != '0'", upload)
+        self.assertIn("name: uuremote-diagnostics", upload)
+        self.assertIn("${{ runner.temp }}/uuremote-diagnostics/", upload)
+
+    def test_finalization_and_live_sampling_delegate_to_the_helper(self):
+        workflow = text(WINDOWS_WORKFLOW)
+        finalization = step_block(workflow, "Finalize desktop and capture diagnostics")
+        live = step_block(workflow, "Capture live diagnostics")
+
+        self.assertIn("if: success()", finalization)
+        self.assertIn("windows.ps1 finalize-desktop", finalization)
+        self.assertIn("$env:UUREMOTE_DEBUG -ne '0'", finalization)
+        self.assertIn("windows.ps1 snapshot final-desktop", finalization)
+        self.assertIn("1..20", live)
+        self.assertIn("'live-{0:D2}' -f $_", live)
+        self.assertIn("windows.ps1 snapshot $label", live)
+        self.assertIn("Start-Sleep -Seconds 15", live)
+
+
+@unittest.skipUnless(platform.system() == "Windows", "requires a Windows desktop")
+class WindowsDiagnosticBehaviorTests(unittest.TestCase):
+    def test_snapshot_writes_a_real_png_under_runner_temp(self):
+        with tempfile.TemporaryDirectory() as directory:
+            environment = os.environ.copy()
+            environment["RUNNER_TEMP"] = directory
+            result = run_windows_helper("snapshot", "contract-test", environment=environment)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            image = Path(directory, "uuremote-diagnostics", "contract-test.png")
+            self.assertTrue(image.is_file())
+            self.assertEqual(image.read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
+
+    def test_invalid_snapshot_label_returns_two_without_creating_a_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            environment = os.environ.copy()
+            environment["RUNNER_TEMP"] = directory
+            baseline = run_windows_helper("snapshot", "baseline", environment=environment)
+            self.assertEqual(baseline.returncode, 0, baseline.stderr)
+            Path(directory, "uuremote-diagnostics", "baseline.png").unlink()
+
+            result = run_windows_helper("snapshot", "../escape", environment=environment)
+            self.assertEqual(result.returncode, 2)
+            self.assertEqual(list(Path(directory).rglob("*.png")), [])
