@@ -426,6 +426,12 @@ function Get-SafeWaitSelfTestObservation([object]$Value) {
 }
 
 function Get-SafeWaitSelfTestExceptionCategory([System.Exception]$Exception) {
+    if ($Exception -is [System.Management.Automation.MethodInvocationException]) {
+        if ($Exception.InnerException -is [System.InvalidOperationException]) {
+            return 'method-invocation/invalid-operation'
+        }
+        return 'method-invocation/unexpected'
+    }
     if ($Exception -is [System.InvalidOperationException]) {
         return 'invalid-operation'
     }

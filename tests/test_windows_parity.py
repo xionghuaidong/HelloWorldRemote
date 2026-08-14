@@ -259,6 +259,37 @@ switch ($InjectedEvent) {
         for value in ("device-id-fixture", "custom-code-fixture", "arbitrary-external-output"):
             self.assertNotIn(value, result.stdout + result.stderr)
 
+    @unittest.skipUnless(POWERSHELL_AVAILABLE, "requires a PowerShell runtime")
+    def test_self_test_unwraps_real_method_invocation_exception_safely(self):
+        result = self.run_self_test_with_injected_waiter(
+            r"""
+Add-Type @'
+using System;
+public static class WaiterFailureFixture {
+    public static string Run() {
+        throw new InvalidOperationException("device-id-fixture custom-code-fixture arbitrary-external-output");
+    }
+}
+'@
+[WaiterFailureFixture]::Run()
+"""
+        )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(
+            result.stderr.splitlines(),
+            [
+                "shutdown-aware wait self-test failed",
+                "WAIT_SELF_TEST_TIMEOUT=not-observed",
+                "WAIT_SELF_TEST_ORDINARY=not-observed",
+                "WAIT_SELF_TEST_SHUTDOWN=not-observed",
+                "WAIT_SELF_TEST_EXCEPTION=method-invocation/invalid-operation",
+            ],
+        )
+        self.assertEqual(result.stdout, "")
+        for value in ("device-id-fixture", "custom-code-fixture", "arbitrary-external-output"):
+            self.assertNotIn(value, result.stdout + result.stderr)
+
 
 class WindowsReadinessContractTests(unittest.TestCase):
     def test_workflow_delegates_launch_and_readiness(self):
