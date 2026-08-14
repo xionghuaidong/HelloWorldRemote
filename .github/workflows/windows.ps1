@@ -227,17 +227,56 @@ function Initialize-UURemoteWindowInterop {
     if ($null -eq ('UURemote.DesktopWindowInterop' -as [type])) {
         Add-Type -TypeDefinition @'
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 
 namespace UURemote
 {
     public static class DesktopWindowInterop
     {
+        public delegate bool EnumWindowsCallback(IntPtr windowHandle, IntPtr parameter);
+
+        [DllImport("user32.dll")]
+        public static extern bool EnumWindows(EnumWindowsCallback callback, IntPtr parameter);
+
+        [DllImport("user32.dll")]
+        public static extern uint GetWindowThreadProcessId(IntPtr windowHandle, out uint processId);
+
+        [DllImport("user32.dll")]
+        public static extern bool IsWindowVisible(IntPtr windowHandle);
+
         [DllImport("user32.dll")]
         public static extern bool ShowWindowAsync(IntPtr windowHandle, int command);
 
         [DllImport("user32.dll")]
         public static extern bool IsIconic(IntPtr windowHandle);
+
+        public static IntPtr[] GetVisibleTopLevelWindowHandles(int[] processIds)
+        {
+            HashSet<uint> requestedProcessIds = new HashSet<uint>();
+            foreach (int processId in processIds)
+            {
+                if (processId > 0)
+                {
+                    requestedProcessIds.Add((uint)processId);
+                }
+            }
+
+            List<IntPtr> handles = new List<IntPtr>();
+            EnumWindows(
+                delegate(IntPtr windowHandle, IntPtr parameter)
+                {
+                    uint processId;
+                    GetWindowThreadProcessId(windowHandle, out processId);
+                    if (requestedProcessIds.Contains(processId) && IsWindowVisible(windowHandle))
+                    {
+                        handles.Add(windowHandle);
+                    }
+                    return true;
+                },
+                IntPtr.Zero);
+            return handles.ToArray();
+        }
     }
 }
 '@
@@ -245,10 +284,20 @@ namespace UURemote
 }
 
 function Get-UURemoteWindowHandles {
-    return @(
+    Initialize-UURemoteWindowInterop
+    $processIds = @(
         Get-UURemoteGameViewerProcess |
-            ForEach-Object { $_.MainWindowHandle } |
-            Where-Object { $_ -ne [IntPtr]::Zero }
+            ForEach-Object { [int]$_.Id } |
+            Where-Object { $_ -gt 0 }
+    )
+    if ($processIds.Count -eq 0) {
+        return @()
+    }
+
+    return @(
+        [UURemote.DesktopWindowInterop]::GetVisibleTopLevelWindowHandles(
+            [int[]]$processIds
+        )
     )
 }
 
@@ -263,10 +312,6 @@ function Test-UURemoteWindowMinimized([IntPtr]$WindowHandle) {
 function Minimize-UURemoteWindows {
     Initialize-UURemoteWindowInterop
 
-    foreach ($windowHandle in @(Get-UURemoteWindowHandles)) {
-        Request-UURemoteWindowMinimize -WindowHandle $windowHandle
-    }
-
     $deadline = (Get-UURemoteNow).AddSeconds(5)
     while ($true) {
         $visibleHandles = @(
@@ -279,7 +324,16 @@ function Minimize-UURemoteWindows {
         if ((Get-UURemoteNow) -ge $deadline) {
             throw 'UU Remote desktop finalization failed.'
         }
-        Wait-UURemotePoll -Milliseconds 100
+
+        foreach ($windowHandle in $visibleHandles) {
+            Request-UURemoteWindowMinimize -WindowHandle $windowHandle
+        }
+
+        $remainingMilliseconds = [int][Math]::Floor(($deadline - (Get-UURemoteNow)).TotalMilliseconds)
+        if ($remainingMilliseconds -lt 1) {
+            throw 'UU Remote desktop finalization failed.'
+        }
+        Wait-UURemotePoll -Milliseconds ([Math]::Min(100, $remainingMilliseconds))
     }
 
     Write-Output 'FINAL_DESKTOP_STATE=ready'

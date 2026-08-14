@@ -457,6 +457,8 @@ class WindowsDiagnosticBehaviorTests(unittest.TestCase):
 $script:enumerations = 0
 $script:requests = @()
 $script:checks = @()
+$script:minimized = @{}
+$script:now = [DateTime]'2026-08-14T00:00:00Z'
 function Initialize-UURemoteWindowInterop {}
 function Get-UURemoteWindowHandles {
     $script:enumerations++
@@ -466,13 +468,19 @@ function Get-UURemoteWindowHandles {
     return [IntPtr]202
 }
 function Request-UURemoteWindowMinimize([IntPtr]$WindowHandle) {
-    $script:requests += $WindowHandle.ToInt64()
+    $value = $WindowHandle.ToInt64()
+    $script:requests += $value
+    $script:minimized[$value] = $true
 }
 function Test-UURemoteWindowMinimized([IntPtr]$WindowHandle) {
-    $script:checks += $WindowHandle.ToInt64()
-    return $script:checks.Count -gt 1
+    $value = $WindowHandle.ToInt64()
+    $script:checks += $value
+    return $script:minimized.ContainsKey($value)
 }
-function Wait-UURemotePoll([int]$Milliseconds) {}
+function Get-UURemoteNow { return $script:now }
+function Wait-UURemotePoll([int]$Milliseconds) {
+    $script:now = $script:now.AddMilliseconds($Milliseconds)
+}
 Minimize-UURemoteWindows
 Write-Output "ENUMERATIONS=$script:enumerations"
 Write-Output "REQUESTS=$($script:requests -join ',')"
@@ -482,8 +490,48 @@ Write-Output "CHECKS=$($script:checks -join ',')"
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("FINAL_DESKTOP_STATE=ready", result.stdout)
         self.assertIn("ENUMERATIONS=3", result.stdout)
-        self.assertIn("REQUESTS=101", result.stdout)
-        self.assertIn("CHECKS=202,202", result.stdout)
+        self.assertIn("REQUESTS=101,202", result.stdout)
+        self.assertIn("CHECKS=101,202,202", result.stdout)
+
+    def test_window_enumeration_passes_every_process_id_to_the_interop(self):
+        helper = str(WINDOWS_HELPER).replace("'", "''")
+        result = run_windows_script(
+            rf"""
+Add-Type @'
+using System;
+
+namespace UURemote
+{{
+    public static class DesktopWindowInterop
+    {{
+        public static int[] RequestedProcessIds = new int[0];
+
+        public static IntPtr[] GetVisibleTopLevelWindowHandles(int[] processIds)
+        {{
+            RequestedProcessIds = processIds;
+            return new[] {{ new IntPtr(101), new IntPtr(202), new IntPtr(303) }};
+        }}
+    }}
+}}
+'@
+. '{helper}'
+function Get-UURemoteGameViewerProcess {{
+    return @(
+        [pscustomobject]@{{ Id = 41; MainWindowHandle = [IntPtr]901 }},
+        [pscustomobject]@{{ Id = 42; MainWindowHandle = [IntPtr]902 }}
+    )
+}}
+$handles = @(Get-UURemoteWindowHandles)
+$requestedIds = [UURemote.DesktopWindowInterop]::RequestedProcessIds
+Write-Output "PROCESS_IDS=$($requestedIds -join ',')"
+Write-Output "HANDLES=$(@($handles | ForEach-Object {{ $_.ToInt64() }}) -join ',')"
+"""
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("PROCESS_IDS=41,42", result.stdout)
+        self.assertIn("HANDLES=101,202,303", result.stdout)
+        self.assertNotIn("901", result.stdout)
+        self.assertNotIn("902", result.stdout)
 
     def test_minimization_accepts_no_current_top_level_window(self):
         result = self.run_controlled_helper(
@@ -516,7 +564,7 @@ Write-Output "CHECKS=$script:checks"
         self.assertIn("FINAL_DESKTOP_STATE=ready", result.stdout)
         self.assertIn("ENUMERATIONS=2", result.stdout)
         self.assertIn("REQUESTS=101", result.stdout)
-        self.assertIn("CHECKS=0", result.stdout)
+        self.assertIn("CHECKS=1", result.stdout)
 
     def test_failed_snapshot_removes_final_and_temporary_png_files(self):
         with tempfile.TemporaryDirectory() as directory:
