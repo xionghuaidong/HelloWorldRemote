@@ -1,10 +1,9 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [string]$Mode = "configure",
+    [string]$HelperMode = "configure",
     [Parameter(Position = 1, ValueFromRemainingArguments = $true)]
-    [string[]]$Arguments,
-    [switch]$ImportOnly
+    [string[]]$Arguments
 )
 
 $ErrorActionPreference = "Stop"
@@ -40,12 +39,98 @@ function Start-UURemoteGameViewerProcess {
     $null = Start-Process -FilePath $Paths.LauncherPath -WorkingDirectory $Paths.InstallRoot
 }
 
-function Invoke-UURemoteDeviceIdCli([string]$Path) {
-    $output = @(& $Path --device-id 2>&1)
-    $exitCode = $LASTEXITCODE
-    return [pscustomobject]@{
-        ExitCode = $exitCode
-        Output = $output
+function Start-UURemoteDeviceIdProcess([string]$Path) {
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $Path
+    $startInfo.Arguments = '--device-id'
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $startInfo
+    try {
+        if (-not $process.Start()) {
+            throw 'UU Remote CLI failed to start.'
+        }
+        return $process
+    }
+    catch {
+        $process.Dispose()
+        throw
+    }
+}
+
+function Invoke-UURemoteDeviceIdCli {
+    param(
+        [string]$Path,
+        [int]$TimeoutMilliseconds = 60000
+    )
+
+    if ($TimeoutMilliseconds -lt 1) {
+        return [pscustomobject]@{
+            ExitCode = -1
+            Output = @()
+            TimedOut = $true
+        }
+    }
+
+    $process = $null
+    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    try {
+        $process = Start-UURemoteDeviceIdProcess -Path $Path
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        $remainingMilliseconds = $TimeoutMilliseconds - [int]$stopwatch.ElapsedMilliseconds
+        if ($remainingMilliseconds -lt 1 -or -not $process.WaitForExit($remainingMilliseconds)) {
+            if (-not $process.HasExited) {
+                $process.Kill()
+            }
+            return [pscustomobject]@{
+                ExitCode = -1
+                Output = @()
+                TimedOut = $true
+            }
+        }
+
+        $remainingMilliseconds = $TimeoutMilliseconds - [int]$stopwatch.ElapsedMilliseconds
+        if ($remainingMilliseconds -lt 1 -or -not $stdoutTask.Wait($remainingMilliseconds)) {
+            return [pscustomobject]@{
+                ExitCode = -1
+                Output = @()
+                TimedOut = $true
+            }
+        }
+        $remainingMilliseconds = $TimeoutMilliseconds - [int]$stopwatch.ElapsedMilliseconds
+        if ($remainingMilliseconds -lt 1 -or -not $stderrTask.Wait($remainingMilliseconds)) {
+            return [pscustomobject]@{
+                ExitCode = -1
+                Output = @()
+                TimedOut = $true
+            }
+        }
+
+        $output = $stdoutTask.Result
+        $null = $stderrTask.Result
+        return [pscustomobject]@{
+            ExitCode = $process.ExitCode
+            Output = @($output)
+            TimedOut = $false
+        }
+    }
+    catch {
+        return [pscustomobject]@{
+            ExitCode = -1
+            Output = @()
+            TimedOut = $false
+        }
+    }
+    finally {
+        $stopwatch.Stop()
+        if ($null -ne $process) {
+            $process.Dispose()
+        }
     }
 }
 
@@ -64,8 +149,13 @@ function Assert-UURemotePaths([pscustomobject]$Paths) {
     }
 }
 
-function Get-UURemoteDeviceId([string]$CliPath) {
-    $result = Invoke-UURemoteDeviceIdCli -Path $CliPath
+function Get-UURemoteDeviceId {
+    param(
+        [string]$CliPath,
+        [int]$TimeoutMilliseconds = 60000
+    )
+
+    $result = Invoke-UURemoteDeviceIdCli -Path $CliPath -TimeoutMilliseconds $TimeoutMilliseconds
     if ($result.ExitCode -ne 0) {
         return $null
     }
@@ -97,17 +187,23 @@ function Start-UURemoteAndWaitDevice {
     $deadline = (Get-UURemoteNow).AddSeconds($TimeoutSeconds)
     $attempts = 0
     while ($true) {
+        $remainingMilliseconds = [int][Math]::Floor(($deadline - (Get-UURemoteNow)).TotalMilliseconds)
+        if ($remainingMilliseconds -lt 1) {
+            throw "UU Remote device readiness timed out after $attempts attempts."
+        }
+
         $attempts++
-        $deviceId = Get-UURemoteDeviceId -CliPath $paths.CliPath
+        $deviceId = Get-UURemoteDeviceId -CliPath $paths.CliPath -TimeoutMilliseconds $remainingMilliseconds
         if (-not [string]::IsNullOrWhiteSpace($deviceId)) {
             Write-Output 'DEVICE_ID_STATE=ready'
             return
         }
 
-        if ((Get-UURemoteNow) -ge $deadline) {
+        $remainingAfterAttempt = [int][Math]::Floor(($deadline - (Get-UURemoteNow)).TotalMilliseconds)
+        if ($remainingAfterAttempt -lt 1) {
             throw "UU Remote device readiness timed out after $attempts attempts."
         }
-        Wait-UURemotePoll -Milliseconds $PollMilliseconds
+        Wait-UURemotePoll -Milliseconds ([Math]::Min($PollMilliseconds, $remainingAfterAttempt))
     }
 }
 
@@ -181,7 +277,7 @@ function Invoke-ShutdownWaiter {
 function Invoke-WindowsHelperRoute {
     $argumentCount = if ($null -eq $Arguments) { 0 } else { $Arguments.Count }
 
-    switch ($Mode) {
+    switch ($HelperMode) {
     'validate-custom-code' {
         if ($argumentCount -ne 0) {
             [Console]::Error.WriteLine('Usage error.')
@@ -296,6 +392,6 @@ function Invoke-WindowsHelperRoute {
     }
 }
 
-if (-not $ImportOnly) {
+if ($MyInvocation.InvocationName -ne '.') {
     Invoke-WindowsHelperRoute
 }

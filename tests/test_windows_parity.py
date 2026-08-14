@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import time
 import unittest
 
 
@@ -154,6 +155,21 @@ class WindowsReadinessBehaviorTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("timed out", result.stderr.lower())
         self.assertNotIn("device-id-fixture", result.stdout + result.stderr)
+
+    def test_hanging_cli_is_terminated_within_the_overall_deadline(self):
+        started = time.monotonic()
+        result = self.run_harness("readiness-cli-hang")
+        elapsed = time.monotonic() - started
+        self.assertEqual(result.returncode, 1)
+        self.assertLess(elapsed, 5)
+        self.assertIn("timed out", result.stderr.lower())
+        self.assertIn("CLI_PROCESS_TERMINATED=true", result.stdout)
+        self.assertNotIn("device-id-fixture", result.stdout + result.stderr)
+
+    def test_direct_import_only_cannot_bypass_routing(self):
+        result = run_windows_helper("launch-and-wait-device", "-ImportOnly")
+        self.assertEqual(result.returncode, 2)
+        self.assertNotIn("DEVICE_ID_STATE=ready", result.stdout)
 
     def test_unattended_readiness_requires_a_running_process(self):
         result = self.run_harness("unattended-no-process")
