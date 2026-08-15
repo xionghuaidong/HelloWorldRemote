@@ -269,7 +269,9 @@ import sys
 import unicodedata
 
 raw = sys.stdin.buffer.read()
-if raw.endswith(b"\n"):
+if raw.endswith(b"\r\n"):
+    raw = raw[:-2]
+elif raw.endswith(b"\n"):
     raw = raw[:-1]
 try:
     value = raw.decode("utf-8")

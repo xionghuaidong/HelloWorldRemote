@@ -20,6 +20,7 @@ fi
 
 case "${DEVICE_ID_FIXTURE_MODE:?}" in
     valid) printf '%s\n' 'device-id-fixture' ;;
+    valid-crlf) printf 'device-id-fixture\r\n' ;;
     leading-space) printf ' device-id-fixture\n' ;;
     trailing-space) printf 'device-id-fixture \n' ;;
     empty) printf '\n' ;;
@@ -67,6 +68,8 @@ assert_exact_output() {
 
 assert_exact_output $'DEVICE_ID=device-id-fixture\nDEVICE_ID_STATE=ready' \
     run_helper valid report-device-id readiness
+assert_exact_output $'DEVICE_ID=device-id-fixture\nDEVICE_ID_STATE=ready' \
+    run_helper valid-crlf report-device-id readiness
 assert_exact_output $'DEVICE_ID=device-id-fixture\nDEVICE_ID_STATE=ready' \
     run_helper leading-space report-device-id readiness
 assert_exact_output $'DEVICE_ID=device-id-fixture\nDEVICE_ID_STATE=ready' \
