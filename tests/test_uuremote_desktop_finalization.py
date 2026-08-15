@@ -59,6 +59,13 @@ class CustomCodeWorkflowTests(unittest.TestCase):
         launch = step_block(text(WORKFLOW_PATH), "Launch GameViewer")
         self.assertIn("apple.sh report-device-id readiness", launch)
 
+    def test_launch_redirects_background_process_output_to_null_device(self):
+        launch = step_block(text(WORKFLOW_PATH), "Launch GameViewer")
+        self.assertIn(
+            "/Applications/UURemote.app/Contents/MacOS/UURemote >/dev/null 2>&1 &",
+            launch,
+        )
+
     def test_failed_diagnostic_readiness_runs_structural_diagnostics_once(self):
         launch = step_block(text(WORKFLOW_PATH), "Launch GameViewer")
         exhausted = 'if [ "$device_id_ready" -ne 1 ]'
