@@ -72,24 +72,15 @@ jobs:
             for ((i=1; i<=120; i++))
             do
                 echo "Waiting deviceId [$i/120] ..."
-                if device_id="$(/Applications/UURemote.app/Contents/Helpers/uuyc-cli assist id 2>/dev/null)"
+                if .github/workflows/apple.sh report-device-id readiness
                 then
-                    if [ -n "$device_id" ]
-                    then
-                        device_id_ready=1
-                        unset device_id
-                        echo "DEVICE_ID_STATE=ready"
-                        break
-                    fi
-                    echo "设备 ID 为空，500 毫秒后重试" >&2
-                else
-                    status="$?"
-                    echo "CLI 失败，退出码 $status，500 毫秒后重试" >&2
+                    device_id_ready=1
+                    break
                 fi
+                echo "UU Remote device ID is unavailable, retrying in 500 ms" >&2
                 sleep 0.5
             done
 
-            unset device_id
             if [ "$device_id_ready" -ne 1 ]
             then
                 echo "UU Remote device readiness failed after 120 attempts" >&2

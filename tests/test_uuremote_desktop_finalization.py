@@ -55,6 +55,10 @@ class CustomCodeWorkflowTests(unittest.TestCase):
         self.assertIn('if [ "$device_id_ready" -ne 1 ]', block)
         self.assertIn("UU Remote device readiness failed after 120 attempts", block)
 
+    def test_device_id_readiness_delegates_to_the_apple_helper(self):
+        launch = step_block(text(WORKFLOW_PATH), "Launch GameViewer")
+        self.assertIn("apple.sh report-device-id readiness", launch)
+
 
 @unittest.skipUnless(BASH_AVAILABLE, "requires /bin/bash")
 class CustomCodeValidationTests(unittest.TestCase):

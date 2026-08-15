@@ -2,7 +2,7 @@
 set -euo pipefail
 
 APP="/Applications/UURemote.app"
-CLI="$APP/Contents/Helpers/uuyc-cli"
+CLI="${UUREMOTE_CLI_PATH:-$APP/Contents/Helpers/uuyc-cli}"
 mode="${1:-configure}"
 KEY_REPEAT_VALUE=2
 INITIAL_KEY_REPEAT_VALUE=15
@@ -263,10 +263,58 @@ self_test_wait_connections() {
     echo "shutdown-aware wait self-test passed"
 }
 
+read_uuremote_device_id() {
+    "$CLI" assist id 2>/dev/null | /usr/bin/python3 -c '
+import sys
+
+raw = sys.stdin.buffer.read()
+if raw.endswith(b"\n"):
+    raw = raw[:-1]
+try:
+    value = raw.decode("utf-8")
+except UnicodeDecodeError:
+    raise SystemExit(1)
+
+if not value or any(ord(character) < 32 or ord(character) == 127 for character in value):
+    raise SystemExit(1)
+
+sys.stdout.write(value)
+'
+}
+
+emit_current_device_id() {
+    local context="$1"
+    local device_id
+
+    if ! device_id="$(read_uuremote_device_id)"; then
+        return 1
+    fi
+
+    case "$context" in
+        readiness)
+            printf 'DEVICE_ID=%s\n' "$device_id"
+            printf 'DEVICE_ID_STATE=ready\n'
+            ;;
+        wait)
+            printf 'WAIT_CONNECTIONS DEVICE_ID=%s\n' "$device_id"
+            ;;
+        *)
+            unset device_id
+            return 2
+            ;;
+    esac
+    unset device_id
+}
+
 wait_connections() {
     local wait_seconds="${1:-}"
 
     validate_wait_connections_seconds "$wait_seconds" || return "$?"
+
+    if ! emit_current_device_id wait; then
+        echo "UU Remote wait device ID is unavailable." >&2
+        return 1
+    fi
 
     if [ "$wait_seconds" -eq 0 ]; then
         echo "WAIT_RESULT=timeout"
@@ -1443,6 +1491,15 @@ fi
 
 if [ "$mode" = "self-test-diagnostic-redaction" ]; then
     self_test_diagnostic_redaction
+    exit $?
+fi
+
+if [ "$mode" = "report-device-id" ]; then
+    if [ "$#" -ne 2 ] || [ "$2" != "readiness" ]; then
+        echo "Usage: apple.sh report-device-id readiness" >&2
+        exit 2
+    fi
+    emit_current_device_id "${2:-}"
     exit $?
 fi
 

@@ -1,6 +1,8 @@
 from pathlib import Path
+import os
 import platform
 import subprocess
+import tempfile
 import unittest
 
 
@@ -8,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_PATH = ROOT / ".github/workflows/macos.yml"
 SCRIPT_PATH = ROOT / ".github/workflows/apple.sh"
 WATCHER_PATH = ROOT / ".github/workflows/uuremote-shutdown-wait.swift"
+DEVICE_ID_LOGGING_HARNESS_PATH = ROOT / "tests/test_macos_device_id_logging.sh"
 BASH_AVAILABLE = Path("/bin/bash").exists()
 
 
@@ -36,6 +39,11 @@ class WaitWorkflowContractTests(unittest.TestCase):
         )
         self.assertNotIn('sleep "$wait_seconds"', block)
 
+    def test_wait_delegation_keeps_the_debug_zero_gate(self):
+        wait = step_block(text(WORKFLOW_PATH), "Wait connections")
+        self.assertIn("apple.sh wait-connections", wait)
+        self.assertIn("env.UUREMOTE_DEBUG == '0'", wait)
+
     def test_appkit_self_test_is_diagnostic_only(self):
         workflow = text(WORKFLOW_PATH)
         block = step_block(workflow, "Test shutdown-aware wait")
@@ -48,19 +56,38 @@ class WaitWorkflowContractTests(unittest.TestCase):
 
 @unittest.skipUnless(BASH_AVAILABLE, "requires /bin/bash")
 class WaitShellContractTests(unittest.TestCase):
-    def run_script(self, *args: str) -> subprocess.CompletedProcess[str]:
+    def run_script(
+        self, *args: str, environment: dict[str, str] | None = None
+    ) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             ["/bin/bash", str(SCRIPT_PATH), *args],
             cwd=ROOT,
+            env=environment,
             text=True,
             capture_output=True,
             check=False,
         )
 
     def test_zero_returns_without_watcher_or_app_preflight(self):
-        result = self.run_script("wait-connections", "0")
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            fixture_path = Path(temporary_directory) / "uuyc-cli"
+            fixture_path.write_text(
+                "#!/bin/bash\nprintf '%s\\n' 'device-id-fixture'\n",
+                encoding="utf-8",
+            )
+            fixture_path.chmod(0o700)
+            environment = os.environ.copy()
+            environment["UUREMOTE_CLI_PATH"] = str(fixture_path)
+
+            result = self.run_script(
+                "wait-connections", "0", environment=environment
+            )
+
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.splitlines(), ["WAIT_RESULT=timeout"])
+        self.assertEqual(
+            result.stdout.splitlines(),
+            ["WAIT_CONNECTIONS DEVICE_ID=device-id-fixture", "WAIT_RESULT=timeout"],
+        )
 
     def test_invalid_values_return_two(self):
         for value in ("-1", "21001", "1.5", "text", ""):
@@ -76,6 +103,21 @@ class WaitShellContractTests(unittest.TestCase):
             script.index(route),
             script.index('if [ ! -d "$APP" ]'),
         )
+
+
+@unittest.skipUnless(BASH_AVAILABLE, "requires /bin/bash")
+class DeviceIdLoggingHarnessTests(unittest.TestCase):
+    def test_real_helper_rejects_unsafe_device_id_output(self):
+        result = subprocess.run(
+            ["/bin/bash", str(DEVICE_ID_LOGGING_HARNESS_PATH)],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("macOS device ID logging contract passed", result.stdout)
 
 
 class WaitWatcherSourceTests(unittest.TestCase):
