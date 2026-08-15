@@ -121,7 +121,9 @@ Windows workflow 保留平台特有的 installer 和静默安装机制。继续�
 - 否则使用经过验证的 executable，并以其安装目录作为 working directory 启动。
 - 最多轮询 CLI 60 秒，等待非空 device ID。
 - 在 deadline 之前，只把非零 CLI 结果视为暂时失败。
-- 每次成功 run 都会在 launch readiness 阶段打印 `DEVICE_ID=<完整 device ID>`。debug level `0` 的 production wait 还会在开始等待前打印 `WAIT_CONNECTIONS DEVICE_ID=<完整 device ID>`。
+- 每次在 debug levels `0`、`1`、`2` 和 `3` 成功 run 都会在 launch readiness 阶段打印 `DEVICE_ID=<完整 device ID>`，紧接着打印 `DEVICE_ID_STATE=ready`。debug level `0` 的 production wait 还会在开始等待前打印 `WAIT_CONNECTIONS DEVICE_ID=<完整 device ID>`。
+- 修剪后，成功的 device ID 必须是一个非空可打印行。在记录前拒绝 CR、LF、NUL、所有其他 C0 control character 和 DEL。
+- 必须 fail closed，并返回通用 readiness 或 device-ID validation error，且不得输出不安全值。
 - 绝不输出自定义码、帐户密码、失败的 CLI 尝试、原始 CLI stderr 或其他未经批准的远程设备连接信息。
 - 到达 deadline 后，以通用的就绪错误和尝试次数失败。
 
@@ -218,7 +220,8 @@ Windows watcher 使用隐藏的原生 top-level window 和 message loop 观察 `
 - Step-scoped 自定义码 secret 处理以及不存在硬编码值。
 - Windows helper mode dispatch 和 validation exit codes。
 - 有边界的应用及 device ID readiness。
-- 经批准的 launch/readiness 和 production-wait device-ID messages，且不输出原始失败 CLI output。
+- 每个 debug level 的精确 launch/readiness pair 和 production-wait device-ID message，且不输出原始失败 CLI output。
+- 空值、multiline、NUL、C0-control、DEL 和 failed-CLI device-ID cases 必须 fail closed，且不输出原始不安全 output。
 - 保持状态的桌面收尾和诊断路径。
 - Wait timeout、zero、invalid input、injected ordinary event 和 injected shutdown event。
 - 六提交文档规则和现有 agent-environment contracts 保持不受影响。
@@ -231,10 +234,10 @@ Windows watcher 使用隐藏的原生 top-level window 和 message loop 观察 `
 
 本地和 review gates 通过后，在不显示 repository secrets 值的前提下验证 Windows workflow：
 
-1. `debug_level=1`、`wait_connections_seconds=0`：验证 launch/readiness `DEVICE_ID=<完整 device ID>` output、自定义码配置、最终截图、artifact upload 和真实手机客户端连接。
-2. `debug_level=2`、`wait_connections_seconds=0`：验证第二次配置具备幂等性。
-3. `debug_level=3`、`wait_connections_seconds=0`：验证 20 个保持状态的 live samples。
-4. `debug_level=0`、`wait_connections_seconds=5`：验证不生成 artifact、在开始等待前立即打印 `WAIT_CONNECTIONS DEVICE_ID=<完整 device ID>`，并得到 timeout result。
+1. `debug_level=1`、`wait_connections_seconds=0`：验证 `DEVICE_ID=<完整 device ID>` 后立即打印 `DEVICE_ID_STATE=ready`、自定义码配置、最终截图、artifact upload 和真实手机客户端连接。
+2. `debug_level=2`、`wait_connections_seconds=0`：验证 `DEVICE_ID=<完整 device ID>` 后立即打印 `DEVICE_ID_STATE=ready`，并验证第二次配置具备幂等性。
+3. `debug_level=3`、`wait_connections_seconds=0`：验证 `DEVICE_ID=<完整 device ID>` 后立即打印 `DEVICE_ID_STATE=ready`，以及 20 个保持状态的 live samples。
+4. `debug_level=0`、`wait_connections_seconds=5`：验证 `DEVICE_ID=<完整 device ID>` 后立即打印 `DEVICE_ID_STATE=ready`、不生成 artifact、在开始等待前立即打印 `WAIT_CONNECTIONS DEVICE_ID=<完整 device ID>`，并得到 timeout result。
 5. 一次专用的远程关机或重启 run：在主机存活到足以报告结果时，验证 shutdown-aware path。
 
 任何 live failure 都使用经过脱敏的 logs 和 diagnostics 进入 systematic debugging。失败不构成削弱操作系统保护的授权。

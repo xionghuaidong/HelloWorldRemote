@@ -81,6 +81,62 @@ class AgentInstructionContractTests(unittest.TestCase):
         self.assertIn("DEVICE_ID=<complete device ID>", text(ROOT / "README.md"))
         self.assertIn("DEVICE_ID=<完整 device ID>", text(ROOT / "README-zh_CN.md"))
 
+    def test_device_id_documents_require_exact_safe_launch_output(self):
+        english_launch_pair = (
+            "`DEVICE_ID=<complete device ID>` immediately followed by "
+            "`DEVICE_ID_STATE=ready`"
+        )
+        chinese_launch_pair = (
+            "`DEVICE_ID=<完整 device ID>`，紧接着打印 "
+            "`DEVICE_ID_STATE=ready`"
+        )
+        english_validation = (
+            "After trimming, a successful device ID must be one non-empty "
+            "printable line."
+        )
+        chinese_validation = "修剪后，成功的 device ID 必须是一个非空可打印行。"
+
+        for name in (
+            "README.md",
+            "docs/superpowers/specs/2026-08-14-windows-macos-functional-parity-design.md",
+            "docs/superpowers/plans/2026-08-14-windows-macos-functional-parity.md",
+        ):
+            contents = text(ROOT / name)
+            self.assertIn(english_launch_pair, contents)
+            self.assertIn("debug levels `0`, `1`, `2`, and `3`", contents)
+
+        for name in (
+            "README-zh_CN.md",
+            "docs/superpowers/specs/2026-08-14-windows-macos-functional-parity-design-zh_CN.md",
+            "docs/superpowers/plans/2026-08-14-windows-macos-functional-parity-zh_CN.md",
+        ):
+            contents = text(ROOT / name)
+            self.assertIn(chinese_launch_pair, contents)
+            self.assertIn("debug levels `0`、`1`、`2` 和 `3`", contents)
+
+        for name in (
+            "docs/superpowers/specs/2026-08-14-windows-macos-functional-parity-design.md",
+            "docs/superpowers/plans/2026-08-14-windows-macos-functional-parity.md",
+        ):
+            contents = text(ROOT / name)
+            self.assertIn(english_validation, contents)
+            self.assertIn(
+                "Reject CR, LF, NUL, every other C0 control character, and DEL "
+                "before logging.",
+                contents,
+            )
+
+        for name in (
+            "docs/superpowers/specs/2026-08-14-windows-macos-functional-parity-design-zh_CN.md",
+            "docs/superpowers/plans/2026-08-14-windows-macos-functional-parity-zh_CN.md",
+        ):
+            contents = text(ROOT / name)
+            self.assertIn(chinese_validation, contents)
+            self.assertIn(
+                "在记录前拒绝 CR、LF、NUL、所有其他 C0 control character 和 DEL。",
+                contents,
+            )
+
 
 class EntryPointContractTests(unittest.TestCase):
     def test_readmes_have_navigation(self):

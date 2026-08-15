@@ -121,7 +121,9 @@ Launch readiness is idempotent:
 - Otherwise launch the verified executable with its installation directory as the working directory.
 - Poll the CLI for a non-empty device ID for at most 60 seconds.
 - Treat non-zero CLI results as transient only until the deadline.
-- Every successful run prints `DEVICE_ID=<complete device ID>` during launch readiness. The debug-level `0` production wait also prints `WAIT_CONNECTIONS DEVICE_ID=<complete device ID>` immediately before waiting.
+- Every successful run at debug levels `0`, `1`, `2`, and `3` prints `DEVICE_ID=<complete device ID>` immediately followed by `DEVICE_ID_STATE=ready` during launch readiness. The debug-level `0` production wait also prints `WAIT_CONNECTIONS DEVICE_ID=<complete device ID>` immediately before waiting.
+- After trimming, a successful device ID must be one non-empty printable line. Reject CR, LF, NUL, every other C0 control character, and DEL before logging.
+- Fail closed with a generic readiness or device-ID validation error without emitting an unsafe value.
 - Never print custom codes, account passwords, failed CLI attempts, raw CLI stderr, or other unapproved remote-device connection information.
 - Fail after the deadline with a generic readiness error and attempt count.
 
@@ -218,7 +220,8 @@ The suite covers:
 - Step-scoped custom-code secret handling and absence of hard-coded values.
 - Windows helper mode dispatch and validation exit codes.
 - Bounded application and device-ID readiness.
-- Approved launch/readiness and production-wait device-ID messages, without raw failed CLI output.
+- The exact launch/readiness pair at every debug level and production-wait device-ID message, without raw failed CLI output.
+- Empty, multiline, NUL, C0-control, DEL, and failed-CLI device-ID cases that fail closed without raw unsafe output.
 - State-preserving desktop finalization and diagnostic paths.
 - Wait timeout, zero, invalid input, injected ordinary event, and injected shutdown event.
 - Six-commit documentation rules and existing agent-environment contracts remain unaffected.
@@ -231,10 +234,10 @@ All behavior changes follow red-green-refactor: add the focused failing contract
 
 After local and review gates pass, validate the Windows workflow using repository secrets without displaying their values:
 
-1. `debug_level=1`, `wait_connections_seconds=0`: verify the launch/readiness `DEVICE_ID=<complete device ID>` output, custom-code configuration, final screenshot, artifact upload, and a real mobile-client connection.
-2. `debug_level=2`, `wait_connections_seconds=0`: verify the second configuration pass is idempotent.
-3. `debug_level=3`, `wait_connections_seconds=0`: verify 20 state-preserving live samples.
-4. `debug_level=0`, `wait_connections_seconds=5`: verify no artifact, `WAIT_CONNECTIONS DEVICE_ID=<complete device ID>` immediately before waiting, and a timeout result.
+1. `debug_level=1`, `wait_connections_seconds=0`: verify `DEVICE_ID=<complete device ID>` immediately followed by `DEVICE_ID_STATE=ready`, custom-code configuration, final screenshot, artifact upload, and a real mobile-client connection.
+2. `debug_level=2`, `wait_connections_seconds=0`: verify `DEVICE_ID=<complete device ID>` immediately followed by `DEVICE_ID_STATE=ready` and that the second configuration pass is idempotent.
+3. `debug_level=3`, `wait_connections_seconds=0`: verify `DEVICE_ID=<complete device ID>` immediately followed by `DEVICE_ID_STATE=ready` and 20 state-preserving live samples.
+4. `debug_level=0`, `wait_connections_seconds=5`: verify `DEVICE_ID=<complete device ID>` immediately followed by `DEVICE_ID_STATE=ready`, no artifact, `WAIT_CONNECTIONS DEVICE_ID=<complete device ID>` immediately before waiting, and a timeout result.
 5. A dedicated remote shutdown or restart run: verify the shutdown-aware path when the host remains alive long enough to report it.
 
 Any live failure enters systematic debugging using sanitized logs and diagnostics. It does not authorize weakening operating-system protections.

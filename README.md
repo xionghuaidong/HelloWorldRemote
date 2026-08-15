@@ -11,7 +11,7 @@ HelloWorldRemote automates GitHub Actions runners for UU Remote/GameViewer. The 
 - [macOS workflow](.github/workflows/macos.yml) and [Windows workflow](.github/workflows/windows.yml) are manually dispatched platform workflows.
 - Both workflows expose required `workflow_dispatch` inputs: `debug_level`, with values `0` through `3` and default `0`, and `wait_connections_seconds`, an integer from `0` through `21000` with default `300`.
 - Both workflows require the `UUREMOTE_CUSTOM_CODE` repository secret. Only macOS also requires the `UUREMOTE_ACCOUNT_PASSWORD` repository secret for its host configuration.
-- Every successful run prints `DEVICE_ID=<complete device ID>` during launch readiness. The debug-level `0` production wait also prints `WAIT_CONNECTIONS DEVICE_ID=<complete device ID>` immediately before waiting.
+- Every successful run at debug levels `0`, `1`, `2`, and `3` prints `DEVICE_ID=<complete device ID>` immediately followed by `DEVICE_ID_STATE=ready` during launch readiness. The debug-level `0` production wait also prints `WAIT_CONNECTIONS DEVICE_ID=<complete device ID>` immediately before waiting.
 
 ## Diagnostics and connection waits
 
