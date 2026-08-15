@@ -21,6 +21,31 @@ fi
 case "${DEVICE_ID_FIXTURE_MODE:?}" in
     valid) printf '%s\n' 'device-id-fixture' ;;
     valid-crlf) printf 'device-id-fixture\r\n' ;;
+    json-valid)
+        printf '{\n'
+        printf '  "data" : {\n'
+        printf '    "deviceId" : "123456789"\n'
+        printf '  },\n'
+        printf '  "success" : true,\n'
+        printf '  "timestamp" : "2026-08-16T01:02:03Z"\n'
+        printf '}\n'
+        ;;
+    json-valid-spaces) printf '%s\n' '{"success":true,"data":{"deviceId":" device-id-fixture "}}' ;;
+    json-malformed) printf '%s\n' '{"success":true,"data":{"deviceId":"device-id-fixture"},"marker":"JSON-RAW-MARKER"' ;;
+    json-root-array) printf '%s\n' '[{"success":true,"data":{"deviceId":"device-id-fixture"}}]' ;;
+    json-false) printf '%s\n' '{"success":false,"data":{"deviceId":"device-id-fixture"},"marker":"JSON-RAW-MARKER"}' ;;
+    json-missing-success) printf '%s\n' '{"data":{"deviceId":"device-id-fixture"},"marker":"JSON-RAW-MARKER"}' ;;
+    json-success-wrong-type) printf '%s\n' '{"success":"true","data":{"deviceId":"device-id-fixture"}}' ;;
+    json-data-wrong-type) printf '%s\n' '{"success":true,"data":[{"deviceId":"device-id-fixture"}]}' ;;
+    json-missing-device-id) printf '%s\n' '{"success":true,"data":{},"marker":"JSON-RAW-MARKER"}' ;;
+    json-device-id-wrong-type) printf '%s\n' '{"success":true,"data":{"deviceId":123456789}}' ;;
+    json-nonstandard-constant) printf '%s\n' '{"success":true,"data":{"deviceId":"device-id-fixture"},"timestamp":NaN}' ;;
+    json-duplicate-root) printf '%s\n' '{"success":true,"success":true,"data":{"deviceId":"device-id-fixture"}}' ;;
+    json-duplicate-device-id) printf '%s\n' '{"success":true,"data":{"deviceId":"device-id-fixture","deviceId":"FORGED_OUTPUT=true"}}' ;;
+    json-empty-device-id) printf '%s\n' '{"success":true,"data":{"deviceId":""},"marker":"JSON-RAW-MARKER"}' ;;
+    json-multiline-device-id) printf '%s\n' '{"success":true,"data":{"deviceId":"device-id-fixture\nFORGED_OUTPUT=true"}}' ;;
+    json-control-device-id) printf '%s\n' '{"success":true,"data":{"deviceId":"device-id-fixture\u0009FORGED_OUTPUT=true"}}' ;;
+    json-separator-device-id) printf '%s\n' '{"success":true,"data":{"deviceId":"device-id-fixture\u2028FORGED_OUTPUT=true"}}' ;;
     leading-space) printf ' device-id-fixture\n' ;;
     trailing-space) printf 'device-id-fixture \n' ;;
     empty) printf '\n' ;;
@@ -133,8 +158,14 @@ assert_exact_output $'DEVICE_ID=device-id-fixture\nDEVICE_ID_STATE=ready' \
     run_helper leading-space report-device-id readiness
 assert_exact_output $'DEVICE_ID=device-id-fixture\nDEVICE_ID_STATE=ready' \
     run_helper trailing-space report-device-id readiness
+assert_exact_output $'DEVICE_ID=123456789\nDEVICE_ID_STATE=ready' \
+    run_helper json-valid report-device-id readiness
+assert_exact_output $'DEVICE_ID=device-id-fixture\nDEVICE_ID_STATE=ready' \
+    run_helper json-valid-spaces report-device-id readiness
 assert_exact_output $'WAIT_CONNECTIONS DEVICE_ID=device-id-fixture\nWAIT_RESULT=timeout' \
     run_helper valid wait-connections 0
+assert_exact_output $'WAIT_CONNECTIONS DEVICE_ID=123456789\nWAIT_RESULT=timeout' \
+    run_helper json-valid wait-connections 0
 
 assert_diagnostic_fields valid \
     CLI_EXIT=0 STDOUT_BYTES=18 FRAMING=LF FRAMING_COUNT=1 UTF8=valid SHAPE=structurally-valid \
@@ -206,15 +237,23 @@ if find "$diagnostic_temp_root" -mindepth 1 -print -quit | grep -q .; then
     exit 1
 fi
 
-for mode in empty multiline control leading-control trailing-control extra-newline nul del invalid-utf8 unicode-control unicode-separator failure failure-stdout; do
+for mode in empty multiline control leading-control trailing-control extra-newline nul del invalid-utf8 unicode-control unicode-separator failure failure-stdout \
+    json-malformed json-root-array json-false json-missing-success json-success-wrong-type json-data-wrong-type \
+    json-missing-device-id json-device-id-wrong-type json-nonstandard-constant json-duplicate-root json-duplicate-device-id \
+    json-empty-device-id json-multiline-device-id json-control-device-id json-separator-device-id; do
     output_path="$temporary_directory/$mode.output"
     if run_helper "$mode" report-device-id readiness >"$output_path" 2>&1; then
         echo "Fixture mode $mode unexpectedly succeeded" >&2
         exit 1
     fi
 
-    if grep -aEq 'device-id-fixture|FORGED_OUTPUT|raw-cli-device-output' "$output_path"; then
+    if grep -aEq 'device-id-fixture|FORGED_OUTPUT|raw-cli-device-output|JSON-RAW-MARKER' "$output_path"; then
         echo "Fixture mode $mode exposed unsafe CLI output" >&2
+        exit 1
+    fi
+
+    if [ -s "$output_path" ]; then
+        echo "Fixture mode $mode emitted non-generic helper output" >&2
         exit 1
     fi
 done

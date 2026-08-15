@@ -376,7 +376,7 @@ git commit -m "feat: log Windows UU Remote device IDs"
 - 修改：`.github/workflows/macos.yml:65-100,137-155`
 
 **接口：**
-- 输入：已安装 CLI command `assist id`、现有 `wait_connections`、`run_shutdown_waiter` 与 debug-level `0` wait gate。
+- 输入：返回 legacy 单行 ID 或 macOS JSON envelope 的已安装 CLI command `assist id`、现有 `wait_connections`、`run_shutdown_waiter` 与 debug-level `0` wait gate。
 - 输出：`read_uuremote_device_id() -> validated stdout`、`emit_current_device_id(readiness|wait)`、early helper mode `report-device-id readiness`、与 Windows 相同的 launch 输出及 wait 输出。
 
 - [ ] **步骤 1：编写可执行 Bash fixture 与 RED assertions**
@@ -386,6 +386,9 @@ git commit -m "feat: log Windows UU Remote device IDs"
 ```bash
 case "${DEVICE_ID_FIXTURE_MODE:?}" in
     valid) printf '%s\n' 'device-id-fixture' ;;
+    json-valid) printf '%s\n' '{"success":true,"data":{"deviceId":"123456789"}}' ;;
+    json-false) printf '%s\n' '{"success":false,"data":{"deviceId":"device-id-fixture"}}' ;;
+    json-duplicate) printf '%s\n' '{"success":true,"data":{"deviceId":"device-id-fixture","deviceId":"FORGED_OUTPUT=true"}}' ;;
     empty) printf '\n' ;;
     multiline) printf 'device-id-fixture\nFORGED_OUTPUT=true\n' ;;
     control) printf 'device-id-fixture\tFORGED_OUTPUT=true\n' ;;
@@ -412,7 +415,7 @@ WAIT_CONNECTIONS DEVICE_ID=device-id-fixture
 WAIT_RESULT=timeout
 ```
 
-它还必须断言 empty、multiline、control、NUL、DEL 和 failure modes 返回非零，且不暴露 `device-id-fixture`、`FORGED_OUTPUT` 或 `raw-cli-device-output`。
+它还必须断言 empty、multiline、control、NUL、DEL、失败的 CLI output、malformed JSON、nonstandard JSON constants、false/missing/wrong-type envelope fields、duplicate keys 和不安全的 extracted IDs 返回非零，且不暴露 `device-id-fixture`、`FORGED_OUTPUT`、原始 JSON envelope 或 `raw-cli-device-output`。
 
 - [ ] **步骤 2：添加 Python workflow contracts 并观察 RED**
 
@@ -436,7 +439,7 @@ python -m unittest tests.test_uuremote_wait tests.test_uuremote_desktop_finaliza
 
 预期：RED，因为 `UUREMOTE_CLI_PATH`、`report-device-id`、byte-safe validation 与 wait 消息尚不存在。
 
-- [ ] **步骤 3：添加 byte-safe macOS CLI boundary**
+- [ ] **步骤 3：添加 byte-safe、JSON-aware macOS CLI boundary**
 
 修改 CLI assignment，但不改变其默认值：
 
@@ -449,15 +452,59 @@ CLI="${UUREMOTE_CLI_PATH:-$APP/Contents/Helpers/uuyc-cli}"
 ```bash
 read_uuremote_device_id() {
     "$CLI" assist id 2>/dev/null | /usr/bin/python3 -c '
+import json
 import sys
+import unicodedata
 
 raw = sys.stdin.buffer.read()
 try:
-    value = raw.decode("utf-8").strip()
+    decoded = raw.decode("utf-8")
 except UnicodeDecodeError:
     raise SystemExit(1)
 
-if not value or any(ord(character) < 32 or ord(character) == 127 for character in value):
+def reject_duplicate_keys(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError
+        result[key] = value
+    return result
+
+def reject_nonstandard_constant(_value):
+    raise ValueError
+
+def validate_device_id(value):
+    if not isinstance(value, str):
+        raise ValueError
+    if any(ord(character) < 32 or ord(character) == 127 for character in value):
+        raise ValueError
+
+    value = value.strip(" ")
+    if not value or any(unicodedata.category(character)[0] in {"C", "Z"} for character in value):
+        raise ValueError
+    return value
+
+json_candidate = decoded.lstrip(" \t\r\n")
+try:
+    if json_candidate.startswith(("{", "[")):
+        payload = json.loads(
+            decoded,
+            object_pairs_hook=reject_duplicate_keys,
+            parse_constant=reject_nonstandard_constant,
+        )
+        if not isinstance(payload, dict) or payload.get("success") is not True:
+            raise ValueError
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            raise ValueError
+        value = validate_device_id(data.get("deviceId"))
+    else:
+        if decoded.endswith("\r\n"):
+            decoded = decoded[:-2]
+        elif decoded.endswith("\n"):
+            decoded = decoded[:-1]
+        value = validate_device_id(decoded)
+except (json.JSONDecodeError, ValueError):
     raise SystemExit(1)
 
 sys.stdout.write(value)
@@ -489,7 +536,7 @@ emit_current_device_id() {
 }
 ```
 
-脚本已经启用 `set -o pipefail`，因此 CLI 非零退出不会被 Python validator 转换成成功的空读取。
+JSON-looking output 绝不允许回退到 legacy single-line validation。Parser 拒绝 malformed JSON、duplicate keys、非 object root、false/missing/wrong-type required fields、nonstandard constants 和不安全的 extracted IDs。脚本已经启用 `set -o pipefail`，因此 CLI 非零退出不会被 Python validator 转换成成功的空读取。
 
 - [ ] **步骤 4：添加 early report route 与 wait 输出**
 

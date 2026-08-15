@@ -376,7 +376,7 @@ The independent reviewer must execute the real helper with valid, multiline, con
 - Modify: `.github/workflows/macos.yml:65-100,137-155`
 
 **Interfaces:**
-- Consumes: installed CLI command `assist id`, existing `wait_connections`, `run_shutdown_waiter`, and the debug-level `0` wait gate.
+- Consumes: installed CLI command `assist id` returning either a legacy single-line ID or the macOS JSON envelope, existing `wait_connections`, `run_shutdown_waiter`, and the debug-level `0` wait gate.
 - Produces: `read_uuremote_device_id() -> validated stdout`, `emit_current_device_id(readiness|wait)`, early helper mode `report-device-id readiness`, launch output identical to Windows, and wait output identical to Windows.
 
 - [ ] **Step 1: Write an executable Bash fixture and RED assertions**
@@ -386,6 +386,9 @@ Create `tests/test_macos_device_id_logging.sh` with a temporary executable CLI f
 ```bash
 case "${DEVICE_ID_FIXTURE_MODE:?}" in
     valid) printf '%s\n' 'device-id-fixture' ;;
+    json-valid) printf '%s\n' '{"success":true,"data":{"deviceId":"123456789"}}' ;;
+    json-false) printf '%s\n' '{"success":false,"data":{"deviceId":"device-id-fixture"}}' ;;
+    json-duplicate) printf '%s\n' '{"success":true,"data":{"deviceId":"device-id-fixture","deviceId":"FORGED_OUTPUT=true"}}' ;;
     empty) printf '\n' ;;
     multiline) printf 'device-id-fixture\nFORGED_OUTPUT=true\n' ;;
     control) printf 'device-id-fixture\tFORGED_OUTPUT=true\n' ;;
@@ -412,7 +415,7 @@ WAIT_CONNECTIONS DEVICE_ID=device-id-fixture
 WAIT_RESULT=timeout
 ```
 
-It must also assert that empty, multiline, control, NUL, DEL, and failure modes return nonzero without exposing `device-id-fixture`, `FORGED_OUTPUT`, or `raw-cli-device-output`.
+It must also assert that empty, multiline, control, NUL, DEL, failed CLI output, malformed JSON, nonstandard JSON constants, false/missing/wrong-type envelope fields, duplicate keys, and unsafe extracted IDs return nonzero without exposing `device-id-fixture`, `FORGED_OUTPUT`, the raw JSON envelope, or `raw-cli-device-output`.
 
 - [ ] **Step 2: Add Python workflow contracts and observe RED**
 
@@ -436,7 +439,7 @@ python -m unittest tests.test_uuremote_wait tests.test_uuremote_desktop_finaliza
 
 Expected: RED because `UUREMOTE_CLI_PATH`, `report-device-id`, byte-safe validation, and the wait message do not exist.
 
-- [ ] **Step 3: Add a byte-safe macOS CLI boundary**
+- [ ] **Step 3: Add a byte-safe, JSON-aware macOS CLI boundary**
 
 Change the CLI assignment without changing its default:
 
@@ -449,15 +452,59 @@ Add these functions before `wait_connections`:
 ```bash
 read_uuremote_device_id() {
     "$CLI" assist id 2>/dev/null | /usr/bin/python3 -c '
+import json
 import sys
+import unicodedata
 
 raw = sys.stdin.buffer.read()
 try:
-    value = raw.decode("utf-8").strip()
+    decoded = raw.decode("utf-8")
 except UnicodeDecodeError:
     raise SystemExit(1)
 
-if not value or any(ord(character) < 32 or ord(character) == 127 for character in value):
+def reject_duplicate_keys(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError
+        result[key] = value
+    return result
+
+def reject_nonstandard_constant(_value):
+    raise ValueError
+
+def validate_device_id(value):
+    if not isinstance(value, str):
+        raise ValueError
+    if any(ord(character) < 32 or ord(character) == 127 for character in value):
+        raise ValueError
+
+    value = value.strip(" ")
+    if not value or any(unicodedata.category(character)[0] in {"C", "Z"} for character in value):
+        raise ValueError
+    return value
+
+json_candidate = decoded.lstrip(" \t\r\n")
+try:
+    if json_candidate.startswith(("{", "[")):
+        payload = json.loads(
+            decoded,
+            object_pairs_hook=reject_duplicate_keys,
+            parse_constant=reject_nonstandard_constant,
+        )
+        if not isinstance(payload, dict) or payload.get("success") is not True:
+            raise ValueError
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            raise ValueError
+        value = validate_device_id(data.get("deviceId"))
+    else:
+        if decoded.endswith("\r\n"):
+            decoded = decoded[:-2]
+        elif decoded.endswith("\n"):
+            decoded = decoded[:-1]
+        value = validate_device_id(decoded)
+except (json.JSONDecodeError, ValueError):
     raise SystemExit(1)
 
 sys.stdout.write(value)
@@ -489,7 +536,7 @@ emit_current_device_id() {
 }
 ```
 
-Because the script already uses `set -o pipefail`, a nonzero CLI exit cannot be converted into a successful empty read by the Python validator.
+JSON-looking output must never fall back to legacy single-line validation. The parser rejects malformed JSON, duplicate keys, a non-object root, false/missing/wrong-type required fields, nonstandard constants, and unsafe extracted IDs. Because the script already uses `set -o pipefail`, a nonzero CLI exit cannot be converted into a successful empty read by the Python validator.
 
 - [ ] **Step 4: Add the early report route and wait output**
 

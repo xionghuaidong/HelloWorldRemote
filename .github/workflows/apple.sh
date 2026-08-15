@@ -265,24 +265,59 @@ self_test_wait_connections() {
 
 read_uuremote_device_id() {
     "$CLI" assist id 2>/dev/null | /usr/bin/python3 -c '
+import json
 import sys
 import unicodedata
 
 raw = sys.stdin.buffer.read()
-if raw.endswith(b"\r\n"):
-    raw = raw[:-2]
-elif raw.endswith(b"\n"):
-    raw = raw[:-1]
 try:
-    value = raw.decode("utf-8")
+    decoded = raw.decode("utf-8")
 except UnicodeDecodeError:
     raise SystemExit(1)
 
-if any(ord(character) < 32 or ord(character) == 127 for character in value):
-    raise SystemExit(1)
+def reject_duplicate_keys(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError
+        result[key] = value
+    return result
 
-value = value.strip(" ")
-if not value or any(unicodedata.category(character)[0] in {"C", "Z"} for character in value):
+def reject_nonstandard_constant(_value):
+    raise ValueError
+
+def validate_device_id(value):
+    if not isinstance(value, str):
+        raise ValueError
+    if any(ord(character) < 32 or ord(character) == 127 for character in value):
+        raise ValueError
+
+    value = value.strip(" ")
+    if not value or any(unicodedata.category(character)[0] in {"C", "Z"} for character in value):
+        raise ValueError
+    return value
+
+json_candidate = decoded.lstrip(" \t\r\n")
+try:
+    if json_candidate.startswith(("{", "[")):
+        payload = json.loads(
+            decoded,
+            object_pairs_hook=reject_duplicate_keys,
+            parse_constant=reject_nonstandard_constant,
+        )
+        if not isinstance(payload, dict) or payload.get("success") is not True:
+            raise ValueError
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            raise ValueError
+        value = validate_device_id(data.get("deviceId"))
+    else:
+        if decoded.endswith("\r\n"):
+            decoded = decoded[:-2]
+        elif decoded.endswith("\n"):
+            decoded = decoded[:-1]
+        value = validate_device_id(decoded)
+except (json.JSONDecodeError, ValueError):
     raise SystemExit(1)
 
 sys.stdout.write(value)

@@ -70,7 +70,9 @@ Therefore a successful debug-level `0` run prints the device ID twice: once at l
 
 ## 6. Device-ID validation
 
-Only a successful CLI result with a non-empty value is eligible for logging. After trimming surrounding whitespace, the value must be one printable line. A value containing CR, LF, NUL, another C0 control character, or DEL is invalid.
+Only a successful CLI result with a validated non-empty device ID is eligible for logging. A platform may receive either the device ID as a legacy single printable line or a platform-internal JSON envelope. An envelope must be strict UTF-8 JSON with a root object, `success` equal to the JSON boolean `true`, an object-valued `data` member, and a string-valued `data.deviceId`; duplicate object keys are invalid. The envelope itself is never eligible for logging.
+
+After platform-specific extraction, both paths apply the same device-ID validator. After trimming permitted surrounding spaces, the extracted value must be one printable line. A value containing CR, LF, NUL, another C0 control character, DEL, or a Unicode control/non-printing/separator character is invalid.
 
 The fixed prefixes `DEVICE_ID=` and `WAIT_CONNECTIONS DEVICE_ID=` prevent the value from appearing at the beginning of a GitHub workflow-command line. A validation failure is fail-closed and emits only a generic readiness or device-ID validation error. Failed attempts and raw CLI stderr are never echoed.
 
@@ -86,7 +88,9 @@ The workflows do not apply `::add-mask::` to device IDs because masking would re
 
 ### 7.2 macOS
 
-The `Launch GameViewer` polling loop validates the first successful `assist id` value, emits the launch/readiness pair, and unsets its local value.
+The macOS `assist id` command may return a pretty-printed JSON envelope rather than the ID alone. The helper parses that envelope internally, requires the approved success/data/deviceId structure, rejects malformed or duplicate-key JSON, and validates only the extracted `deviceId`. A legacy non-JSON single-line response remains accepted through the same final device-ID validator. JSON-looking output that fails envelope validation never falls back to the legacy path.
+
+The `Launch GameViewer` polling loop validates the first successfully extracted `assist id` value, emits the launch/readiness pair, and unsets its local value.
 
 The real `wait_connections` route obtains and validates the current `assist id` value, emits the wait message, and then invokes the existing Swift watcher. The watcher self-test remains independent from the installed CLI.
 

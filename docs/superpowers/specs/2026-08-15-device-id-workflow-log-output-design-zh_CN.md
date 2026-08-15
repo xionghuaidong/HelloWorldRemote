@@ -70,7 +70,9 @@ WAIT_RESULT=shutdown/restart
 
 ## 6. Device-ID validation
 
-只有 CLI 成功返回的非空值才允许记录。去除首尾空白后，该值必须是单个可打印行。包含 CR、LF、NUL、其他 C0 控制字符或 DEL 的值均为无效。
+只有 CLI 成功返回且通过验证的非空 device ID 才允许记录。平台收到的内容可以是 legacy 单行可打印 device ID，也可以是平台内部 JSON envelope。Envelope 必须是严格 UTF-8 JSON，其 root 必须为 object，`success` 必须等于 JSON boolean `true`，`data` member 必须为 object，且 `data.deviceId` 必须为 string；存在重复 object keys 时无效。Envelope 本身绝不允许记录。
+
+完成平台特定的提取后，两条路径都应用同一个 device-ID validator。去除允许的首尾空格后，提取出的值必须是单个可打印行。包含 CR、LF、NUL、其他 C0 控制字符、DEL 或 Unicode control/non-printing/separator 字符的值均为无效。
 
 固定 prefixes `DEVICE_ID=` 和 `WAIT_CONNECTIONS DEVICE_ID=` 可以防止该值出现在 GitHub workflow-command 行首。Validation failure 必须 fail-closed，并且只输出通用 readiness 或 device-ID validation error。失败尝试和原始 CLI stderr 绝不回显。
 
@@ -86,7 +88,9 @@ Workflows 不会对 device IDs 使用 `::add-mask::`，因为 masking 会把操�
 
 ### 7.2 macOS
 
-`Launch GameViewer` polling loop 验证首次成功的 `assist id` 值，输出 launch/readiness 两行，然后 unset 其局部值。
+macOS `assist id` command 可能返回 pretty-printed JSON envelope，而不是只返回 ID。Helper 在内部解析该 envelope，要求已批准的 success/data/deviceId 结构，拒绝 malformed 或 duplicate-key JSON，并且只验证提取出的 `deviceId`。Legacy 非 JSON 单行 response 继续通过同一个最终 device-ID validator 接受。未通过 envelope validation 的 JSON-looking output 绝不回退到 legacy path。
+
+`Launch GameViewer` polling loop 验证首次成功提取的 `assist id` 值，输出 launch/readiness 两行，然后 unset 其局部值。
 
 真实 `wait_connections` route 获取并验证当前 `assist id` 值、输出 wait 消息，然后调用现有 Swift watcher。Watcher self-test 继续独立于已安装 CLI。
 
