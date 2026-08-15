@@ -59,6 +59,18 @@ class CustomCodeWorkflowTests(unittest.TestCase):
         launch = step_block(text(WORKFLOW_PATH), "Launch GameViewer")
         self.assertIn("apple.sh report-device-id readiness", launch)
 
+    def test_failed_diagnostic_readiness_runs_structural_diagnostics_once(self):
+        launch = step_block(text(WORKFLOW_PATH), "Launch GameViewer")
+        exhausted = 'if [ "$device_id_ready" -ne 1 ]'
+        debug_gate = 'if [ "${UUREMOTE_DEBUG:-0}" != "0" ]; then'
+        diagnostic = ".github/workflows/apple.sh diagnose-device-id || true"
+        generic_failure = "UU Remote device readiness failed after 120 attempts"
+
+        self.assertEqual(launch.count(diagnostic), 1)
+        self.assertLess(launch.index(exhausted), launch.index(debug_gate))
+        self.assertLess(launch.index(debug_gate), launch.index(diagnostic))
+        self.assertLess(launch.index(diagnostic), launch.index(generic_failure))
+
 
 @unittest.skipUnless(BASH_AVAILABLE, "requires /bin/bash")
 class CustomCodeValidationTests(unittest.TestCase):

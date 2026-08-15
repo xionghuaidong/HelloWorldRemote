@@ -313,6 +313,97 @@ emit_current_device_id() {
     unset device_id
 }
 
+diagnose_uuremote_device_id() (
+    set -euo pipefail
+
+    local diagnostic_temp_dir=""
+    local output_path=""
+    local cli_status
+
+    cleanup_device_id_diagnostic() {
+        if [ -n "$output_path" ]; then
+            /bin/rm -f -- "$output_path"
+        fi
+        if [ -n "$diagnostic_temp_dir" ]; then
+            /bin/rmdir "$diagnostic_temp_dir" 2>/dev/null || true
+        fi
+    }
+    trap cleanup_device_id_diagnostic EXIT
+
+    umask 077
+    diagnostic_temp_dir="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/uuremote-device-id-diagnostic.XXXXXX")"
+    /bin/chmod 0700 "$diagnostic_temp_dir"
+    output_path="$diagnostic_temp_dir/stdout"
+    : >"$output_path"
+    /bin/chmod 0600 "$output_path"
+
+    if "$CLI" assist id >"$output_path" 2>/dev/null; then
+        cli_status=0
+    else
+        cli_status="$?"
+    fi
+
+    /usr/bin/python3 - "$output_path" "$cli_status" <<'PYTHON'
+import pathlib
+import sys
+import unicodedata
+
+raw = pathlib.Path(sys.argv[1]).read_bytes()
+cli_exit = sys.argv[2]
+remaining = raw
+framing_tokens = []
+
+while remaining:
+    if remaining.endswith(b"\r\n"):
+        framing_tokens.append("CRLF")
+        remaining = remaining[:-2]
+    elif remaining.endswith(b"\n"):
+        framing_tokens.append("LF")
+        remaining = remaining[:-1]
+    else:
+        break
+
+if not framing_tokens:
+    framing = "none"
+elif len(framing_tokens) == 1:
+    framing = framing_tokens[0]
+else:
+    framing = "extra"
+
+if raw.endswith(b"\r\n"):
+    normalized_raw = raw[:-2]
+elif raw.endswith(b"\n"):
+    normalized_raw = raw[:-1]
+else:
+    normalized_raw = raw
+
+try:
+    value = normalized_raw.decode("utf-8")
+except UnicodeDecodeError:
+    utf8_state = "invalid"
+    shape = "unavailable"
+else:
+    utf8_state = "valid"
+    if any(ord(character) < 32 or ord(character) == 127 for character in value):
+        shape = "ASCII-control"
+    else:
+        value = value.strip(" ")
+        if not value:
+            shape = "empty"
+        elif any(unicodedata.category(character)[0] in {"C", "Z"} for character in value):
+            shape = "Unicode-nonprintable-separator"
+        else:
+            shape = "structurally-valid"
+
+print(f"DEVICE_ID_DIAGNOSTIC_CLI_EXIT={cli_exit}")
+print(f"DEVICE_ID_DIAGNOSTIC_STDOUT_BYTES={len(raw)}")
+print(f"DEVICE_ID_DIAGNOSTIC_FRAMING={framing}")
+print(f"DEVICE_ID_DIAGNOSTIC_FRAMING_COUNT={len(framing_tokens)}")
+print(f"DEVICE_ID_DIAGNOSTIC_UTF8={utf8_state}")
+print(f"DEVICE_ID_DIAGNOSTIC_SHAPE={shape}")
+PYTHON
+)
+
 wait_connections() {
     local wait_seconds="${1:-}"
 
@@ -1507,6 +1598,15 @@ if [ "$mode" = "report-device-id" ]; then
         exit 2
     fi
     emit_current_device_id "${2:-}"
+    exit $?
+fi
+
+if [ "$mode" = "diagnose-device-id" ]; then
+    if [ "$#" -ne 1 ]; then
+        echo "Usage: apple.sh diagnose-device-id" >&2
+        exit 2
+    fi
+    diagnose_uuremote_device_id
     exit $?
 fi
 

@@ -34,6 +34,12 @@ case "${DEVICE_ID_FIXTURE_MODE:?}" in
     invalid-utf8) printf 'device-id-fixture\377\n' ;;
     unicode-control) printf 'device-id-fixture\302\205FORGED_OUTPUT=true\n' ;;
     unicode-separator) printf 'device-id-fixture\342\200\250FORGED_OUTPUT=true\n' ;;
+    mode-0600)
+        if ! /usr/bin/python3 -c 'import os, stat; raise SystemExit(0 if stat.S_IMODE(os.fstat(1).st_mode) == 0o600 else 9)'; then
+            exit 9
+        fi
+        printf '%s\n' 'device-id-fixture'
+        ;;
     failure)
         printf '%s\n' 'raw-cli-device-output' >&2
         exit 7
@@ -50,6 +56,16 @@ run_helper() {
     DEVICE_ID_FIXTURE_MODE="$1" \
     UUREMOTE_CLI_PATH="$fixture_cli" \
         /bin/bash "$root/.github/workflows/apple.sh" "${@:2}"
+}
+
+diagnostic_temp_root="$temporary_directory/diagnostic-temp"
+mkdir -p "$diagnostic_temp_root"
+
+run_diagnostic() {
+    DEVICE_ID_FIXTURE_MODE="$1" \
+    UUREMOTE_CLI_PATH="$fixture_cli" \
+    TMPDIR="$diagnostic_temp_root" \
+        /bin/bash "$root/.github/workflows/apple.sh" diagnose-device-id
 }
 
 assert_exact_output() {
@@ -76,6 +92,32 @@ assert_exact_output $'DEVICE_ID=device-id-fixture\nDEVICE_ID_STATE=ready' \
     run_helper trailing-space report-device-id readiness
 assert_exact_output $'WAIT_CONNECTIONS DEVICE_ID=device-id-fixture\nWAIT_RESULT=timeout' \
     run_helper valid wait-connections 0
+
+assert_exact_output $'DEVICE_ID_DIAGNOSTIC_CLI_EXIT=0\nDEVICE_ID_DIAGNOSTIC_STDOUT_BYTES=18\nDEVICE_ID_DIAGNOSTIC_FRAMING=LF\nDEVICE_ID_DIAGNOSTIC_FRAMING_COUNT=1\nDEVICE_ID_DIAGNOSTIC_UTF8=valid\nDEVICE_ID_DIAGNOSTIC_SHAPE=structurally-valid' \
+    run_diagnostic valid
+assert_exact_output $'DEVICE_ID_DIAGNOSTIC_CLI_EXIT=0\nDEVICE_ID_DIAGNOSTIC_STDOUT_BYTES=19\nDEVICE_ID_DIAGNOSTIC_FRAMING=CRLF\nDEVICE_ID_DIAGNOSTIC_FRAMING_COUNT=1\nDEVICE_ID_DIAGNOSTIC_UTF8=valid\nDEVICE_ID_DIAGNOSTIC_SHAPE=structurally-valid' \
+    run_diagnostic valid-crlf
+assert_exact_output $'DEVICE_ID_DIAGNOSTIC_CLI_EXIT=0\nDEVICE_ID_DIAGNOSTIC_STDOUT_BYTES=19\nDEVICE_ID_DIAGNOSTIC_FRAMING=extra\nDEVICE_ID_DIAGNOSTIC_FRAMING_COUNT=2\nDEVICE_ID_DIAGNOSTIC_UTF8=valid\nDEVICE_ID_DIAGNOSTIC_SHAPE=ASCII-control' \
+    run_diagnostic extra-newline
+assert_exact_output $'DEVICE_ID_DIAGNOSTIC_CLI_EXIT=0\nDEVICE_ID_DIAGNOSTIC_STDOUT_BYTES=39\nDEVICE_ID_DIAGNOSTIC_FRAMING=LF\nDEVICE_ID_DIAGNOSTIC_FRAMING_COUNT=1\nDEVICE_ID_DIAGNOSTIC_UTF8=valid\nDEVICE_ID_DIAGNOSTIC_SHAPE=Unicode-nonprintable-separator' \
+    run_diagnostic unicode-separator
+assert_exact_output $'DEVICE_ID_DIAGNOSTIC_CLI_EXIT=0\nDEVICE_ID_DIAGNOSTIC_STDOUT_BYTES=19\nDEVICE_ID_DIAGNOSTIC_FRAMING=LF\nDEVICE_ID_DIAGNOSTIC_FRAMING_COUNT=1\nDEVICE_ID_DIAGNOSTIC_UTF8=invalid\nDEVICE_ID_DIAGNOSTIC_SHAPE=unavailable' \
+    run_diagnostic invalid-utf8
+assert_exact_output $'DEVICE_ID_DIAGNOSTIC_CLI_EXIT=7\nDEVICE_ID_DIAGNOSTIC_STDOUT_BYTES=0\nDEVICE_ID_DIAGNOSTIC_FRAMING=none\nDEVICE_ID_DIAGNOSTIC_FRAMING_COUNT=0\nDEVICE_ID_DIAGNOSTIC_UTF8=valid\nDEVICE_ID_DIAGNOSTIC_SHAPE=empty' \
+    run_diagnostic failure
+assert_exact_output $'DEVICE_ID_DIAGNOSTIC_CLI_EXIT=0\nDEVICE_ID_DIAGNOSTIC_STDOUT_BYTES=18\nDEVICE_ID_DIAGNOSTIC_FRAMING=LF\nDEVICE_ID_DIAGNOSTIC_FRAMING_COUNT=1\nDEVICE_ID_DIAGNOSTIC_UTF8=valid\nDEVICE_ID_DIAGNOSTIC_SHAPE=structurally-valid' \
+    run_diagnostic mode-0600
+
+diagnostic_output="$(run_diagnostic failure-stdout)"
+if printf '%s' "$diagnostic_output" | grep -aEq 'raw-cli-device-output|FORGED_OUTPUT|device-id-fixture'; then
+    echo "Device ID diagnostic output exposed raw CLI bytes" >&2
+    exit 1
+fi
+
+if find "$diagnostic_temp_root" -mindepth 1 -print -quit | grep -q .; then
+    echo "Device ID diagnostic temporary files were not cleaned up" >&2
+    exit 1
+fi
 
 for mode in empty multiline control leading-control trailing-control extra-newline nul del invalid-utf8 unicode-control unicode-separator failure failure-stdout; do
     output_path="$temporary_directory/$mode.output"

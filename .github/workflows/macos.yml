@@ -90,6 +90,9 @@ jobs:
 
             if [ "$device_id_ready" -ne 1 ]
             then
+                if [ "${UUREMOTE_DEBUG:-0}" != "0" ]; then
+                    .github/workflows/apple.sh diagnose-device-id || true
+                fi
                 echo "UU Remote device readiness failed after 120 attempts" >&2
                 exit 1
             fi
