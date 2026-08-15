@@ -377,13 +377,43 @@ elif raw.endswith(b"\n"):
 else:
     normalized_raw = raw
 
+if normalized_raw.startswith(b"\xef\xbb\xbf"):
+    bom_kind = "UTF8"
+elif normalized_raw.startswith(b"\xff\xfe"):
+    bom_kind = "UTF16LE"
+elif normalized_raw.startswith(b"\xfe\xff"):
+    bom_kind = "UTF16BE"
+else:
+    bom_kind = "none"
+
+nul_count = sum(byte == 0 for byte in normalized_raw)
+tab_count = sum(byte == 9 for byte in normalized_raw)
+cr_count = sum(byte == 13 for byte in normalized_raw)
+esc_count = sum(byte == 27 for byte in normalized_raw)
+other_c0_del_count = sum(
+    (byte < 32 or byte == 127) and byte not in {0, 9, 13, 27}
+    for byte in normalized_raw
+)
+ascii_digit_count = sum(48 <= byte <= 57 for byte in normalized_raw)
+ascii_letter_count = sum(
+    65 <= byte <= 90 or 97 <= byte <= 122 for byte in normalized_raw
+)
+ascii_space_count = sum(byte == 32 for byte in normalized_raw)
+ascii_other_printable_count = sum(
+    33 <= byte <= 126
+    and not (48 <= byte <= 57 or 65 <= byte <= 90 or 97 <= byte <= 122)
+    for byte in normalized_raw
+)
+
+decoded_value = None
 try:
-    value = normalized_raw.decode("utf-8")
+    decoded_value = normalized_raw.decode("utf-8")
 except UnicodeDecodeError:
     utf8_state = "invalid"
     shape = "unavailable"
 else:
     utf8_state = "valid"
+    value = decoded_value
     if any(ord(character) < 32 or ord(character) == 127 for character in value):
         shape = "ASCII-control"
     else:
@@ -395,12 +425,63 @@ else:
         else:
             shape = "structurally-valid"
 
+non_ascii_codepoint_count = (
+    0
+    if decoded_value is None
+    else sum(ord(character) >= 128 for character in decoded_value)
+)
+
+def decodes_as_printable_utf16(data, encoding):
+    if not data or len(data) % 2 != 0:
+        return False
+    try:
+        decoded = data.decode(encoding)
+    except UnicodeDecodeError:
+        return False
+    if decoded.startswith("\ufeff"):
+        decoded = decoded[1:]
+    return bool(decoded) and all(character.isprintable() for character in decoded)
+
+utf16le_printable = decodes_as_printable_utf16(normalized_raw, "utf-16le")
+utf16be_printable = decodes_as_printable_utf16(normalized_raw, "utf-16be")
+
+printable_run_lengths = []
+if decoded_value is not None:
+    current_run_length = 0
+    for character in decoded_value:
+        if character.isprintable():
+            current_run_length += 1
+        elif current_run_length:
+            printable_run_lengths.append(current_run_length)
+            current_run_length = 0
+    if current_run_length:
+        printable_run_lengths.append(current_run_length)
+
+printable_run_summary = ",".join(
+    str(length) for length in printable_run_lengths[:8]
+)
+
 print(f"DEVICE_ID_DIAGNOSTIC_CLI_EXIT={cli_exit}")
 print(f"DEVICE_ID_DIAGNOSTIC_STDOUT_BYTES={len(raw)}")
 print(f"DEVICE_ID_DIAGNOSTIC_FRAMING={framing}")
 print(f"DEVICE_ID_DIAGNOSTIC_FRAMING_COUNT={len(framing_tokens)}")
 print(f"DEVICE_ID_DIAGNOSTIC_UTF8={utf8_state}")
 print(f"DEVICE_ID_DIAGNOSTIC_SHAPE={shape}")
+print(f"DEVICE_ID_DIAGNOSTIC_NUL_COUNT={nul_count}")
+print(f"DEVICE_ID_DIAGNOSTIC_TAB_COUNT={tab_count}")
+print(f"DEVICE_ID_DIAGNOSTIC_CR_COUNT={cr_count}")
+print(f"DEVICE_ID_DIAGNOSTIC_ESC_COUNT={esc_count}")
+print(f"DEVICE_ID_DIAGNOSTIC_OTHER_C0_DEL_COUNT={other_c0_del_count}")
+print(f"DEVICE_ID_DIAGNOSTIC_ASCII_DIGIT_COUNT={ascii_digit_count}")
+print(f"DEVICE_ID_DIAGNOSTIC_ASCII_LETTER_COUNT={ascii_letter_count}")
+print(f"DEVICE_ID_DIAGNOSTIC_ASCII_SPACE_COUNT={ascii_space_count}")
+print(f"DEVICE_ID_DIAGNOSTIC_ASCII_OTHER_PRINTABLE_COUNT={ascii_other_printable_count}")
+print(f"DEVICE_ID_DIAGNOSTIC_NON_ASCII_CODEPOINT_COUNT={non_ascii_codepoint_count}")
+print(f"DEVICE_ID_DIAGNOSTIC_BOM_KIND={bom_kind}")
+print(f"DEVICE_ID_DIAGNOSTIC_UTF16LE_PRINTABLE={'true' if utf16le_printable else 'false'}")
+print(f"DEVICE_ID_DIAGNOSTIC_UTF16BE_PRINTABLE={'true' if utf16be_printable else 'false'}")
+print(f"DEVICE_ID_DIAGNOSTIC_PRINTABLE_RUN_COUNT={len(printable_run_lengths)}")
+print(f"DEVICE_ID_DIAGNOSTIC_PRINTABLE_RUN_LENGTHS_FIRST_8={printable_run_summary}")
 PYTHON
 )
 

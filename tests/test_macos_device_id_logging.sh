@@ -34,6 +34,9 @@ case "${DEVICE_ID_FIXTURE_MODE:?}" in
     invalid-utf8) printf 'device-id-fixture\377\n' ;;
     unicode-control) printf 'device-id-fixture\302\205FORGED_OUTPUT=true\n' ;;
     unicode-separator) printf 'device-id-fixture\342\200\250FORGED_OUTPUT=true\n' ;;
+    ansi-wrapped) printf '\033[31mdevice-id-fixture\033[0m\n' ;;
+    utf16le-style) printf '\377\376d\000e\000v\000i\000c\000e\000-\000i\000d\000-\000f\000i\000x\000t\000u\000r\000e\000\n' ;;
+    mixed-controls) printf 'device\tid\rfixture\177X\n' ;;
     mode-0600)
         if ! /usr/bin/python3 -c 'import os, stat; raise SystemExit(0 if stat.S_IMODE(os.fstat(1).st_mode) == 0o600 else 9)'; then
             exit 9
@@ -82,6 +85,33 @@ assert_exact_output() {
     fi
 }
 
+assert_diagnostic_fields() {
+    local mode="$1"
+    shift
+    local actual
+    local expected_field
+    local line_count
+
+    actual="$(run_diagnostic "$mode")"
+    line_count="$(printf '%s\n' "$actual" | wc -l | tr -d ' ')"
+    if [ "$line_count" -ne 21 ]; then
+        echo "Device ID diagnostic output has an unexpected field count" >&2
+        exit 1
+    fi
+
+    for expected_field in "$@"; do
+        if ! printf '%s\n' "$actual" | grep -Fxq "DEVICE_ID_DIAGNOSTIC_$expected_field"; then
+            echo "Device ID diagnostic output is missing expected structural metadata" >&2
+            exit 1
+        fi
+    done
+
+    if printf '%s' "$actual" | grep -aEq 'raw-cli-device-output|FORGED_OUTPUT|device-id-fixture'; then
+        echo "Device ID diagnostic output exposed raw CLI bytes" >&2
+        exit 1
+    fi
+}
+
 assert_exact_output $'DEVICE_ID=device-id-fixture\nDEVICE_ID_STATE=ready' \
     run_helper valid report-device-id readiness
 assert_exact_output $'DEVICE_ID=device-id-fixture\nDEVICE_ID_STATE=ready' \
@@ -93,20 +123,46 @@ assert_exact_output $'DEVICE_ID=device-id-fixture\nDEVICE_ID_STATE=ready' \
 assert_exact_output $'WAIT_CONNECTIONS DEVICE_ID=device-id-fixture\nWAIT_RESULT=timeout' \
     run_helper valid wait-connections 0
 
-assert_exact_output $'DEVICE_ID_DIAGNOSTIC_CLI_EXIT=0\nDEVICE_ID_DIAGNOSTIC_STDOUT_BYTES=18\nDEVICE_ID_DIAGNOSTIC_FRAMING=LF\nDEVICE_ID_DIAGNOSTIC_FRAMING_COUNT=1\nDEVICE_ID_DIAGNOSTIC_UTF8=valid\nDEVICE_ID_DIAGNOSTIC_SHAPE=structurally-valid' \
-    run_diagnostic valid
-assert_exact_output $'DEVICE_ID_DIAGNOSTIC_CLI_EXIT=0\nDEVICE_ID_DIAGNOSTIC_STDOUT_BYTES=19\nDEVICE_ID_DIAGNOSTIC_FRAMING=CRLF\nDEVICE_ID_DIAGNOSTIC_FRAMING_COUNT=1\nDEVICE_ID_DIAGNOSTIC_UTF8=valid\nDEVICE_ID_DIAGNOSTIC_SHAPE=structurally-valid' \
-    run_diagnostic valid-crlf
-assert_exact_output $'DEVICE_ID_DIAGNOSTIC_CLI_EXIT=0\nDEVICE_ID_DIAGNOSTIC_STDOUT_BYTES=19\nDEVICE_ID_DIAGNOSTIC_FRAMING=extra\nDEVICE_ID_DIAGNOSTIC_FRAMING_COUNT=2\nDEVICE_ID_DIAGNOSTIC_UTF8=valid\nDEVICE_ID_DIAGNOSTIC_SHAPE=ASCII-control' \
-    run_diagnostic extra-newline
-assert_exact_output $'DEVICE_ID_DIAGNOSTIC_CLI_EXIT=0\nDEVICE_ID_DIAGNOSTIC_STDOUT_BYTES=39\nDEVICE_ID_DIAGNOSTIC_FRAMING=LF\nDEVICE_ID_DIAGNOSTIC_FRAMING_COUNT=1\nDEVICE_ID_DIAGNOSTIC_UTF8=valid\nDEVICE_ID_DIAGNOSTIC_SHAPE=Unicode-nonprintable-separator' \
-    run_diagnostic unicode-separator
-assert_exact_output $'DEVICE_ID_DIAGNOSTIC_CLI_EXIT=0\nDEVICE_ID_DIAGNOSTIC_STDOUT_BYTES=19\nDEVICE_ID_DIAGNOSTIC_FRAMING=LF\nDEVICE_ID_DIAGNOSTIC_FRAMING_COUNT=1\nDEVICE_ID_DIAGNOSTIC_UTF8=invalid\nDEVICE_ID_DIAGNOSTIC_SHAPE=unavailable' \
-    run_diagnostic invalid-utf8
-assert_exact_output $'DEVICE_ID_DIAGNOSTIC_CLI_EXIT=7\nDEVICE_ID_DIAGNOSTIC_STDOUT_BYTES=0\nDEVICE_ID_DIAGNOSTIC_FRAMING=none\nDEVICE_ID_DIAGNOSTIC_FRAMING_COUNT=0\nDEVICE_ID_DIAGNOSTIC_UTF8=valid\nDEVICE_ID_DIAGNOSTIC_SHAPE=empty' \
-    run_diagnostic failure
-assert_exact_output $'DEVICE_ID_DIAGNOSTIC_CLI_EXIT=0\nDEVICE_ID_DIAGNOSTIC_STDOUT_BYTES=18\nDEVICE_ID_DIAGNOSTIC_FRAMING=LF\nDEVICE_ID_DIAGNOSTIC_FRAMING_COUNT=1\nDEVICE_ID_DIAGNOSTIC_UTF8=valid\nDEVICE_ID_DIAGNOSTIC_SHAPE=structurally-valid' \
-    run_diagnostic mode-0600
+assert_diagnostic_fields valid \
+    CLI_EXIT=0 STDOUT_BYTES=18 FRAMING=LF FRAMING_COUNT=1 UTF8=valid SHAPE=structurally-valid \
+    NUL_COUNT=0 TAB_COUNT=0 CR_COUNT=0 ESC_COUNT=0 OTHER_C0_DEL_COUNT=0 \
+    ASCII_DIGIT_COUNT=0 ASCII_LETTER_COUNT=15 ASCII_SPACE_COUNT=0 \
+    ASCII_OTHER_PRINTABLE_COUNT=2 NON_ASCII_CODEPOINT_COUNT=0 BOM_KIND=none \
+    UTF16LE_PRINTABLE=false UTF16BE_PRINTABLE=false PRINTABLE_RUN_COUNT=1 \
+    PRINTABLE_RUN_LENGTHS_FIRST_8=17
+assert_diagnostic_fields valid-crlf \
+    CLI_EXIT=0 STDOUT_BYTES=19 FRAMING=CRLF FRAMING_COUNT=1 UTF8=valid SHAPE=structurally-valid
+assert_diagnostic_fields extra-newline \
+    CLI_EXIT=0 STDOUT_BYTES=19 FRAMING=extra FRAMING_COUNT=2 UTF8=valid SHAPE=ASCII-control
+assert_diagnostic_fields unicode-separator \
+    CLI_EXIT=0 STDOUT_BYTES=39 FRAMING=LF FRAMING_COUNT=1 UTF8=valid SHAPE=Unicode-nonprintable-separator
+assert_diagnostic_fields invalid-utf8 \
+    CLI_EXIT=0 STDOUT_BYTES=19 FRAMING=LF FRAMING_COUNT=1 UTF8=invalid SHAPE=unavailable
+assert_diagnostic_fields failure \
+    CLI_EXIT=7 STDOUT_BYTES=0 FRAMING=none FRAMING_COUNT=0 UTF8=valid SHAPE=empty
+assert_diagnostic_fields mode-0600 \
+    CLI_EXIT=0 STDOUT_BYTES=18 FRAMING=LF FRAMING_COUNT=1 UTF8=valid SHAPE=structurally-valid
+assert_diagnostic_fields ansi-wrapped \
+    CLI_EXIT=0 STDOUT_BYTES=27 FRAMING=LF FRAMING_COUNT=1 UTF8=valid SHAPE=ASCII-control \
+    NUL_COUNT=0 TAB_COUNT=0 CR_COUNT=0 ESC_COUNT=2 OTHER_C0_DEL_COUNT=0 \
+    ASCII_DIGIT_COUNT=3 ASCII_LETTER_COUNT=17 ASCII_SPACE_COUNT=0 \
+    ASCII_OTHER_PRINTABLE_COUNT=4 NON_ASCII_CODEPOINT_COUNT=0 BOM_KIND=none \
+    UTF16LE_PRINTABLE=true UTF16BE_PRINTABLE=true PRINTABLE_RUN_COUNT=2 \
+    PRINTABLE_RUN_LENGTHS_FIRST_8=21,3
+assert_diagnostic_fields utf16le-style \
+    CLI_EXIT=0 STDOUT_BYTES=37 FRAMING=LF FRAMING_COUNT=1 UTF8=invalid SHAPE=unavailable \
+    NUL_COUNT=17 TAB_COUNT=0 CR_COUNT=0 ESC_COUNT=0 OTHER_C0_DEL_COUNT=0 \
+    ASCII_DIGIT_COUNT=0 ASCII_LETTER_COUNT=15 ASCII_SPACE_COUNT=0 \
+    ASCII_OTHER_PRINTABLE_COUNT=2 NON_ASCII_CODEPOINT_COUNT=0 BOM_KIND=UTF16LE \
+    UTF16LE_PRINTABLE=true UTF16BE_PRINTABLE=false PRINTABLE_RUN_COUNT=0 \
+    PRINTABLE_RUN_LENGTHS_FIRST_8=
+assert_diagnostic_fields mixed-controls \
+    CLI_EXIT=0 STDOUT_BYTES=20 FRAMING=LF FRAMING_COUNT=1 UTF8=valid SHAPE=ASCII-control \
+    NUL_COUNT=0 TAB_COUNT=1 CR_COUNT=1 ESC_COUNT=0 OTHER_C0_DEL_COUNT=1 \
+    ASCII_DIGIT_COUNT=0 ASCII_LETTER_COUNT=16 ASCII_SPACE_COUNT=0 \
+    ASCII_OTHER_PRINTABLE_COUNT=0 NON_ASCII_CODEPOINT_COUNT=0 BOM_KIND=none \
+    UTF16LE_PRINTABLE=false UTF16BE_PRINTABLE=false PRINTABLE_RUN_COUNT=4 \
+    PRINTABLE_RUN_LENGTHS_FIRST_8=6,2,7,1
 
 diagnostic_output="$(run_diagnostic failure-stdout)"
 if printf '%s' "$diagnostic_output" | grep -aEq 'raw-cli-device-output|FORGED_OUTPUT|device-id-fixture'; then
