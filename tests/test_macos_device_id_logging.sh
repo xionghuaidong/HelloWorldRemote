@@ -37,6 +37,19 @@ case "${DEVICE_ID_FIXTURE_MODE:?}" in
     ansi-wrapped) printf '\033[31mdevice-id-fixture\033[0m\n' ;;
     utf16le-style) printf '\377\376d\000e\000v\000i\000c\000e\000-\000i\000d\000-\000f\000i\000x\000t\000u\000r\000e\000\n' ;;
     mixed-controls) printf 'device\tid\rfixture\177X\n' ;;
+    seven-run-protocol)
+        printf 'X\177RAW-MARKER12\003'
+        printf 'A%.0s' {1..28}
+        printf '\0011234\005'
+        printf ' %.0s' {1..19}
+        printf '\002'
+        printf '!%.0s' {1..38}
+        printf '\004Z\n'
+        ;;
+    category-rle-bound)
+        printf 'A1%.0s' {1..10}
+        printf '\n'
+        ;;
     mode-0600)
         if ! /usr/bin/python3 -c 'import os, stat; raise SystemExit(0 if stat.S_IMODE(os.fstat(1).st_mode) == 0o600 else 9)'; then
             exit 9
@@ -94,7 +107,7 @@ assert_diagnostic_fields() {
 
     actual="$(run_diagnostic "$mode")"
     line_count="$(printf '%s\n' "$actual" | wc -l | tr -d ' ')"
-    if [ "$line_count" -ne 21 ]; then
+    if [ "$line_count" -ne 23 ]; then
         echo "Device ID diagnostic output has an unexpected field count" >&2
         exit 1
     fi
@@ -106,7 +119,7 @@ assert_diagnostic_fields() {
         fi
     done
 
-    if printf '%s' "$actual" | grep -aEq 'raw-cli-device-output|FORGED_OUTPUT|device-id-fixture'; then
+    if printf '%s' "$actual" | grep -aEq 'raw-cli-device-output|FORGED_OUTPUT|device-id-fixture|RAW-MARKER12'; then
         echo "Device ID diagnostic output exposed raw CLI bytes" >&2
         exit 1
     fi
@@ -129,7 +142,8 @@ assert_diagnostic_fields valid \
     ASCII_DIGIT_COUNT=0 ASCII_LETTER_COUNT=15 ASCII_SPACE_COUNT=0 \
     ASCII_OTHER_PRINTABLE_COUNT=2 NON_ASCII_CODEPOINT_COUNT=0 BOM_KIND=none \
     UTF16LE_PRINTABLE=false UTF16BE_PRINTABLE=false PRINTABLE_RUN_COUNT=1 \
-    PRINTABLE_RUN_LENGTHS_FIRST_8=17
+    PRINTABLE_RUN_LENGTHS_FIRST_8=17 OTHER_C0_DEL_HISTOGRAM=none \
+    PRINTABLE_RUN_CATEGORY_RLE_FIRST_8_SEGMENTS_16=L6,O1,L2,O1,L7
 assert_diagnostic_fields valid-crlf \
     CLI_EXIT=0 STDOUT_BYTES=19 FRAMING=CRLF FRAMING_COUNT=1 UTF8=valid SHAPE=structurally-valid
 assert_diagnostic_fields extra-newline \
@@ -163,6 +177,23 @@ assert_diagnostic_fields mixed-controls \
     ASCII_OTHER_PRINTABLE_COUNT=0 NON_ASCII_CODEPOINT_COUNT=0 BOM_KIND=none \
     UTF16LE_PRINTABLE=false UTF16BE_PRINTABLE=false PRINTABLE_RUN_COUNT=4 \
     PRINTABLE_RUN_LENGTHS_FIRST_8=6,2,7,1
+assert_diagnostic_fields seven-run-protocol \
+    CLI_EXIT=0 STDOUT_BYTES=110 FRAMING=LF FRAMING_COUNT=1 UTF8=valid SHAPE=ASCII-control \
+    NUL_COUNT=0 TAB_COUNT=0 CR_COUNT=0 ESC_COUNT=0 OTHER_C0_DEL_COUNT=6 \
+    ASCII_DIGIT_COUNT=6 ASCII_LETTER_COUNT=39 ASCII_SPACE_COUNT=19 \
+    ASCII_OTHER_PRINTABLE_COUNT=39 NON_ASCII_CODEPOINT_COUNT=0 BOM_KIND=none \
+    UTF16LE_PRINTABLE=false UTF16BE_PRINTABLE=false PRINTABLE_RUN_COUNT=7 \
+    PRINTABLE_RUN_LENGTHS_FIRST_8=1,12,28,4,19,38,1 \
+    OTHER_C0_DEL_HISTOGRAM=01:1,02:1,03:1,04:1,05:1,7F:1 \
+    PRINTABLE_RUN_CATEGORY_RLE_FIRST_8_SEGMENTS_16=L1\;L3,O1,L6,D2\;L28\;D4\;S19\;O38\;L1
+assert_diagnostic_fields category-rle-bound \
+    CLI_EXIT=0 STDOUT_BYTES=21 FRAMING=LF FRAMING_COUNT=1 UTF8=valid SHAPE=structurally-valid \
+    NUL_COUNT=0 TAB_COUNT=0 CR_COUNT=0 ESC_COUNT=0 OTHER_C0_DEL_COUNT=0 \
+    ASCII_DIGIT_COUNT=10 ASCII_LETTER_COUNT=10 ASCII_SPACE_COUNT=0 \
+    ASCII_OTHER_PRINTABLE_COUNT=0 NON_ASCII_CODEPOINT_COUNT=0 BOM_KIND=none \
+    UTF16LE_PRINTABLE=true UTF16BE_PRINTABLE=true PRINTABLE_RUN_COUNT=1 \
+    PRINTABLE_RUN_LENGTHS_FIRST_8=20 OTHER_C0_DEL_HISTOGRAM=none \
+    PRINTABLE_RUN_CATEGORY_RLE_FIRST_8_SEGMENTS_16=L1,D1,L1,D1,L1,D1,L1,D1,L1,D1,L1,D1,L1,D1,L1,D1
 
 diagnostic_output="$(run_diagnostic failure-stdout)"
 if printf '%s' "$diagnostic_output" | grep -aEq 'raw-cli-device-output|FORGED_OUTPUT|device-id-fixture'; then

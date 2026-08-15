@@ -394,6 +394,14 @@ other_c0_del_count = sum(
     (byte < 32 or byte == 127) and byte not in {0, 9, 13, 27}
     for byte in normalized_raw
 )
+other_c0_del_histogram = {}
+for byte in normalized_raw:
+    if (byte < 32 or byte == 127) and byte not in {0, 9, 13, 27}:
+        other_c0_del_histogram[byte] = other_c0_del_histogram.get(byte, 0) + 1
+other_c0_del_histogram_summary = ",".join(
+    f"{byte:02X}:{other_c0_del_histogram[byte]}"
+    for byte in sorted(other_c0_del_histogram)
+) or "none"
 ascii_digit_count = sum(48 <= byte <= 57 for byte in normalized_raw)
 ascii_letter_count = sum(
     65 <= byte <= 90 or 97 <= byte <= 122 for byte in normalized_raw
@@ -445,21 +453,52 @@ def decodes_as_printable_utf16(data, encoding):
 utf16le_printable = decodes_as_printable_utf16(normalized_raw, "utf-16le")
 utf16be_printable = decodes_as_printable_utf16(normalized_raw, "utf-16be")
 
+printable_run_count = 0
 printable_run_lengths = []
+printable_run_category_rles = []
 if decoded_value is not None:
-    current_run_length = 0
-    for character in decoded_value:
-        if character.isprintable():
+    index = 0
+    while index < len(decoded_value):
+        if not decoded_value[index].isprintable():
+            index += 1
+            continue
+
+        printable_run_count += 1
+        current_run_length = 0
+        category_segments = []
+        category_segments_truncated = False
+        while index < len(decoded_value) and decoded_value[index].isprintable():
+            character = decoded_value[index]
+            if character.isalpha():
+                category = "L"
+            elif character.isdigit():
+                category = "D"
+            elif character == " ":
+                category = "S"
+            else:
+                category = "O"
+
             current_run_length += 1
-        elif current_run_length:
+            if not category_segments_truncated:
+                if category_segments and category_segments[-1][0] == category:
+                    category_segments[-1][1] += 1
+                elif len(category_segments) < 16:
+                    category_segments.append([category, 1])
+                else:
+                    category_segments_truncated = True
+            index += 1
+
+        if printable_run_count <= 8:
             printable_run_lengths.append(current_run_length)
-            current_run_length = 0
-    if current_run_length:
-        printable_run_lengths.append(current_run_length)
+            category_summary = ",".join(
+                f"{category}{count}" for category, count in category_segments
+            )
+            printable_run_category_rles.append(category_summary)
 
 printable_run_summary = ",".join(
-    str(length) for length in printable_run_lengths[:8]
+    str(length) for length in printable_run_lengths
 )
+printable_run_category_rle_summary = ";".join(printable_run_category_rles)
 
 print(f"DEVICE_ID_DIAGNOSTIC_CLI_EXIT={cli_exit}")
 print(f"DEVICE_ID_DIAGNOSTIC_STDOUT_BYTES={len(raw)}")
@@ -480,8 +519,10 @@ print(f"DEVICE_ID_DIAGNOSTIC_NON_ASCII_CODEPOINT_COUNT={non_ascii_codepoint_coun
 print(f"DEVICE_ID_DIAGNOSTIC_BOM_KIND={bom_kind}")
 print(f"DEVICE_ID_DIAGNOSTIC_UTF16LE_PRINTABLE={'true' if utf16le_printable else 'false'}")
 print(f"DEVICE_ID_DIAGNOSTIC_UTF16BE_PRINTABLE={'true' if utf16be_printable else 'false'}")
-print(f"DEVICE_ID_DIAGNOSTIC_PRINTABLE_RUN_COUNT={len(printable_run_lengths)}")
+print(f"DEVICE_ID_DIAGNOSTIC_PRINTABLE_RUN_COUNT={printable_run_count}")
 print(f"DEVICE_ID_DIAGNOSTIC_PRINTABLE_RUN_LENGTHS_FIRST_8={printable_run_summary}")
+print(f"DEVICE_ID_DIAGNOSTIC_OTHER_C0_DEL_HISTOGRAM={other_c0_del_histogram_summary}")
+print(f"DEVICE_ID_DIAGNOSTIC_PRINTABLE_RUN_CATEGORY_RLE_FIRST_8_SEGMENTS_16={printable_run_category_rle_summary}")
 PYTHON
 )
 
