@@ -266,6 +266,7 @@ self_test_wait_connections() {
 read_uuremote_device_id() {
     "$CLI" assist id 2>/dev/null | /usr/bin/python3 -c '
 import sys
+import unicodedata
 
 raw = sys.stdin.buffer.read()
 if raw.endswith(b"\n"):
@@ -275,7 +276,11 @@ try:
 except UnicodeDecodeError:
     raise SystemExit(1)
 
-if not value or any(ord(character) < 32 or ord(character) == 127 for character in value):
+if any(ord(character) < 32 or ord(character) == 127 for character in value):
+    raise SystemExit(1)
+
+value = value.strip(" ")
+if not value or any(unicodedata.category(character)[0] in {"C", "Z"} for character in value):
     raise SystemExit(1)
 
 sys.stdout.write(value)
