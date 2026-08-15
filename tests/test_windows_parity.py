@@ -201,7 +201,7 @@ class WindowsValidationBehaviorTests(unittest.TestCase):
 
 
 class WindowsWaitBehaviorTests(unittest.TestCase):
-    def run_controlled_device_id_route(self, device_id: str, seconds: str):
+    def run_controlled_device_id_cli_route(self, device_id: str, seconds: str):
         helper = str(WINDOWS_HELPER).replace("'", "''")
         encoded = base64.b64encode(device_id.encode("utf-8")).decode("ascii")
         return run_windows_script(
@@ -214,9 +214,13 @@ function Assert-UURemotePaths {{ param([pscustomobject]$Paths) }}
 $script:FixtureDeviceId = [Text.Encoding]::UTF8.GetString(
     [Convert]::FromBase64String('{encoded}')
 )
-function Get-UURemoteDeviceId {{
-    param([string]$CliPath, [int]$TimeoutMilliseconds = 60000)
-    return $script:FixtureDeviceId
+function Invoke-UURemoteDeviceIdCli {{
+    param([string]$Path, [int]$TimeoutMilliseconds = 60000)
+    return [pscustomobject]@{{
+        ExitCode = 0
+        Output = @($script:FixtureDeviceId)
+        TimedOut = $false
+    }}
 }}
 $script:HelperMode = 'wait-connections'
 $script:Arguments = @('{seconds}')
@@ -225,7 +229,7 @@ Invoke-WindowsHelperRoute
         )
 
     def test_wait_message_contains_current_device_id_before_zero_timeout(self):
-        result = self.run_controlled_device_id_route("device-id-fixture", "0")
+        result = self.run_controlled_device_id_cli_route("device-id-fixture", "0")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(
             result.stdout.splitlines(),
@@ -236,7 +240,10 @@ Invoke-WindowsHelperRoute
         )
 
     def test_surrounding_ascii_spaces_are_normalized_before_logging(self):
-        result = self.run_controlled_device_id_route("  device-id-fixture  ", "0")
+        result = self.run_controlled_device_id_cli_route(
+            "  device-id-fixture  \r\n",
+            "0",
+        )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(
             result.stdout.splitlines(),
@@ -247,7 +254,7 @@ Invoke-WindowsHelperRoute
         )
 
     def test_multiline_device_id_fails_closed_without_log_injection(self):
-        result = self.run_controlled_device_id_route(
+        result = self.run_controlled_device_id_cli_route(
             "device-id-fixture\nFORGED_OUTPUT=true",
             "0",
         )
@@ -260,13 +267,13 @@ Invoke-WindowsHelperRoute
     def test_control_characters_in_device_id_fail_closed(self):
         for value in ("device\x00id", "device\tid", "device\x7fid"):
             with self.subTest(value=repr(value)):
-                result = self.run_controlled_device_id_route(value, "0")
+                result = self.run_controlled_device_id_cli_route(value, "0")
                 self.assertEqual(result.returncode, 1)
                 self.assertEqual(result.stdout, "")
                 self.assertEqual(result.stderr.strip(), "Shutdown-aware wait failed.")
 
     def test_unicode_control_character_fails_closed_without_log_injection(self):
-        result = self.run_controlled_device_id_route(
+        result = self.run_controlled_device_id_cli_route(
             "device-id-fixture\u0085FORGED_OUTPUT=true",
             "0",
         )
@@ -277,7 +284,7 @@ Invoke-WindowsHelperRoute
         self.assertNotIn("FORGED_OUTPUT", result.stdout + result.stderr)
 
     def test_unicode_separator_fails_closed_without_log_injection(self):
-        result = self.run_controlled_device_id_route(
+        result = self.run_controlled_device_id_cli_route(
             "device-id-fixture\u2028FORGED_OUTPUT=true",
             "0",
         )
@@ -286,6 +293,19 @@ Invoke-WindowsHelperRoute
         self.assertEqual(result.stderr.strip(), "Shutdown-aware wait failed.")
         self.assertNotIn("device-id-fixture", result.stdout + result.stderr)
         self.assertNotIn("FORGED_OUTPUT", result.stdout + result.stderr)
+
+    def test_cli_boundary_rejects_unsafe_trailing_characters_before_normalization(self):
+        for value in (
+            "device-id-fixture\u0085\r\n",
+            "device-id-fixture\u2028\r\n",
+            "device-id-fixture\r\n\r\n",
+        ):
+            with self.subTest(value=repr(value)):
+                result = self.run_controlled_device_id_cli_route(value, "0")
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(result.stdout, "")
+                self.assertEqual(result.stderr.strip(), "Shutdown-aware wait failed.")
+                self.assertNotIn("device-id-fixture", result.stdout + result.stderr)
 
     def run_self_test_with_injected_waiter(self, body: str):
         helper = str(WINDOWS_HELPER).replace("'", "''")

@@ -160,7 +160,11 @@ function Get-UURemoteDeviceId {
         return $null
     }
 
-    $deviceId = (@($result.Output) -join [Environment]::NewLine).Trim()
+    $deviceId = @($result.Output) -join [Environment]::NewLine
+    $recordTerminator = [Environment]::NewLine
+    if ($deviceId.EndsWith($recordTerminator)) {
+        $deviceId = $deviceId.Substring(0, $deviceId.Length - $recordTerminator.Length)
+    }
     if ([string]::IsNullOrWhiteSpace($deviceId)) {
         return $null
     }
