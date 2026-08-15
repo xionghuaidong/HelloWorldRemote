@@ -189,6 +189,45 @@ class AgentInstructionContractTests(unittest.TestCase):
             self.assertIn('self.assertEqual(result.stdout, "")', contents)
             self.assertIn("self.assertNotIn(unsafe_output", contents)
 
+    def assert_shutdown_acceptance_contract(
+        self,
+        english_plan: str,
+        chinese_plan: str,
+    ):
+        english_step = english_plan[
+            english_plan.index("- [ ] **Step 7: Run the manual mobile-client") :
+            english_plan.index("- [ ] **Step 8: Final verification")
+        ]
+        chinese_step = chinese_plan[
+            chinese_plan.index("- [ ] **步骤 7：运行手动 mobile-client") :
+            chinese_plan.index("- [ ] **步骤 8：最终验证")
+        ]
+
+        for requirement in (
+            "The executable injected shutdown-wait self-test is the deterministic acceptance",
+            "Live acceptance requires a successful mobile-client connection and observation of the requested real shutdown/offline effect.",
+            "Once real shutdown/restart begins, final GitHub log, result, and cleanup evidence are best-effort",
+            "Missing reporting after shutdown/restart begins must not be treated as a watcher failure",
+        ):
+            self.assertIn(requirement, english_step)
+
+        for requirement in (
+            "Executable injected shutdown-wait self-test 是确定性验收",
+            "Live acceptance 要求 mobile-client 连接成功，并观察到所请求的真实 shutdown/offline effect。",
+            "真实 shutdown/restart 开始后，最终 GitHub log、result 与 cleanup evidence 仅作 best-effort",
+            "shutdown/restart 开始后缺少回传不得被判定为 watcher failure",
+        ):
+            self.assertIn(requirement, chinese_step)
+
+        self.assertNotIn(
+            "Require exact `WAIT_RESULT=shutdown/restart` and verify cleanup completes.",
+            english_step,
+        )
+        self.assertNotIn(
+            "要求精确 `WAIT_RESULT=shutdown/restart`，并验证 cleanup 完成。",
+            chinese_step,
+        )
+
     def test_shutdown_acceptance_separates_deterministic_and_live_evidence(self):
         english_design = text(
             ROOT
@@ -215,22 +254,40 @@ class AgentInstructionContractTests(unittest.TestCase):
             "runner 可能在向 GitHub 发送最终步骤结果前失去网络",
             chinese_design,
         )
+        self.assert_shutdown_acceptance_contract(english_plan, chinese_plan)
 
-        for requirement in (
-            "The executable injected shutdown-wait self-test is the deterministic acceptance",
-            "Live acceptance requires a successful mobile-client connection and observation of the requested real shutdown/offline effect.",
-            "Final GitHub log, result, and cleanup evidence after real shutdown are best-effort",
-            "Missing post-shutdown reporting must not be treated as a watcher failure",
-        ):
-            self.assertIn(requirement, english_plan)
+    def test_shutdown_acceptance_rejects_historical_live_only_guarantee(self):
+        english_plan = text(
+            ROOT
+            / "docs/superpowers/plans/2026-08-15-device-id-workflow-log-output.md"
+        )
+        chinese_plan = text(
+            ROOT
+            / "docs/superpowers/plans/2026-08-15-device-id-workflow-log-output-zh_CN.md"
+        )
+        english_mutation = english_plan.replace(
+            "- [ ] **Step 8: Final verification",
+            "Require exact `WAIT_RESULT=shutdown/restart` and verify cleanup completes.\n\n"
+            "- [ ] **Step 8: Final verification",
+            1,
+        )
+        chinese_mutation = chinese_plan.replace(
+            "- [ ] **步骤 8：最终验证",
+            "要求精确 `WAIT_RESULT=shutdown/restart`，并验证 cleanup 完成。\n\n"
+            "- [ ] **步骤 8：最终验证",
+            1,
+        )
 
-        for requirement in (
-            "Executable injected shutdown-wait self-test 是确定性验收",
-            "Live acceptance 要求 mobile-client 连接成功，并观察到所请求的真实 shutdown/offline effect。",
-            "真实关机后的最终 GitHub log、result 与 cleanup evidence 仅作 best-effort",
-            "缺少关机后的回传不得被判定为 watcher failure",
+        for language, mutated_english, mutated_chinese in (
+            ("English", english_mutation, chinese_plan),
+            ("Simplified Chinese", english_plan, chinese_mutation),
         ):
-            self.assertIn(requirement, chinese_plan)
+            with self.subTest(language=language):
+                with self.assertRaises(AssertionError):
+                    self.assert_shutdown_acceptance_contract(
+                        mutated_english,
+                        mutated_chinese,
+                    )
 
 
 class EntryPointContractTests(unittest.TestCase):

@@ -675,7 +675,7 @@ Executable injected shutdown-wait self-test 是确定性验收，用于验证精
 
 Live acceptance 要求 mobile-client 连接成功，并观察到所请求的真实 shutdown/offline effect。使用独立 positive-wait run 验收 shutdown/restart。由用户发起 remote shutdown/restart action；agent 禁止执行 operating-system shutdown command。
 
-由于 runner 可能在回传前失去网络，真实关机后的最终 GitHub log、result 与 cleanup evidence 仅作 best-effort。缺少关机后的回传不得被判定为 watcher failure；当确定性 self-test 已通过，且已观察到 live connection 与 shutdown/offline effect 时，该回传缺失不阻塞验收。
+真实 shutdown/restart 开始后，最终 GitHub log、result 与 cleanup evidence 仅作 best-effort，因为 runner 可能在回传前失去网络。shutdown/restart 开始后缺少回传不得被判定为 watcher failure；当确定性 self-test 已通过，且已观察到 live connection 与 shutdown/offline effect 时，该回传缺失不阻塞验收。
 
 - [ ] **步骤 8：最终验证与 handoff**
 

@@ -675,7 +675,7 @@ The executable injected shutdown-wait self-test is the deterministic acceptance 
 
 Live acceptance requires a successful mobile-client connection and observation of the requested real shutdown/offline effect. Run a separate positive-wait acceptance for shutdown/restart. The user initiates the remote shutdown/restart action; the agent must not issue an operating-system shutdown command.
 
-Final GitHub log, result, and cleanup evidence after real shutdown are best-effort because the runner may lose networking before reporting them. Missing post-shutdown reporting must not be treated as a watcher failure and does not block acceptance when the deterministic self-test has passed and the live connection and shutdown/offline effect were observed.
+Once real shutdown/restart begins, final GitHub log, result, and cleanup evidence are best-effort because the runner may lose networking before reporting them. Missing reporting after shutdown/restart begins must not be treated as a watcher failure and does not block acceptance when the deterministic self-test has passed and the live connection and shutdown/offline effect were observed.
 
 - [ ] **Step 8: Final verification and handoff**
 
