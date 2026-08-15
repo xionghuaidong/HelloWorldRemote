@@ -168,10 +168,40 @@ function Get-UURemoteDeviceId {
 }
 
 function Get-UURemoteLoggableDeviceId([string]$DeviceId) {
-    $normalized = if ($null -eq $DeviceId) { '' } else { $DeviceId.Trim() }
-    if ([string]::IsNullOrWhiteSpace($normalized) -or
-        $normalized -match '[\x00-\x1F\x7F]') {
+    $raw = if ($null -eq $DeviceId) { '' } else { $DeviceId }
+    if ($raw -match '[\x00-\x1F\x7F]') {
         throw 'UU Remote device ID is invalid.'
+    }
+
+    $normalized = $raw.Trim([char[]]@([char]0x20))
+    if ([string]::IsNullOrEmpty($normalized)) {
+        throw 'UU Remote device ID is invalid.'
+    }
+
+    $disallowedCategories = @(
+        [System.Globalization.UnicodeCategory]::Control,
+        [System.Globalization.UnicodeCategory]::Format,
+        [System.Globalization.UnicodeCategory]::Surrogate,
+        [System.Globalization.UnicodeCategory]::PrivateUse,
+        [System.Globalization.UnicodeCategory]::OtherNotAssigned,
+        [System.Globalization.UnicodeCategory]::SpaceSeparator,
+        [System.Globalization.UnicodeCategory]::LineSeparator,
+        [System.Globalization.UnicodeCategory]::ParagraphSeparator
+    )
+    for ($index = 0; $index -lt $normalized.Length;) {
+        $category = [System.Globalization.CharUnicodeInfo]::GetUnicodeCategory($normalized, $index)
+        if ($category -in $disallowedCategories) {
+            throw 'UU Remote device ID is invalid.'
+        }
+
+        if ([char]::IsHighSurrogate($normalized[$index]) -and
+            $index + 1 -lt $normalized.Length -and
+            [char]::IsLowSurrogate($normalized[$index + 1])) {
+            $index += 2
+        }
+        else {
+            $index++
+        }
     }
     return $normalized
 }

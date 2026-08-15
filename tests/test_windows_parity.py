@@ -235,6 +235,17 @@ Invoke-WindowsHelperRoute
             ],
         )
 
+    def test_surrounding_ascii_spaces_are_normalized_before_logging(self):
+        result = self.run_controlled_device_id_route("  device-id-fixture  ", "0")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            result.stdout.splitlines(),
+            [
+                "WAIT_CONNECTIONS DEVICE_ID=device-id-fixture",
+                "WAIT_RESULT=timeout",
+            ],
+        )
+
     def test_multiline_device_id_fails_closed_without_log_injection(self):
         result = self.run_controlled_device_id_route(
             "device-id-fixture\nFORGED_OUTPUT=true",
@@ -253,6 +264,28 @@ Invoke-WindowsHelperRoute
                 self.assertEqual(result.returncode, 1)
                 self.assertEqual(result.stdout, "")
                 self.assertEqual(result.stderr.strip(), "Shutdown-aware wait failed.")
+
+    def test_unicode_control_character_fails_closed_without_log_injection(self):
+        result = self.run_controlled_device_id_route(
+            "device-id-fixture\u0085FORGED_OUTPUT=true",
+            "0",
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(result.stderr.strip(), "Shutdown-aware wait failed.")
+        self.assertNotIn("device-id-fixture", result.stdout + result.stderr)
+        self.assertNotIn("FORGED_OUTPUT", result.stdout + result.stderr)
+
+    def test_unicode_separator_fails_closed_without_log_injection(self):
+        result = self.run_controlled_device_id_route(
+            "device-id-fixture\u2028FORGED_OUTPUT=true",
+            "0",
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(result.stderr.strip(), "Shutdown-aware wait failed.")
+        self.assertNotIn("device-id-fixture", result.stdout + result.stderr)
+        self.assertNotIn("FORGED_OUTPUT", result.stdout + result.stderr)
 
     def run_self_test_with_injected_waiter(self, body: str):
         helper = str(WINDOWS_HELPER).replace("'", "''")
