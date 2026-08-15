@@ -44,6 +44,7 @@ jobs:
         shell: bash
         run: |
             /bin/bash tests/test_macos_device_id_logging.sh
+            /bin/bash tests/test_macos_cli_output_redaction.sh
             python -m unittest tests.test_uuremote_wait tests.test_uuremote_desktop_finalization -v
 
       - name: Configure macOS host

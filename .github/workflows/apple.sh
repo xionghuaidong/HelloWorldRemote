@@ -750,6 +750,93 @@ capture_cli_diagnostics() (
     printf 'DEVICE_ID_EXIT=%s\n' "$cli_status"
 )
 
+validate_uuremote_cli_true_field() {
+    local output_path="$1"
+    local field_name="$2"
+
+    /usr/bin/python3 - "$output_path" "$field_name" <<'PYTHON'
+import json
+import pathlib
+import sys
+
+def reject_duplicate_keys(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError
+        result[key] = value
+    return result
+
+def reject_nonstandard_constant(_value):
+    raise ValueError
+
+try:
+    raw = pathlib.Path(sys.argv[1]).read_bytes()
+    decoded = raw.decode("utf-8")
+    payload = json.loads(
+        decoded,
+        object_pairs_hook=reject_duplicate_keys,
+        parse_constant=reject_nonstandard_constant,
+    )
+    if not isinstance(payload, dict) or payload.get(sys.argv[2]) is not True:
+        raise ValueError
+except (UnicodeDecodeError, json.JSONDecodeError, OSError, ValueError):
+    raise SystemExit(1)
+PYTHON
+}
+
+wait_for_uuremote_cli_true_field() (
+    local field_name="$1"
+    local state_token="$2"
+    local max_attempts="$3"
+    shift 3
+    local attempt
+    local response_temp_dir=""
+    local response_path=""
+
+    cleanup_cli_response() {
+        if [ -n "$response_path" ]; then
+            /bin/rm -f -- "$response_path"
+        fi
+        if [ -n "$response_temp_dir" ]; then
+            /bin/rmdir "$response_temp_dir" 2>/dev/null || true
+        fi
+    }
+    trap cleanup_cli_response EXIT
+
+    umask 077
+    response_temp_dir="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/uuremote-cli-response.XXXXXX")"
+    /bin/chmod 0700 "$response_temp_dir"
+    response_path="$response_temp_dir/stdout"
+    : >"$response_path"
+    /bin/chmod 0600 "$response_path"
+
+    for ((attempt=1; attempt<=max_attempts; attempt++)); do
+        if run_in_gui "$@" >"$response_path" 2>/dev/null &&
+            validate_uuremote_cli_true_field "$response_path" "$field_name"
+        then
+            printf '%s\n' "$state_token"
+            return 0
+        fi
+
+        sleep 0.5
+    done
+
+    return 1
+)
+
+wait_for_cli() {
+    wait_for_uuremote_cli_true_field \
+        success 'CLI_STATUS_STATE=ready' 40 \
+        "$CLI" status
+}
+
+ensure_assist_allowed() {
+    wait_for_uuremote_cli_true_field \
+        enabled 'ASSIST_STATE=enabled' 120 \
+        "$CLI" assist allow on
+}
+
 self_test_diagnostic_redaction() {
     local test_cli="${UUREMOTE_DIAGNOSTIC_TEST_CLI:-}"
 
@@ -770,6 +857,29 @@ self_test_diagnostic_redaction() {
 
     /bin/mkdir -p "$evidence_dir"
     capture_cli_diagnostics direct | /usr/bin/tee -a "$diagnostic_log"
+}
+
+self_test_cli_output_redaction() {
+    local test_cli="${UUREMOTE_CLI_OUTPUT_TEST_CLI:-}"
+
+    if [ -z "$test_cli" ] || [ ! -r "$test_cli" ]; then
+        echo "UUREMOTE_CLI_OUTPUT_TEST_CLI must name a readable Bash fixture" >&2
+        return 2
+    fi
+
+    CLI="$test_cli"
+    run_in_gui() {
+        local fixture_cli="$1"
+        shift
+        /bin/bash "$fixture_cli" "$@"
+    }
+    sleep() {
+        :
+    }
+
+    wait_for_cli
+    ensure_assist_allowed
+    echo "CLI output redaction self-test passed"
 }
 
 run_as_console_user() {
@@ -1882,6 +1992,11 @@ if [ "$mode" = "self-test-diagnostic-redaction" ]; then
     exit $?
 fi
 
+if [ "$mode" = "self-test-cli-output-redaction" ]; then
+    self_test_cli_output_redaction
+    exit $?
+fi
+
 if [ "$mode" = "report-device-id" ]; then
     if [ "$#" -ne 2 ] || [ "$2" != "readiness" ]; then
         echo "Usage: apple.sh report-device-id readiness" >&2
@@ -2206,58 +2321,19 @@ case "$mode" in
         ;;
 esac
 
-wait_for_cli() {
-    local output
-    local attempt
-
-    for ((attempt=1; attempt<=40; attempt++)); do
-        if output="$(run_in_gui "$CLI" status 2>/dev/null)" &&
-            printf '%s' "$output" | /usr/bin/grep -q '"success" : true'
-        then
-            printf '%s\n' "$output"
-            return 0
-        fi
-
-        sleep 0.5
-    done
-
-    return 1
-}
-
-ensure_assist_allowed() {
-    local output
-    local attempt
-
-    for ((attempt=1; attempt<=120; attempt++)); do
-        if output="$(run_in_gui "$CLI" assist allow on 2>/dev/null)" &&
-            printf '%s' "$output" | /usr/bin/grep -q '"enabled" : true'
-        then
-            printf '%s\n' "$output"
-            return 0
-        fi
-
-        sleep 0.5
-    done
-
-    return 1
-}
-
 echo "=== Starting UURemote and enabling unattended access ==="
 run_in_gui /usr/bin/open "$APP"
 
-if ! cli_status="$(wait_for_cli)"; then
+if ! wait_for_cli; then
     echo "UURemote CLI did not become ready within 20 seconds" >&2
     exit 1
 fi
 
-printf '%s\n' "$cli_status"
-
-if ! assist_status="$(ensure_assist_allowed)"; then
+if ! ensure_assist_allowed; then
     echo "Could not enable unattended control within 60 seconds" >&2
     exit 1
 fi
 
-printf '%s\n' "$assist_status"
 echo "Unattended control is enabled"
 
 if [ ! -f /etc/kcpassword ]; then
@@ -3797,12 +3873,11 @@ run_in_gui /usr/bin/open "$APP"
 
 echo "=== Waiting for CLI ==="
 
-if ! cli_status="$(wait_for_cli)"; then
+if ! wait_for_cli; then
     echo "UURemote started, but its CLI did not recover within 20 seconds" >&2
     exit 1
 fi
 
-printf '%s\n' "$cli_status"
 echo "UURemote restarted successfully"
 
 echo "=== Handling UURemote screen-sharing confirmation ==="

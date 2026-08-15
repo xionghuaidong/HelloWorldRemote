@@ -11,6 +11,7 @@ WORKFLOW_PATH = ROOT / ".github/workflows/macos.yml"
 SCRIPT_PATH = ROOT / ".github/workflows/apple.sh"
 WATCHER_PATH = ROOT / ".github/workflows/uuremote-shutdown-wait.swift"
 DEVICE_ID_LOGGING_HARNESS_PATH = ROOT / "tests/test_macos_device_id_logging.sh"
+CLI_OUTPUT_REDACTION_HARNESS_PATH = ROOT / "tests/test_macos_cli_output_redaction.sh"
 BASH_AVAILABLE = Path("/bin/bash").exists()
 
 
@@ -68,6 +69,7 @@ class WaitWorkflowContractTests(unittest.TestCase):
             commands,
             [
                 "/bin/bash tests/test_macos_device_id_logging.sh",
+                "/bin/bash tests/test_macos_cli_output_redaction.sh",
                 "python -m unittest tests.test_uuremote_wait tests.test_uuremote_desktop_finalization -v",
             ],
         )
@@ -141,6 +143,18 @@ class DeviceIdLoggingHarnessTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("macOS device ID logging contract passed", result.stdout)
+
+    def test_real_helpers_redact_status_and_assist_output(self):
+        result = subprocess.run(
+            ["/bin/bash", str(CLI_OUTPUT_REDACTION_HARNESS_PATH)],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("macOS CLI output redaction contract passed", result.stdout)
 
 
 class WaitWatcherSourceTests(unittest.TestCase):
