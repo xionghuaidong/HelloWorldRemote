@@ -93,6 +93,7 @@ namespace UURemote
         {
             private const int WmQueryEndSession = 0x0011;
             private const int WmInjectedOrdinary = 0x8001;
+            private const long EndSessionLogoff = 0x80000000L;
             private readonly WaitContext context;
 
             internal ShutdownWindow(WaitContext context)
@@ -103,8 +104,12 @@ namespace UURemote
 
             internal void PostInjectedEvent(string injectedEvent)
             {
-                int message = injectedEvent == "shutdown" ? WmQueryEndSession : WmInjectedOrdinary;
-                if (!PostMessage(Handle, message, IntPtr.Zero, IntPtr.Zero))
+                bool queryEndSession = injectedEvent == "shutdown" || injectedEvent == "logout";
+                int message = queryEndSession ? WmQueryEndSession : WmInjectedOrdinary;
+                IntPtr longParameter = injectedEvent == "logout"
+                    ? new IntPtr(unchecked((int)EndSessionLogoff))
+                    : IntPtr.Zero;
+                if (!PostMessage(Handle, message, IntPtr.Zero, longParameter))
                 {
                     throw new InvalidOperationException("Unable to inject watcher event");
                 }
@@ -115,7 +120,10 @@ namespace UURemote
                 if (m.Msg == WmQueryEndSession)
                 {
                     m.Result = new IntPtr(1);
-                    context.Complete("shutdown/restart");
+                    if ((m.LParam.ToInt64() & EndSessionLogoff) == 0)
+                    {
+                        context.Complete("shutdown/restart");
+                    }
                     return;
                 }
 
@@ -144,7 +152,8 @@ namespace UURemote
         public static string Run(int seconds, string injectedEvent)
         {
             if (seconds < 1) throw new ArgumentOutOfRangeException(nameof(seconds));
-            if (injectedEvent != "none" && injectedEvent != "ordinary" && injectedEvent != "shutdown")
+            if (injectedEvent != "none" && injectedEvent != "ordinary" &&
+                injectedEvent != "logout" && injectedEvent != "shutdown")
                 throw new ArgumentException("Unsupported injected event", nameof(injectedEvent));
             using (var context = new WaitContext(seconds, injectedEvent))
             {

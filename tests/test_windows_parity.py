@@ -201,6 +201,15 @@ class WindowsValidationBehaviorTests(unittest.TestCase):
 
 
 class WindowsWaitBehaviorTests(unittest.TestCase):
+    def run_real_injected_watcher(self, injected_event: str, seconds: int):
+        helper = str(WINDOWS_HELPER).replace("'", "''")
+        return run_windows_script(
+            rf"""
+. '{helper}'
+Invoke-ShutdownWaiter -Seconds {seconds} -InjectedEvent '{injected_event}'
+"""
+        )
+
     def run_controlled_device_id_cli_route(self, device_id: str, seconds: str):
         helper = str(WINDOWS_HELPER).replace("'", "''")
         encoded = base64.b64encode(device_id.encode("utf-8")).decode("ascii")
@@ -326,6 +335,22 @@ Invoke-WindowsHelperRoute
         WINDOWS_NATIVE_CAPABILITY_AVAILABLE,
         "requires Windows and a PowerShell runtime",
     )
+    def test_real_injected_watcher_distinguishes_logout_from_shutdown(self):
+        cases = (
+            ("logout", 1, "WAIT_RESULT=timeout"),
+            ("shutdown", 2, "WAIT_RESULT=shutdown/restart"),
+        )
+        for injected_event, seconds, expected in cases:
+            with self.subTest(injected_event=injected_event):
+                result = self.run_real_injected_watcher(injected_event, seconds)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.splitlines(), [expected])
+                self.assertEqual(result.stderr, "")
+
+    @unittest.skipUnless(
+        WINDOWS_NATIVE_CAPABILITY_AVAILABLE,
+        "requires Windows and a PowerShell runtime",
+    )
     def test_injected_wait_self_test_passes(self):
         result = run_windows_helper("self-test-wait-connections")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -340,12 +365,39 @@ Invoke-WindowsHelperRoute
                 self.assertIn("shutdown-aware wait self-test passed", result.stdout)
 
     @unittest.skipUnless(POWERSHELL_AVAILABLE, "requires a PowerShell runtime")
+    def test_self_test_requires_logout_to_reach_timeout(self):
+        result = self.run_self_test_with_injected_waiter(
+            r"""
+switch ($InjectedEvent) {
+    'none' { 'WAIT_RESULT=timeout'; break }
+    'ordinary' { 'WAIT_RESULT=timeout'; break }
+    'logout' { 'WAIT_RESULT=shutdown/restart'; break }
+    'shutdown' { 'WAIT_RESULT=shutdown/restart'; break }
+}
+"""
+        )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(
+            result.stderr.splitlines(),
+            [
+                "shutdown-aware wait self-test failed",
+                "WAIT_SELF_TEST_TIMEOUT=timeout",
+                "WAIT_SELF_TEST_ORDINARY=timeout",
+                "WAIT_SELF_TEST_LOGOUT=shutdown/restart",
+                "WAIT_SELF_TEST_SHUTDOWN=shutdown/restart",
+            ],
+        )
+        self.assertEqual(result.stdout, "")
+
+    @unittest.skipUnless(POWERSHELL_AVAILABLE, "requires a PowerShell runtime")
     def test_self_test_mismatch_reports_only_normalized_observations(self):
         result = self.run_self_test_with_injected_waiter(
             r"""
 switch ($InjectedEvent) {
     'none' { 'WAIT_RESULT=timeout'; break }
     'ordinary' { 'device-id-fixture custom-code-fixture arbitrary-external-output'; break }
+    'logout' { 'WAIT_RESULT=timeout'; break }
     'shutdown' { 'WAIT_RESULT=shutdown/restart'; break }
 }
 """
@@ -358,6 +410,7 @@ switch ($InjectedEvent) {
                 "shutdown-aware wait self-test failed",
                 "WAIT_SELF_TEST_TIMEOUT=timeout",
                 "WAIT_SELF_TEST_ORDINARY=unexpected",
+                "WAIT_SELF_TEST_LOGOUT=timeout",
                 "WAIT_SELF_TEST_SHUTDOWN=shutdown/restart",
             ],
         )
@@ -378,6 +431,7 @@ switch ($InjectedEvent) {
                 "shutdown-aware wait self-test failed",
                 "WAIT_SELF_TEST_TIMEOUT=not-observed",
                 "WAIT_SELF_TEST_ORDINARY=not-observed",
+                "WAIT_SELF_TEST_LOGOUT=not-observed",
                 "WAIT_SELF_TEST_SHUTDOWN=not-observed",
                 "WAIT_SELF_TEST_EXCEPTION=invalid-operation",
             ],
@@ -409,6 +463,7 @@ public static class WaiterFailureFixture {
                 "shutdown-aware wait self-test failed",
                 "WAIT_SELF_TEST_TIMEOUT=not-observed",
                 "WAIT_SELF_TEST_ORDINARY=not-observed",
+                "WAIT_SELF_TEST_LOGOUT=not-observed",
                 "WAIT_SELF_TEST_SHUTDOWN=not-observed",
                 "WAIT_SELF_TEST_EXCEPTION=method-invocation/invalid-operation",
             ],

@@ -549,7 +549,7 @@ function Invoke-ShutdownWaiter {
     if ($Seconds -lt 1) {
         throw 'Wait seconds must be positive before starting the shutdown watcher.'
     }
-    if ($InjectedEvent -notin @('none', 'ordinary', 'shutdown')) {
+    if ($InjectedEvent -notin @('none', 'ordinary', 'logout', 'shutdown')) {
         throw 'Unsupported injected event.'
     }
 
@@ -736,13 +736,16 @@ function Invoke-WindowsHelperRoute {
         }
         $timeout = $null
         $ordinary = $null
+        $logout = $null
         $shutdown = $null
         try {
             $timeout = Invoke-ShutdownWaiter -Seconds 1 -InjectedEvent 'none'
             $ordinary = Invoke-ShutdownWaiter -Seconds 1 -InjectedEvent 'ordinary'
+            $logout = Invoke-ShutdownWaiter -Seconds 1 -InjectedEvent 'logout'
             $shutdown = Invoke-ShutdownWaiter -Seconds 2 -InjectedEvent 'shutdown'
             if ($timeout -ne 'WAIT_RESULT=timeout' -or
                 $ordinary -ne 'WAIT_RESULT=timeout' -or
+                $logout -ne 'WAIT_RESULT=timeout' -or
                 $shutdown -ne 'WAIT_RESULT=shutdown/restart') {
                 throw 'shutdown-aware wait self-test failed'
             }
@@ -752,8 +755,10 @@ function Invoke-WindowsHelperRoute {
             [Console]::Error.WriteLine('shutdown-aware wait self-test failed')
             [Console]::Error.WriteLine("WAIT_SELF_TEST_TIMEOUT=$(Get-SafeWaitSelfTestObservation $timeout)")
             [Console]::Error.WriteLine("WAIT_SELF_TEST_ORDINARY=$(Get-SafeWaitSelfTestObservation $ordinary)")
+            [Console]::Error.WriteLine("WAIT_SELF_TEST_LOGOUT=$(Get-SafeWaitSelfTestObservation $logout)")
             [Console]::Error.WriteLine("WAIT_SELF_TEST_SHUTDOWN=$(Get-SafeWaitSelfTestObservation $shutdown)")
-            if ($null -eq $timeout -or $null -eq $ordinary -or $null -eq $shutdown) {
+            if ($null -eq $timeout -or $null -eq $ordinary -or
+                $null -eq $logout -or $null -eq $shutdown) {
                 [Console]::Error.WriteLine("WAIT_SELF_TEST_EXCEPTION=$(Get-SafeWaitSelfTestExceptionCategory $_.Exception)")
             }
             exit 1
