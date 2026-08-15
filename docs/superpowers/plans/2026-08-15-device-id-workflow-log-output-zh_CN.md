@@ -671,7 +671,11 @@ Reviewer 必须把 `1fee8c7..HEAD` 与已批准的 2026-08-15 spec 对比，检�
 
 使用用户批准的正 wait duration dispatch Windows debug-level `0` run。通知用户 run 已进入 `Wait connections`；用户复制可见 device ID，并使用单独持有的 custom code 连接。只记录是否连接成功，绝不记录 custom code。
 
-使用独立 positive-wait run 验收 shutdown/restart。由用户发起 remote shutdown/restart action；agent 禁止执行 operating-system shutdown command。要求精确 `WAIT_RESULT=shutdown/restart`，并验证 cleanup 完成。
+Executable injected shutdown-wait self-test 是确定性验收，用于验证精确 `WAIT_RESULT=shutdown/restart` 输出与 cleanup contract。在 live acceptance 前运行并要求它通过。
+
+Live acceptance 要求 mobile-client 连接成功，并观察到所请求的真实 shutdown/offline effect。使用独立 positive-wait run 验收 shutdown/restart。由用户发起 remote shutdown/restart action；agent 禁止执行 operating-system shutdown command。
+
+由于 runner 可能在回传前失去网络，真实关机后的最终 GitHub log、result 与 cleanup evidence 仅作 best-effort。缺少关机后的回传不得被判定为 watcher failure；当确定性 self-test 已通过，且已观察到 live connection 与 shutdown/offline effect 时，该回传缺失不阻塞验收。
 
 - [ ] **步骤 8：最终验证与 handoff**
 

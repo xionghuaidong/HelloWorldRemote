@@ -189,6 +189,49 @@ class AgentInstructionContractTests(unittest.TestCase):
             self.assertIn('self.assertEqual(result.stdout, "")', contents)
             self.assertIn("self.assertNotIn(unsafe_output", contents)
 
+    def test_shutdown_acceptance_separates_deterministic_and_live_evidence(self):
+        english_design = text(
+            ROOT
+            / "docs/superpowers/specs/2026-08-11-uuremote-secrets-and-shutdown-aware-wait-design.md"
+        )
+        chinese_design = text(
+            ROOT
+            / "docs/superpowers/specs/2026-08-11-uuremote-secrets-and-shutdown-aware-wait-design-zh_CN.md"
+        )
+        english_plan = text(
+            ROOT
+            / "docs/superpowers/plans/2026-08-15-device-id-workflow-log-output.md"
+        )
+        chinese_plan = text(
+            ROOT
+            / "docs/superpowers/plans/2026-08-15-device-id-workflow-log-output-zh_CN.md"
+        )
+
+        self.assertIn(
+            "the runner may lose networking before it can send\nthe final step result",
+            english_design,
+        )
+        self.assertIn(
+            "runner 可能在向 GitHub 发送最终步骤结果前失去网络",
+            chinese_design,
+        )
+
+        for requirement in (
+            "The executable injected shutdown-wait self-test is the deterministic acceptance",
+            "Live acceptance requires a successful mobile-client connection and observation of the requested real shutdown/offline effect.",
+            "Final GitHub log, result, and cleanup evidence after real shutdown are best-effort",
+            "Missing post-shutdown reporting must not be treated as a watcher failure",
+        ):
+            self.assertIn(requirement, english_plan)
+
+        for requirement in (
+            "Executable injected shutdown-wait self-test 是确定性验收",
+            "Live acceptance 要求 mobile-client 连接成功，并观察到所请求的真实 shutdown/offline effect。",
+            "真实关机后的最终 GitHub log、result 与 cleanup evidence 仅作 best-effort",
+            "缺少关机后的回传不得被判定为 watcher failure",
+        ):
+            self.assertIn(requirement, chinese_plan)
+
 
 class EntryPointContractTests(unittest.TestCase):
     def test_readmes_have_navigation(self):

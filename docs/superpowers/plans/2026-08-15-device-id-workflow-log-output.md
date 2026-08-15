@@ -671,7 +671,11 @@ Download debug artifacts only to an exact temporary directory. Confirm the exist
 
 Dispatch a Windows debug-level `0` run with a user-approved positive wait duration. Tell the user the run has entered `Wait connections`; the user copies the visible device ID and connects with the separately held custom code. Record only whether connection succeeded, never the custom code.
 
-Run a separate positive-wait acceptance for shutdown/restart. The user initiates the remote shutdown/restart action; the agent must not issue an operating-system shutdown command. Require exact `WAIT_RESULT=shutdown/restart` and verify cleanup completes.
+The executable injected shutdown-wait self-test is the deterministic acceptance for exact `WAIT_RESULT=shutdown/restart` output and the cleanup contract. Run it before live acceptance and require it to pass.
+
+Live acceptance requires a successful mobile-client connection and observation of the requested real shutdown/offline effect. Run a separate positive-wait acceptance for shutdown/restart. The user initiates the remote shutdown/restart action; the agent must not issue an operating-system shutdown command.
+
+Final GitHub log, result, and cleanup evidence after real shutdown are best-effort because the runner may lose networking before reporting them. Missing post-shutdown reporting must not be treated as a watcher failure and does not block acceptance when the deterministic self-test has passed and the live connection and shutdown/offline effect were observed.
 
 - [ ] **Step 8: Final verification and handoff**
 
