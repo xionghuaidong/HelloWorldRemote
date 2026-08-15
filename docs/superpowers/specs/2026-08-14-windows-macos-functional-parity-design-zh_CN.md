@@ -234,10 +234,10 @@ Windows watcher 使用隐藏的原生 top-level window 和 message loop 观察 `
 
 本地和 review gates 通过后，在不显示 repository secrets 值的前提下验证 Windows workflow：
 
-1. `debug_level=1`、`wait_connections_seconds=0`：验证 `DEVICE_ID=<完整 device ID>` 后立即打印 `DEVICE_ID_STATE=ready`、自定义码配置、最终截图、artifact upload 和真实手机客户端连接。
-2. `debug_level=2`、`wait_connections_seconds=0`：验证 `DEVICE_ID=<完整 device ID>` 后立即打印 `DEVICE_ID_STATE=ready`，并验证第二次配置具备幂等性。
-3. `debug_level=3`、`wait_connections_seconds=0`：验证 `DEVICE_ID=<完整 device ID>` 后立即打印 `DEVICE_ID_STATE=ready`，以及 20 个保持状态的 live samples。
-4. `debug_level=0`、`wait_connections_seconds=5`：验证 `DEVICE_ID=<完整 device ID>` 后立即打印 `DEVICE_ID_STATE=ready`、不生成 artifact、在开始等待前立即打印 `WAIT_CONNECTIONS DEVICE_ID=<完整 device ID>`，并得到 timeout result。
+1. `debug_level=1`、`wait_connections_seconds=0`：验证 `DEVICE_ID=<完整 device ID>`，紧接着输出 `DEVICE_ID_STATE=ready`、自定义码配置、最终截图、artifact upload 和真实手机客户端连接。
+2. `debug_level=2`、`wait_connections_seconds=0`：验证 `DEVICE_ID=<完整 device ID>`，紧接着输出 `DEVICE_ID_STATE=ready`，并验证第二次配置具备幂等性。
+3. `debug_level=3`、`wait_connections_seconds=0`：验证 `DEVICE_ID=<完整 device ID>`，紧接着输出 `DEVICE_ID_STATE=ready`，以及 20 个保持状态的 live samples。
+4. `debug_level=0`、`wait_connections_seconds=5`：验证 `DEVICE_ID=<完整 device ID>`，紧接着输出 `DEVICE_ID_STATE=ready`、不生成 artifact、在开始等待前立即打印 `WAIT_CONNECTIONS DEVICE_ID=<完整 device ID>`，并得到 timeout result。
 5. 一次专用的远程关机或重启 run：在主机存活到足以报告结果时，验证 shutdown-aware path。
 
 任何 live failure 都使用经过脱敏的 logs 和 diagnostics 进入 systematic debugging。失败不构成削弱操作系统保护的授权。

@@ -137,6 +137,58 @@ class AgentInstructionContractTests(unittest.TestCase):
                 contents,
             )
 
+        english_pair = (
+            "`DEVICE_ID=<complete device ID>` immediately followed by "
+            "`DEVICE_ID_STATE=ready`"
+        )
+        chinese_pair = (
+            "`DEVICE_ID=<完整 device ID>`，紧接着输出 "
+            "`DEVICE_ID_STATE=ready`"
+        )
+        for name in (
+            "docs/superpowers/specs/2026-08-14-windows-macos-functional-parity-design.md",
+            "docs/superpowers/plans/2026-08-14-windows-macos-functional-parity.md",
+        ):
+            contents = text(ROOT / name)
+            for level in range(4):
+                matrix_line = next(
+                    line
+                    for line in contents.splitlines()
+                    if f"`debug_level={level}`" in line
+                )
+                self.assertIn(english_pair, matrix_line)
+
+        for name in (
+            "docs/superpowers/specs/2026-08-14-windows-macos-functional-parity-design-zh_CN.md",
+            "docs/superpowers/plans/2026-08-14-windows-macos-functional-parity-zh_CN.md",
+        ):
+            contents = text(ROOT / name)
+            for level in range(4):
+                matrix_line = next(
+                    line
+                    for line in contents.splitlines()
+                    if f"`debug_level={level}`" in line
+                )
+                self.assertIn(chinese_pair, matrix_line)
+
+        for name in (
+            "docs/superpowers/plans/2026-08-14-windows-macos-functional-parity.md",
+            "docs/superpowers/plans/2026-08-14-windows-macos-functional-parity-zh_CN.md",
+        ):
+            contents = text(ROOT / name)
+            for fixture in (
+                "readiness-empty",
+                "readiness-multiline",
+                "readiness-nul",
+                "readiness-c0",
+                "readiness-del",
+                "readiness-cli-failure",
+            ):
+                self.assertIn(fixture, contents)
+            self.assertIn("self.assertEqual(result.returncode, 1)", contents)
+            self.assertIn('self.assertEqual(result.stdout, "")', contents)
+            self.assertIn("self.assertNotIn(unsafe_output", contents)
+
 
 class EntryPointContractTests(unittest.TestCase):
     def test_readmes_have_navigation(self):
