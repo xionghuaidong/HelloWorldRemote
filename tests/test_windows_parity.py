@@ -579,6 +579,22 @@ class WindowsReadinessBehaviorTests(unittest.TestCase):
         self.assertIn("UNATTENDED_READINESS=verified", result.stdout)
         self.assertNotIn("device-id-fixture", result.stdout + result.stderr)
 
+    def test_unattended_readiness_rejects_unsafe_device_id_without_leakage(self):
+        for mode in (
+            "unattended-unsafe-control",
+            "unattended-unsafe-separator",
+        ):
+            with self.subTest(mode=mode):
+                result = self.run_harness(mode)
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(result.stdout, "")
+                self.assertEqual(
+                    result.stderr.strip(),
+                    "UU Remote unattended readiness failed.",
+                )
+                self.assertNotIn("device-id-fixture", result.stdout + result.stderr)
+                self.assertNotIn("FORGED_OUTPUT", result.stdout + result.stderr)
+
 
 class WindowsDiagnosticContractTests(unittest.TestCase):
     def test_debug_conditions_and_artifact_are_aligned(self):

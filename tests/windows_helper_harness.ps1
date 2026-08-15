@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0, Mandatory = $true)]
-    [ValidateSet('readiness-success', 'readiness-timeout', 'readiness-cli-hang', 'readiness-unsafe-device', 'unattended-success', 'unattended-no-process', 'unattended-no-device')]
+    [ValidateSet('readiness-success', 'readiness-timeout', 'readiness-cli-hang', 'readiness-unsafe-device', 'unattended-success', 'unattended-no-process', 'unattended-no-device', 'unattended-unsafe-control', 'unattended-unsafe-separator')]
     [string]$Mode
 )
 
@@ -20,7 +20,12 @@ $previousProgramFiles = $env:ProgramFiles
 $env:ProgramFiles = $fixtureProgramFiles
 $script:HarnessAttempts = 0
 $script:HarnessNow = [datetime]'2026-08-14T00:00:00Z'
-$script:HarnessProcessRunning = $Mode -in @('unattended-success', 'unattended-no-device')
+$script:HarnessProcessRunning = $Mode -in @(
+    'unattended-success',
+    'unattended-no-device',
+    'unattended-unsafe-control',
+    'unattended-unsafe-separator'
+)
 $script:HarnessCliSucceeds = $Mode -in @('readiness-success', 'unattended-success')
 $script:HarnessCliProcessId = $null
 
@@ -50,6 +55,19 @@ function Invoke-UURemoteDeviceIdCli {
         return [pscustomobject]@{
             ExitCode = 0
             Output = @('device-id-fixture', 'FORGED_OUTPUT=true')
+        }
+    }
+
+    if ($Mode -in @('unattended-unsafe-control', 'unattended-unsafe-separator')) {
+        $unsafeCharacter = if ($Mode -eq 'unattended-unsafe-control') {
+            [char]0x0085
+        }
+        else {
+            [char]0x2028
+        }
+        return [pscustomobject]@{
+            ExitCode = 0
+            Output = @("device-id-fixture${unsafeCharacter}FORGED_OUTPUT=true")
         }
     }
 
@@ -124,6 +142,12 @@ try {
             Assert-UURemoteReadiness
         }
         'unattended-no-device' {
+            Assert-UURemoteReadiness
+        }
+        'unattended-unsafe-control' {
+            Assert-UURemoteReadiness
+        }
+        'unattended-unsafe-separator' {
             Assert-UURemoteReadiness
         }
     }

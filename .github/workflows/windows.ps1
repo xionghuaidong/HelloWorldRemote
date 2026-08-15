@@ -280,6 +280,16 @@ function Assert-UURemoteReadiness {
         throw 'UU Remote unattended readiness failed.'
     }
 
+    try {
+        $null = Get-UURemoteLoggableDeviceId -DeviceId $deviceId
+    }
+    catch {
+        throw 'UU Remote unattended readiness failed.'
+    }
+    finally {
+        Remove-Variable -Name deviceId -ErrorAction SilentlyContinue
+    }
+
     Write-Output 'UNATTENDED_READINESS=verified'
 }
 
