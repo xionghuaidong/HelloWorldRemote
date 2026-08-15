@@ -6,6 +6,7 @@ CLI="${UUREMOTE_CLI_PATH:-$APP/Contents/Helpers/uuyc-cli}"
 mode="${1:-configure}"
 KEY_REPEAT_VALUE=2
 INITIAL_KEY_REPEAT_VALUE=15
+ASSIST_ID_TIMEOUT_SECONDS=3
 
 validate_uuremote_custom_code() {
     local custom_code="${1:-}"
@@ -263,13 +264,103 @@ self_test_wait_connections() {
     echo "shutdown-aware wait self-test passed"
 }
 
-read_uuremote_device_id() {
-    "$CLI" assist id 2>/dev/null | /usr/bin/python3 -c '
+run_bounded_uuremote_cli_to_file() {
+    local output_path="$1"
+    shift
+
+    if [ "$#" -eq 0 ]; then
+        return 2
+    fi
+
+    /usr/bin/python3 - "$output_path" "$ASSIST_ID_TIMEOUT_SECONDS" "$@" <<'PYTHON'
+import os
+import signal
+import subprocess
+import sys
+
+output_path = sys.argv[1]
+timeout_seconds = int(sys.argv[2])
+command = sys.argv[3:]
+
+try:
+    output_descriptor = os.open(
+        output_path,
+        os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+        0o600,
+    )
+    with os.fdopen(output_descriptor, "wb") as output:
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=output,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+except OSError:
+    raise SystemExit(125)
+
+try:
+    return_code = process.wait(timeout=timeout_seconds)
+except subprocess.TimeoutExpired:
+    def signal_process_group(signal_number):
+        if os.name == "nt":
+            if signal_number == signal.SIGTERM:
+                process.terminate()
+            else:
+                process.kill()
+        else:
+            os.killpg(process.pid, signal_number)
+
+    try:
+        signal_process_group(signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
+        process.wait(timeout=0.5)
+    except subprocess.TimeoutExpired:
+        try:
+            signal_process_group(signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait()
+    raise SystemExit(124)
+
+raise SystemExit(return_code if 0 <= return_code <= 255 else 1)
+PYTHON
+}
+
+read_uuremote_device_id() (
+    local device_id_temp_dir=""
+    local output_path=""
+
+    cleanup_device_id_read() {
+        if [ -n "$output_path" ]; then
+            /bin/rm -f -- "$output_path"
+        fi
+        if [ -n "$device_id_temp_dir" ]; then
+            /bin/rmdir "$device_id_temp_dir" 2>/dev/null || true
+        fi
+    }
+    trap cleanup_device_id_read EXIT
+
+    umask 077
+    device_id_temp_dir="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/uuremote-device-id-read.XXXXXX")"
+    /bin/chmod 0700 "$device_id_temp_dir"
+    output_path="$device_id_temp_dir/stdout"
+    : >"$output_path"
+    /bin/chmod 0600 "$output_path"
+
+    if ! run_bounded_uuremote_cli_to_file "$output_path" "$CLI" assist id; then
+        return 1
+    fi
+
+    /usr/bin/python3 - "$output_path" <<'PYTHON'
 import json
+import pathlib
 import sys
 import unicodedata
 
-raw = sys.stdin.buffer.read()
+raw = pathlib.Path(sys.argv[1]).read_bytes()
 try:
     decoded = raw.decode("utf-8")
 except UnicodeDecodeError:
@@ -321,8 +412,8 @@ except (json.JSONDecodeError, ValueError):
     raise SystemExit(1)
 
 sys.stdout.write(value)
-'
-}
+PYTHON
+)
 
 emit_current_device_id() {
     local context="$1"
@@ -372,7 +463,7 @@ diagnose_uuremote_device_id() (
     : >"$output_path"
     /bin/chmod 0600 "$output_path"
 
-    if "$CLI" assist id >"$output_path" 2>/dev/null; then
+    if run_bounded_uuremote_cli_to_file "$output_path" "$CLI" assist id; then
         cli_status=0
     else
         cli_status="$?"
@@ -579,10 +670,23 @@ wait_connections() {
     run_shutdown_waiter "$wait_seconds" none
 }
 
-capture_cli_diagnostics() {
+capture_cli_diagnostics() (
+    local assist_execution="${1:-gui}"
+    local assist_temp_dir=""
+    local assist_output_path=""
     local cli_output=""
     local cli_status
     local cli_state
+
+    cleanup_cli_diagnostics() {
+        if [ -n "$assist_output_path" ]; then
+            /bin/rm -f -- "$assist_output_path"
+        fi
+        if [ -n "$assist_temp_dir" ]; then
+            /bin/rmdir "$assist_temp_dir" 2>/dev/null || true
+        fi
+    }
+    trap cleanup_cli_diagnostics EXIT
 
     if cli_output="$(run_in_gui "$CLI" status 2>/dev/null)"; then
         cli_status=0
@@ -600,9 +704,39 @@ capture_cli_diagnostics() {
     printf 'CLI_STATUS_EXIT=%s\n' "$cli_status"
     unset cli_output
 
-    if cli_output="$(run_in_gui "$CLI" assist id 2>/dev/null)"; then
+    umask 077
+    assist_temp_dir="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/uuremote-assist-id.XXXXXX")"
+    /bin/chmod 0700 "$assist_temp_dir"
+    assist_output_path="$assist_temp_dir/stdout"
+    : >"$assist_output_path"
+    /bin/chmod 0600 "$assist_output_path"
+
+    if [ "$assist_execution" = "direct" ]; then
+        if run_bounded_uuremote_cli_to_file \
+            "$assist_output_path" "$CLI" assist id
+        then
+            cli_status=0
+        else
+            cli_status="$?"
+        fi
+    elif [ "$assist_execution" = "gui" ]; then
+        if run_bounded_uuremote_cli_to_file \
+            "$assist_output_path" \
+            sudo launchctl asuser "$console_uid" \
+            sudo -u "#$console_uid" \
+            "$CLI" assist id
+        then
+            cli_status=0
+        else
+            cli_status="$?"
+        fi
+    else
+        return 2
+    fi
+
+    if [ "$cli_status" -eq 0 ]; then
         cli_status=0
-        if [ -n "$cli_output" ]; then
+        if [ -s "$assist_output_path" ]; then
             cli_state="ready"
         else
             cli_state="empty"
@@ -614,8 +748,7 @@ capture_cli_diagnostics() {
 
     printf 'DEVICE_ID_STATE=%s\n' "$cli_state"
     printf 'DEVICE_ID_EXIT=%s\n' "$cli_status"
-    unset cli_output
-}
+)
 
 self_test_diagnostic_redaction() {
     local test_cli="${UUREMOTE_DIAGNOSTIC_TEST_CLI:-}"
@@ -636,7 +769,7 @@ self_test_diagnostic_redaction() {
     }
 
     /bin/mkdir -p "$evidence_dir"
-    capture_cli_diagnostics | /usr/bin/tee -a "$diagnostic_log"
+    capture_cli_diagnostics direct | /usr/bin/tee -a "$diagnostic_log"
 }
 
 run_as_console_user() {

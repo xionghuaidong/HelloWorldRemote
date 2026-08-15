@@ -89,6 +89,13 @@ case "${DEVICE_ID_FIXTURE_MODE:?}" in
         printf '%s\n' 'raw-cli-device-output'
         exit 7
         ;;
+    hang)
+        printf '%s\n' "$$" >"${DEVICE_ID_FIXTURE_PID_PATH:?}"
+        printf '%s\n' 'device-id-fixture FORGED_OUTPUT=true custom-code-fixture'
+        while true; do
+            sleep 30
+        done
+        ;;
 esac
 FIXTURE
 chmod 0700 "$fixture_cli"
@@ -121,6 +128,73 @@ assert_exact_output() {
         printf 'actual: %s\n' "$actual" >&2
         exit 1
     fi
+}
+
+assert_bounded_hanging_route() {
+    local expected_status="$1"
+    shift
+    local fixture_pid_path="$temporary_directory/hanging-cli.pid"
+
+    DEVICE_ID_FIXTURE_MODE=hang \
+    DEVICE_ID_FIXTURE_PID_PATH="$fixture_pid_path" \
+    UUREMOTE_CLI_PATH="$fixture_cli" \
+        /usr/bin/python3 - "$root/.github/workflows/apple.sh" "$fixture_pid_path" "$expected_status" "$@" <<'PYTHON'
+import os
+import pathlib
+import signal
+import subprocess
+import sys
+import time
+
+helper_path = sys.argv[1]
+fixture_pid_path = pathlib.Path(sys.argv[2])
+expected_status = int(sys.argv[3])
+arguments = sys.argv[4:]
+bash_path = os.environ.get("UUREMOTE_TEST_BASH_PATH", "/bin/bash")
+process = subprocess.Popen(
+    [bash_path, helper_path, *arguments],
+    env=os.environ.copy(),
+    stdout=subprocess.PIPE,
+    stderr=subprocess.PIPE,
+    start_new_session=True,
+)
+try:
+    stdout, stderr = process.communicate(timeout=8)
+except subprocess.TimeoutExpired:
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    else:
+        os.killpg(process.pid, signal.SIGKILL)
+    process.communicate()
+    raise SystemExit("assist id route exceeded its owned timeout")
+
+if process.returncode != expected_status:
+    raise SystemExit("assist id route returned an unexpected status")
+combined = stdout + stderr
+for marker in (
+    b"device-id-fixture",
+    b"FORGED_OUTPUT=true",
+    b"custom-code-fixture",
+):
+    if marker in combined:
+        raise SystemExit("assist id route exposed raw CLI output")
+
+fixture_pid = int(fixture_pid_path.read_text(encoding="ascii").strip())
+deadline = time.monotonic() + 2
+while time.monotonic() < deadline:
+    try:
+        os.kill(fixture_pid, 0)
+    except ProcessLookupError:
+        break
+    time.sleep(0.05)
+else:
+    raise SystemExit("assist id child was not terminated and reaped")
+PYTHON
 }
 
 assert_diagnostic_fields() {
@@ -166,6 +240,10 @@ assert_exact_output $'WAIT_CONNECTIONS DEVICE_ID=device-id-fixture\nWAIT_RESULT=
     run_helper valid wait-connections 0
 assert_exact_output $'WAIT_CONNECTIONS DEVICE_ID=123456789\nWAIT_RESULT=timeout' \
     run_helper json-valid wait-connections 0
+
+assert_bounded_hanging_route 1 report-device-id readiness
+assert_bounded_hanging_route 1 wait-connections 0
+assert_bounded_hanging_route 0 diagnose-device-id
 
 assert_diagnostic_fields valid \
     CLI_EXIT=0 STDOUT_BYTES=18 FRAMING=LF FRAMING_COUNT=1 UTF8=valid SHAPE=structurally-valid \
