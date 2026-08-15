@@ -1,3 +1,4 @@
+import base64
 import os
 import platform
 from pathlib import Path
@@ -200,6 +201,59 @@ class WindowsValidationBehaviorTests(unittest.TestCase):
 
 
 class WindowsWaitBehaviorTests(unittest.TestCase):
+    def run_controlled_device_id_route(self, device_id: str, seconds: str):
+        helper = str(WINDOWS_HELPER).replace("'", "''")
+        encoded = base64.b64encode(device_id.encode("utf-8")).decode("ascii")
+        return run_windows_script(
+            rf"""
+. '{helper}'
+function Get-UURemotePaths {{
+    return [pscustomobject]@{{ LauncherPath = 'fixture'; CliPath = 'fixture' }}
+}}
+function Assert-UURemotePaths {{ param([pscustomobject]$Paths) }}
+$script:FixtureDeviceId = [Text.Encoding]::UTF8.GetString(
+    [Convert]::FromBase64String('{encoded}')
+)
+function Get-UURemoteDeviceId {{
+    param([string]$CliPath, [int]$TimeoutMilliseconds = 60000)
+    return $script:FixtureDeviceId
+}}
+$script:HelperMode = 'wait-connections'
+$script:Arguments = @('{seconds}')
+Invoke-WindowsHelperRoute
+"""
+        )
+
+    def test_wait_message_contains_current_device_id_before_zero_timeout(self):
+        result = self.run_controlled_device_id_route("device-id-fixture", "0")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            result.stdout.splitlines(),
+            [
+                "WAIT_CONNECTIONS DEVICE_ID=device-id-fixture",
+                "WAIT_RESULT=timeout",
+            ],
+        )
+
+    def test_multiline_device_id_fails_closed_without_log_injection(self):
+        result = self.run_controlled_device_id_route(
+            "device-id-fixture\nFORGED_OUTPUT=true",
+            "0",
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(result.stderr.strip(), "Shutdown-aware wait failed.")
+        self.assertNotIn("device-id-fixture", result.stdout + result.stderr)
+        self.assertNotIn("FORGED_OUTPUT", result.stdout + result.stderr)
+
+    def test_control_characters_in_device_id_fail_closed(self):
+        for value in ("device\x00id", "device\tid", "device\x7fid"):
+            with self.subTest(value=repr(value)):
+                result = self.run_controlled_device_id_route(value, "0")
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(result.stdout, "")
+                self.assertEqual(result.stderr.strip(), "Shutdown-aware wait failed.")
+
     def run_self_test_with_injected_waiter(self, body: str):
         helper = str(WINDOWS_HELPER).replace("'", "''")
         return run_windows_script(
@@ -214,12 +268,6 @@ $script:Arguments = @()
 Invoke-WindowsHelperRoute
 """
         )
-
-    @unittest.skipUnless(POWERSHELL_AVAILABLE, "requires a PowerShell runtime")
-    def test_zero_wait_returns_without_loading_the_watcher(self):
-        result = run_windows_helper("wait-connections", "0")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("WAIT_RESULT=timeout", result.stdout)
 
     @unittest.skipUnless(
         WINDOWS_NATIVE_CAPABILITY_AVAILABLE,
@@ -367,18 +415,28 @@ class WindowsReadinessBehaviorTests(unittest.TestCase):
             check=False,
         )
 
-    def test_readiness_retries_transient_failures_without_exposing_device_id(self):
+    def test_readiness_retries_transient_failures_and_reports_device_id_once(self):
         result = self.run_harness("readiness-success")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("DEVICE_ID_STATE=ready", result.stdout)
+        self.assertEqual(
+            [line for line in result.stdout.splitlines() if line.startswith("DEVICE_ID")],
+            ["DEVICE_ID=device-id-fixture", "DEVICE_ID_STATE=ready"],
+        )
+        self.assertEqual(result.stdout.count("DEVICE_ID=device-id-fixture"), 1)
         self.assertIn("ATTEMPTS=3", result.stdout)
-        self.assertNotIn("device-id-fixture", result.stdout + result.stderr)
 
     def test_readiness_timeout_is_bounded_and_sanitized(self):
         result = self.run_harness("readiness-timeout")
         self.assertEqual(result.returncode, 1)
         self.assertIn("timed out", result.stderr.lower())
         self.assertNotIn("device-id-fixture", result.stdout + result.stderr)
+
+    def test_unsafe_readiness_device_id_fails_closed_without_log_injection(self):
+        result = self.run_harness("readiness-unsafe-device")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "")
+        self.assertNotIn("device-id-fixture", result.stderr)
+        self.assertNotIn("FORGED_OUTPUT", result.stderr)
 
     def test_hanging_cli_is_terminated_within_the_overall_deadline(self):
         started = time.monotonic()

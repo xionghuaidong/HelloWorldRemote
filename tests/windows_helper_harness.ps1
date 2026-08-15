@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0, Mandatory = $true)]
-    [ValidateSet('readiness-success', 'readiness-timeout', 'readiness-cli-hang', 'unattended-success', 'unattended-no-process', 'unattended-no-device')]
+    [ValidateSet('readiness-success', 'readiness-timeout', 'readiness-cli-hang', 'readiness-unsafe-device', 'unattended-success', 'unattended-no-process', 'unattended-no-device')]
     [string]$Mode
 )
 
@@ -46,6 +46,13 @@ function Invoke-UURemoteDeviceIdCli {
     }
 
     $script:HarnessAttempts++
+    if ($Mode -eq 'readiness-unsafe-device') {
+        return [pscustomobject]@{
+            ExitCode = 0
+            Output = @('device-id-fixture', 'FORGED_OUTPUT=true')
+        }
+    }
+
     if ($script:HarnessCliSucceeds -and
         ($Mode -eq 'unattended-success' -or $script:HarnessAttempts -ge 3)) {
         return [pscustomobject]@{
@@ -105,6 +112,9 @@ try {
             Start-UURemoteAndWaitDevice -TimeoutSeconds 1 -PollMilliseconds 10
         }
         'readiness-cli-hang' {
+            Start-UURemoteAndWaitDevice -TimeoutSeconds 1 -PollMilliseconds 10
+        }
+        'readiness-unsafe-device' {
             Start-UURemoteAndWaitDevice -TimeoutSeconds 1 -PollMilliseconds 10
         }
         'unattended-success' {

@@ -167,6 +167,31 @@ function Get-UURemoteDeviceId {
     return $deviceId
 }
 
+function Get-UURemoteLoggableDeviceId([string]$DeviceId) {
+    $normalized = if ($null -eq $DeviceId) { '' } else { $DeviceId.Trim() }
+    if ([string]::IsNullOrWhiteSpace($normalized) -or
+        $normalized -match '[\x00-\x1F\x7F]') {
+        throw 'UU Remote device ID is invalid.'
+    }
+    return $normalized
+}
+
+function Write-UURemoteDeviceIdMessage {
+    param(
+        [string]$DeviceId,
+        [ValidateSet('Readiness', 'Wait')]
+        [string]$Context
+    )
+
+    $normalized = Get-UURemoteLoggableDeviceId -DeviceId $DeviceId
+    if ($Context -eq 'Readiness') {
+        Write-Output "DEVICE_ID=$normalized"
+        Write-Output 'DEVICE_ID_STATE=ready'
+        return
+    }
+    Write-Output "WAIT_CONNECTIONS DEVICE_ID=$normalized"
+}
+
 function Start-UURemoteAndWaitDevice {
     param(
         [int]$TimeoutSeconds = 60,
@@ -195,7 +220,8 @@ function Start-UURemoteAndWaitDevice {
         $attempts++
         $deviceId = Get-UURemoteDeviceId -CliPath $paths.CliPath -TimeoutMilliseconds $remainingMilliseconds
         if (-not [string]::IsNullOrWhiteSpace($deviceId)) {
-            Write-Output 'DEVICE_ID_STATE=ready'
+            Write-UURemoteDeviceIdMessage -DeviceId $deviceId -Context 'Readiness'
+            Remove-Variable -Name deviceId -ErrorAction SilentlyContinue
             return
         }
 
@@ -707,17 +733,25 @@ function Invoke-WindowsHelperRoute {
         }
 
         $seconds = [int]$Arguments[0]
-        if ($seconds -eq 0) {
-            Write-Output 'WAIT_RESULT=timeout'
-            exit 0
-        }
-
         try {
+            $paths = Get-UURemotePaths
+            Assert-UURemotePaths -Paths $paths
+            $deviceId = Get-UURemoteDeviceId -CliPath $paths.CliPath
+            Write-UURemoteDeviceIdMessage -DeviceId $deviceId -Context 'Wait'
+
+            if ($seconds -eq 0) {
+                Write-Output 'WAIT_RESULT=timeout'
+                exit 0
+            }
+
             Invoke-ShutdownWaiter -Seconds $seconds -InjectedEvent 'none'
         }
         catch {
             [Console]::Error.WriteLine('Shutdown-aware wait failed.')
             exit 1
+        }
+        finally {
+            Remove-Variable -Name deviceId -ErrorAction SilentlyContinue
         }
         exit 0
     }
