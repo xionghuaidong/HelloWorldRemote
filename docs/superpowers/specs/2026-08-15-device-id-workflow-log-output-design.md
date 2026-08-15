@@ -121,6 +121,7 @@ Behavior tests must prove:
 - Failed retry output and raw CLI stderr remain absent.
 - Custom-code and password fixtures remain absent from stdout, stderr, screenshots, and artifacts.
 - Diagnostic artifacts do not acquire device-ID content as a side effect of the log change.
+- The shutdown-wait self-tests independently observe cleanup: macOS leaves no temporary build directory or watcher process, and Windows returns to the same-process watcher resource baseline.
 
 Contract tests must confirm equivalent Windows and macOS prefixes, ordering, debug gates, and documentation policies. The final verification includes the full repository test suite, bilingual Markdown counterpart/navigation checks, JSON validation, sensitive-value scans, and `git diff --check`.
 
@@ -134,3 +135,9 @@ Live validation covers Windows and macOS at debug levels `0` and `1`, plus the e
 - logs and artifacts contain no custom code or account password;
 - artifacts retain their existing names and file contents;
 - timeout and shutdown/restart runs retain their exact `WAIT_RESULT` values.
+
+The executable injected shutdown-wait self-test provides deterministic evidence for the exact `WAIT_RESULT=shutdown/restart` result and cleanup contract. It must pass before live acceptance.
+
+Live acceptance is separate: it requires a successful mobile-client connection and observation of the requested real shutdown/offline effect. The user initiates the remote shutdown/restart action; the agent must not issue an operating-system shutdown command.
+
+Post-shutdown/restart GitHub log, result, and cleanup reporting is best-effort and non-blocking. Missing reporting after shutdown/restart begins is not a watcher failure and does not block acceptance when the deterministic self-test passed and the live connection and shutdown/offline effect were observed.

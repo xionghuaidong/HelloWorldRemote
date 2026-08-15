@@ -203,29 +203,25 @@ class AgentInstructionContractTests(unittest.TestCase):
             chinese_plan.index("- [ ] **步骤 8：最终验证")
         ]
 
-        for requirement in (
-            "The executable injected shutdown-wait self-test is the deterministic acceptance",
-            "Live acceptance requires a successful mobile-client connection and observation of the requested real shutdown/offline effect.",
-            "Once real shutdown/restart begins, final GitHub log, result, and cleanup evidence are best-effort",
-            "Missing reporting after shutdown/restart begins must not be treated as a watcher failure",
-        ):
-            self.assertIn(requirement, english_step)
-
-        for requirement in (
-            "Executable injected shutdown-wait self-test 是确定性验收",
-            "Live acceptance 要求 mobile-client 连接成功，并观察到所请求的真实 shutdown/offline effect。",
-            "真实 shutdown/restart 开始后，最终 GitHub log、result 与 cleanup evidence 仅作 best-effort",
-            "shutdown/restart 开始后缺少回传不得被判定为 watcher failure",
-        ):
-            self.assertIn(requirement, chinese_step)
-
-        self.assertNotIn(
-            "Require exact `WAIT_RESULT=shutdown/restart` and verify cleanup completes.",
-            english_step,
+        self.assertEqual(
+            english_step.strip().split("\n\n"),
+            [
+                "- [ ] **Step 7: Run the manual mobile-client and shutdown/restart acceptance**",
+                "Dispatch a Windows debug-level `0` run with a user-approved positive wait duration. Tell the user the run has entered `Wait connections`; the user copies the visible device ID and connects with the separately held custom code. Record only whether connection succeeded, never the custom code.",
+                "The executable injected shutdown-wait self-test is the deterministic acceptance for exact `WAIT_RESULT=shutdown/restart` output and the cleanup contract. Run it before live acceptance and require it to pass.",
+                "Live acceptance requires a successful mobile-client connection and observation of the requested real shutdown/offline effect. Run a separate positive-wait acceptance for shutdown/restart. The user initiates the remote shutdown/restart action; the agent must not issue an operating-system shutdown command.",
+                "Once real shutdown/restart begins, final GitHub log, result, and cleanup evidence are best-effort because the runner may lose networking before reporting them. Missing reporting after shutdown/restart begins must not be treated as a watcher failure and does not block acceptance when the deterministic self-test has passed and the live connection and shutdown/offline effect were observed.",
+            ],
         )
-        self.assertNotIn(
-            "要求精确 `WAIT_RESULT=shutdown/restart`，并验证 cleanup 完成。",
-            chinese_step,
+        self.assertEqual(
+            chinese_step.strip().split("\n\n"),
+            [
+                "- [ ] **步骤 7：运行手动 mobile-client 与 shutdown/restart acceptance**",
+                "使用用户批准的正 wait duration dispatch Windows debug-level `0` run。通知用户 run 已进入 `Wait connections`；用户复制可见 device ID，并使用单独持有的 custom code 连接。只记录是否连接成功，绝不记录 custom code。",
+                "Executable injected shutdown-wait self-test 是确定性验收，用于验证精确 `WAIT_RESULT=shutdown/restart` 输出与 cleanup contract。在 live acceptance 前运行并要求它通过。",
+                "Live acceptance 要求 mobile-client 连接成功，并观察到所请求的真实 shutdown/offline effect。使用独立 positive-wait run 验收 shutdown/restart。由用户发起 remote shutdown/restart action；agent 禁止执行 operating-system shutdown command。",
+                "真实 shutdown/restart 开始后，最终 GitHub log、result 与 cleanup evidence 仅作 best-effort，因为 runner 可能在回传前失去网络。shutdown/restart 开始后缺少回传不得被判定为 watcher failure；当确定性 self-test 已通过，且已观察到 live connection 与 shutdown/offline effect 时，该回传缺失不阻塞验收。",
+            ],
         )
 
     def test_shutdown_acceptance_separates_deterministic_and_live_evidence(self):
@@ -245,6 +241,14 @@ class AgentInstructionContractTests(unittest.TestCase):
             ROOT
             / "docs/superpowers/plans/2026-08-15-device-id-workflow-log-output-zh_CN.md"
         )
+        english_device_id_design = text(
+            ROOT
+            / "docs/superpowers/specs/2026-08-15-device-id-workflow-log-output-design.md"
+        )
+        chinese_device_id_design = text(
+            ROOT
+            / "docs/superpowers/specs/2026-08-15-device-id-workflow-log-output-design-zh_CN.md"
+        )
 
         self.assertIn(
             "the runner may lose networking before it can send\nthe final step result",
@@ -256,7 +260,21 @@ class AgentInstructionContractTests(unittest.TestCase):
         )
         self.assert_shutdown_acceptance_contract(english_plan, chinese_plan)
 
-    def test_shutdown_acceptance_rejects_historical_live_only_guarantee(self):
+        for requirement in (
+            "The executable injected shutdown-wait self-test provides deterministic evidence for the exact `WAIT_RESULT=shutdown/restart` result and cleanup contract.",
+            "Live acceptance is separate: it requires a successful mobile-client connection and observation of the requested real shutdown/offline effect.",
+            "Post-shutdown/restart GitHub log, result, and cleanup reporting is best-effort and non-blocking.",
+        ):
+            self.assertIn(requirement, english_device_id_design)
+
+        for requirement in (
+            "Executable injected shutdown-wait self-test 为精确 `WAIT_RESULT=shutdown/restart` 结果与 cleanup contract 提供确定性 evidence。",
+            "Live acceptance 与此分开：它要求 mobile-client 连接成功，并观察到所请求的真实 shutdown/offline effect。",
+            "Shutdown/restart 后的 GitHub log、result 与 cleanup reporting 仅作 best-effort，且不阻塞验收。",
+        ):
+            self.assertIn(requirement, chinese_device_id_design)
+
+    def test_shutdown_acceptance_rejects_any_additional_contradictory_requirement(self):
         english_plan = text(
             ROOT
             / "docs/superpowers/plans/2026-08-15-device-id-workflow-log-output.md"
@@ -265,29 +283,44 @@ class AgentInstructionContractTests(unittest.TestCase):
             ROOT
             / "docs/superpowers/plans/2026-08-15-device-id-workflow-log-output-zh_CN.md"
         )
-        english_mutation = english_plan.replace(
-            "- [ ] **Step 8: Final verification",
-            "Require exact `WAIT_RESULT=shutdown/restart` and verify cleanup completes.\n\n"
-            "- [ ] **Step 8: Final verification",
-            1,
-        )
-        chinese_mutation = chinese_plan.replace(
-            "- [ ] **步骤 8：最终验证",
-            "要求精确 `WAIT_RESULT=shutdown/restart`，并验证 cleanup 完成。\n\n"
-            "- [ ] **步骤 8：最终验证",
-            1,
+        contradictory_requirements = (
+            (
+                "Require exact `WAIT_RESULT=shutdown/restart` and verify cleanup completes.",
+                "要求精确 `WAIT_RESULT=shutdown/restart`，并验证 cleanup 完成。",
+            ),
+            (
+                "Require the live run to report its final GitHub result and cleanup evidence after shutdown/restart.",
+                "要求 live run 在 shutdown/restart 后回传最终 GitHub result 与 cleanup evidence。",
+            ),
+            (
+                "Treat missing post-shutdown GitHub reporting as a watcher failure.",
+                "将 shutdown 后缺少 GitHub 回传判定为 watcher failure。",
+            ),
         )
 
-        for language, mutated_english, mutated_chinese in (
-            ("English", english_mutation, chinese_plan),
-            ("Simplified Chinese", english_plan, chinese_mutation),
+        for index, (english_requirement, chinese_requirement) in enumerate(
+            contradictory_requirements
         ):
-            with self.subTest(language=language):
-                with self.assertRaises(AssertionError):
-                    self.assert_shutdown_acceptance_contract(
-                        mutated_english,
-                        mutated_chinese,
-                    )
+            english_mutation = english_plan.replace(
+                "- [ ] **Step 8: Final verification",
+                f"{english_requirement}\n\n- [ ] **Step 8: Final verification",
+                1,
+            )
+            chinese_mutation = chinese_plan.replace(
+                "- [ ] **步骤 8：最终验证",
+                f"{chinese_requirement}\n\n- [ ] **步骤 8：最终验证",
+                1,
+            )
+            for language, mutated_english, mutated_chinese in (
+                ("English", english_mutation, chinese_plan),
+                ("Simplified Chinese", english_plan, chinese_mutation),
+            ):
+                with self.subTest(index=index, language=language):
+                    with self.assertRaises(AssertionError):
+                        self.assert_shutdown_acceptance_contract(
+                            mutated_english,
+                            mutated_chinese,
+                        )
 
 
 class EntryPointContractTests(unittest.TestCase):

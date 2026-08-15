@@ -210,12 +210,18 @@ run_shutdown_waiter() (
     injected_event="${2:-none}"
     script_dir="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
     watcher_source="$script_dir/uuremote-shutdown-wait.swift"
+    watcher_temp_root="${UUREMOTE_SHUTDOWN_WAITER_TEMP_ROOT:-/tmp}"
 
     resolve_console_account
 
+    if [ ! -d "$watcher_temp_root" ]; then
+        echo "Shutdown watcher temporary root is unavailable" >&2
+        return 1
+    fi
+
     build_dir="$(
         run_as_console_user /usr/bin/mktemp -d \
-            "/tmp/uuremote-shutdown-wait.XXXXXX"
+            "$watcher_temp_root/uuremote-shutdown-wait.XXXXXX"
     )"
     watcher_binary="$build_dir/uuremote-shutdown-wait"
     watcher_build_source="$build_dir/uuremote-shutdown-wait.swift"
@@ -240,8 +246,37 @@ run_shutdown_waiter() (
     run_as_console_user "$watcher_binary" "$wait_seconds" "$injected_event"
 )
 
-self_test_wait_connections() {
+self_test_wait_connections() (
     local result
+    local self_test_root="${UUREMOTE_SHUTDOWN_WAITER_SELF_TEST_ROOT:-}"
+    local owns_self_test_root=0
+
+    if [ -n "$self_test_root" ]; then
+        if [ ! -d "$self_test_root" ]; then
+            echo "Shutdown waiter self-test temporary root is unavailable" >&2
+            return 1
+        fi
+    else
+        resolve_console_account
+        self_test_root="$(
+            run_as_console_user /usr/bin/mktemp -d \
+                "/tmp/uuremote-shutdown-wait-self-test.XXXXXX"
+        )"
+        owns_self_test_root=1
+    fi
+
+    cleanup_wait_self_test_root() {
+        if [ "$owns_self_test_root" -eq 1 ]; then
+            sudo /bin/rmdir "$self_test_root" 2>/dev/null || true
+        fi
+    }
+
+    trap cleanup_wait_self_test_root EXIT
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+
+    export UUREMOTE_SHUTDOWN_WAITER_TEMP_ROOT="$self_test_root"
 
     result="$(run_shutdown_waiter 1 none)"
     if [ "$result" != "WAIT_RESULT=timeout" ]; then
@@ -261,8 +296,19 @@ self_test_wait_connections() {
         return 1
     fi
 
+    if [ -n "$(/usr/bin/find "$self_test_root" -mindepth 1 -print -quit)" ]; then
+        echo "Shutdown waiter self-test left temporary files" >&2
+        return 1
+    fi
+
+    if /usr/bin/pgrep -f "$self_test_root/uuremote-shutdown-wait" >/dev/null 2>&1; then
+        echo "Shutdown waiter self-test left a watcher process" >&2
+        return 1
+    fi
+
+    echo "WAIT_SELF_TEST_CLEANUP=released"
     echo "shutdown-aware wait self-test passed"
-}
+)
 
 run_bounded_uuremote_cli_to_file() {
     local output_path="$1"

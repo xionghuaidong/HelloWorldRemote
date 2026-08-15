@@ -180,15 +180,37 @@ class WaitWatcherSourceTests(unittest.TestCase):
 @unittest.skipUnless(platform.system() == "Darwin", "requires AppKit")
 class WaitWatcherBehaviorTests(unittest.TestCase):
     def test_shell_self_test_passes(self):
-        result = subprocess.run(
-            ["/bin/bash", str(SCRIPT_PATH), "self-test-wait-connections"],
-            cwd=ROOT,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            environment = os.environ.copy()
+            environment["UUREMOTE_SHUTDOWN_WAITER_SELF_TEST_ROOT"] = (
+                temporary_directory
+            )
+            result = subprocess.run(
+                ["/bin/bash", str(SCRIPT_PATH), "self-test-wait-connections"],
+                cwd=ROOT,
+                env=environment,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            remaining_paths = list(Path(temporary_directory).iterdir())
+            process_probe = subprocess.run(
+                ["/usr/bin/pgrep", "-f", f"{temporary_directory}/uuremote-shutdown-wait"],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("shutdown-aware wait self-test passed", result.stdout)
+        self.assertEqual(
+            result.stdout.splitlines(),
+            [
+                "WAIT_SELF_TEST_CLEANUP=released",
+                "shutdown-aware wait self-test passed",
+            ],
+        )
+        self.assertEqual(remaining_paths, [])
+        self.assertEqual(process_probe.returncode, 1, process_probe.stdout)
 
 
 if __name__ == "__main__":

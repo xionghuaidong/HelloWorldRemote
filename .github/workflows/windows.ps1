@@ -550,6 +550,37 @@ function Set-UURemoteCustomCode {
     Write-Output 'CUSTOM_CODE_STATE=configured'
 }
 
+function Initialize-ShutdownWaiterResourceInterop {
+    if ($null -eq ('UURemote.ShutdownWaiterResourceInterop' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+
+namespace UURemote
+{
+    public static class ShutdownWaiterResourceInterop
+    {
+        [DllImport("kernel32.dll")]
+        private static extern IntPtr GetCurrentProcess();
+
+        [DllImport("user32.dll")]
+        private static extern uint GetGuiResources(IntPtr processHandle, uint flags);
+
+        public static uint GetUserObjectCount()
+        {
+            return GetGuiResources(GetCurrentProcess(), 1);
+        }
+    }
+}
+'@
+    }
+}
+
+function Get-ShutdownWaiterUserObjectCount {
+    Initialize-ShutdownWaiterResourceInterop
+    return [UURemote.ShutdownWaiterResourceInterop]::GetUserObjectCount()
+}
+
 function Invoke-ShutdownWaiter {
     param(
         [int]$Seconds,
@@ -584,7 +615,6 @@ function Invoke-ShutdownWaiter {
         Write-Output "WAIT_RESULT=$result"
     }
     finally {
-        [System.Windows.Forms.Application]::ExitThread()
         Remove-Variable -Name result -ErrorAction SilentlyContinue
     }
 }
@@ -748,17 +778,23 @@ function Invoke-WindowsHelperRoute {
         $ordinary = $null
         $logout = $null
         $shutdown = $null
+        $resourceBaseline = $null
+        $resourceAfter = $null
         try {
             $timeout = Invoke-ShutdownWaiter -Seconds 1 -InjectedEvent 'none'
+            $resourceBaseline = Get-ShutdownWaiterUserObjectCount
             $ordinary = Invoke-ShutdownWaiter -Seconds 1 -InjectedEvent 'ordinary'
             $logout = Invoke-ShutdownWaiter -Seconds 1 -InjectedEvent 'logout'
             $shutdown = Invoke-ShutdownWaiter -Seconds 2 -InjectedEvent 'shutdown'
+            $resourceAfter = Get-ShutdownWaiterUserObjectCount
             if ($timeout -ne 'WAIT_RESULT=timeout' -or
                 $ordinary -ne 'WAIT_RESULT=timeout' -or
                 $logout -ne 'WAIT_RESULT=timeout' -or
-                $shutdown -ne 'WAIT_RESULT=shutdown/restart') {
+                $shutdown -ne 'WAIT_RESULT=shutdown/restart' -or
+                $resourceAfter -ne $resourceBaseline) {
                 throw 'shutdown-aware wait self-test failed'
             }
+            Write-Output 'WAIT_SELF_TEST_CLEANUP=released'
             Write-Output 'shutdown-aware wait self-test passed'
         }
         catch {
@@ -767,6 +803,11 @@ function Invoke-WindowsHelperRoute {
             [Console]::Error.WriteLine("WAIT_SELF_TEST_ORDINARY=$(Get-SafeWaitSelfTestObservation $ordinary)")
             [Console]::Error.WriteLine("WAIT_SELF_TEST_LOGOUT=$(Get-SafeWaitSelfTestObservation $logout)")
             [Console]::Error.WriteLine("WAIT_SELF_TEST_SHUTDOWN=$(Get-SafeWaitSelfTestObservation $shutdown)")
+            if ($null -ne $resourceBaseline -and
+                $null -ne $resourceAfter -and
+                $resourceAfter -ne $resourceBaseline) {
+                [Console]::Error.WriteLine('WAIT_SELF_TEST_CLEANUP=unreleased')
+            }
             if ($null -eq $timeout -or $null -eq $ordinary -or
                 $null -eq $logout -or $null -eq $shutdown) {
                 [Console]::Error.WriteLine("WAIT_SELF_TEST_EXCEPTION=$(Get-SafeWaitSelfTestExceptionCategory $_.Exception)")

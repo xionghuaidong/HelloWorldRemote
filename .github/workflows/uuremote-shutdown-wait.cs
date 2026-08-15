@@ -1,5 +1,7 @@
 using System;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Threading;
 using System.Windows.Forms;
 
 namespace UURemote
@@ -17,90 +19,17 @@ namespace UURemote
             return "injectedEvent";
         }
 
-        private sealed class WaitContext : ApplicationContext
-        {
-            private readonly ShutdownWindow window;
-            private readonly Timer timeoutTimer;
-            private readonly Timer injectedEventTimer;
-            private readonly string injectedEvent;
-            private bool completed;
-
-            internal WaitContext(int seconds, string injectedEvent)
-            {
-                window = new ShutdownWindow(this);
-
-                timeoutTimer = new Timer { Interval = checked(seconds * 1000) };
-                timeoutTimer.Tick += OnTimeout;
-                timeoutTimer.Start();
-
-                if (injectedEvent != "none")
-                {
-                    this.injectedEvent = injectedEvent;
-                    injectedEventTimer = new Timer { Interval = 1 };
-                    injectedEventTimer.Tick += OnInjectedEvent;
-                    injectedEventTimer.Start();
-                }
-            }
-
-            internal string Result { get; private set; }
-
-            internal void Complete(string result)
-            {
-                if (completed)
-                {
-                    return;
-                }
-
-                completed = true;
-                Result = result;
-                timeoutTimer.Stop();
-                if (injectedEventTimer != null)
-                {
-                    injectedEventTimer.Stop();
-                }
-                ExitThread();
-            }
-
-            private void OnTimeout(object sender, EventArgs e)
-            {
-                Complete("timeout");
-            }
-
-            private void OnInjectedEvent(object sender, EventArgs e)
-            {
-                injectedEventTimer.Stop();
-                window.PostInjectedEvent(injectedEvent);
-            }
-
-            protected override void Dispose(bool disposing)
-            {
-                if (disposing)
-                {
-                    timeoutTimer.Tick -= OnTimeout;
-                    timeoutTimer.Dispose();
-                    if (injectedEventTimer != null)
-                    {
-                        injectedEventTimer.Tick -= OnInjectedEvent;
-                        injectedEventTimer.Dispose();
-                    }
-                    window.Dispose();
-                }
-                base.Dispose(disposing);
-            }
-        }
-
         private sealed class ShutdownWindow : NativeWindow, IDisposable
         {
             private const int WmQueryEndSession = 0x0011;
             private const int WmInjectedOrdinary = 0x8001;
             private const long EndSessionLogoff = 0x80000000L;
-            private readonly WaitContext context;
-
-            internal ShutdownWindow(WaitContext context)
+            internal ShutdownWindow()
             {
-                this.context = context;
                 CreateHandle(new CreateParams { Caption = "UU Remote shutdown waiter" });
             }
+
+            internal string Result { get; private set; }
 
             internal void PostInjectedEvent(string injectedEvent)
             {
@@ -122,7 +51,7 @@ namespace UURemote
                     m.Result = new IntPtr(1);
                     if ((m.LParam.ToInt64() & EndSessionLogoff) == 0)
                     {
-                        context.Complete("shutdown/restart");
+                        Result = "shutdown/restart";
                     }
                     return;
                 }
@@ -155,10 +84,28 @@ namespace UURemote
             if (injectedEvent != "none" && injectedEvent != "ordinary" &&
                 injectedEvent != "logout" && injectedEvent != "shutdown")
                 throw new ArgumentException("Unsupported injected event", nameof(injectedEvent));
-            using (var context = new WaitContext(seconds, injectedEvent))
+            long timeoutMilliseconds = checked(seconds * 1000L);
+            using (var window = new ShutdownWindow())
             {
-                Application.Run(context);
-                return context.Result;
+                if (injectedEvent != "none")
+                {
+                    window.PostInjectedEvent(injectedEvent);
+                }
+
+                var stopwatch = Stopwatch.StartNew();
+                while (window.Result == null && stopwatch.ElapsedMilliseconds < timeoutMilliseconds)
+                {
+                    Application.DoEvents();
+                    if (window.Result == null)
+                    {
+                        long remainingMilliseconds = timeoutMilliseconds - stopwatch.ElapsedMilliseconds;
+                        if (remainingMilliseconds > 0)
+                        {
+                            Thread.Sleep((int)Math.Min(50L, remainingMilliseconds));
+                        }
+                    }
+                }
+                return window.Result ?? "timeout";
             }
         }
     }

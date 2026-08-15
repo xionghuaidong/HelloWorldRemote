@@ -121,6 +121,7 @@ Behavior tests 必须证明：
 - 失败 retry 输出和原始 CLI stderr 继续保持不可见。
 - Custom-code 与 password fixtures 继续不出现在 stdout、stderr、screenshots 和 artifacts 中。
 - Diagnostic artifacts 不会因本次日志修改而获得 device-ID 内容。
+- Shutdown-wait self-tests 必须独立观察 cleanup：macOS 不得遗留临时 build directory 或 watcher process，Windows 必须回到同一 process 内的 watcher resource baseline。
 
 Contract tests 必须确认 Windows 与 macOS 的 prefixes、ordering、debug gates 和 documentation policies 等价。最终验证包括完整 repository test suite、双语 Markdown counterpart/navigation checks、JSON validation、sensitive-value scans 和 `git diff --check`。
 
@@ -134,3 +135,9 @@ Live validation 覆盖 Windows 和 macOS 的 debug level `0` 与 `1`，以及现
 - logs 与 artifacts 不包含 custom code 或账户密码；
 - artifacts 保持现有名称和文件内容；
 - timeout 与 shutdown/restart runs 保持其精确 `WAIT_RESULT` 值。
+
+Executable injected shutdown-wait self-test 为精确 `WAIT_RESULT=shutdown/restart` 结果与 cleanup contract 提供确定性 evidence。它必须在 live acceptance 前通过。
+
+Live acceptance 与此分开：它要求 mobile-client 连接成功，并观察到所请求的真实 shutdown/offline effect。由用户发起 remote shutdown/restart action；agent 禁止执行 operating-system shutdown command。
+
+Shutdown/restart 后的 GitHub log、result 与 cleanup reporting 仅作 best-effort，且不阻塞验收。Shutdown/restart 开始后缺少回传不属于 watcher failure；当确定性 self-test 已通过，且已观察到 live connection 与 shutdown/offline effect 时，该回传缺失不阻塞验收。

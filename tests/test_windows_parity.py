@@ -316,7 +316,7 @@ Invoke-WindowsHelperRoute
                 self.assertEqual(result.stderr.strip(), "Shutdown-aware wait failed.")
                 self.assertNotIn("device-id-fixture", result.stdout + result.stderr)
 
-    def run_self_test_with_injected_waiter(self, body: str):
+    def run_self_test_with_injected_waiter(self, body: str, setup: str = ""):
         helper = str(WINDOWS_HELPER).replace("'", "''")
         return run_windows_script(
             f"""
@@ -325,6 +325,7 @@ function Invoke-ShutdownWaiter {{
     param([int]$Seconds, [string]$InjectedEvent)
     {body}
 }}
+{setup}
 $script:HelperMode = 'self-test-wait-connections'
 $script:Arguments = @()
 Invoke-WindowsHelperRoute
@@ -354,7 +355,13 @@ Invoke-WindowsHelperRoute
     def test_injected_wait_self_test_passes(self):
         result = run_windows_helper("self-test-wait-connections")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("shutdown-aware wait self-test passed", result.stdout)
+        self.assertEqual(
+            result.stdout.splitlines(),
+            [
+                "WAIT_SELF_TEST_CLEANUP=released",
+                "shutdown-aware wait self-test passed",
+            ],
+        )
 
     @unittest.skipUnless(POWERSHELL_AVAILABLE, "requires a PowerShell runtime")
     def test_self_test_passes_for_each_path_discovered_runtime(self):
@@ -362,7 +369,48 @@ Invoke-WindowsHelperRoute
             with self.subTest(runtime=runtime):
                 result = run_windows_helper("self-test-wait-connections", powershell=runtime)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertIn("shutdown-aware wait self-test passed", result.stdout)
+                self.assertEqual(
+                    result.stdout.splitlines(),
+                    [
+                        "WAIT_SELF_TEST_CLEANUP=released",
+                        "shutdown-aware wait self-test passed",
+                    ],
+                )
+
+    @unittest.skipUnless(POWERSHELL_AVAILABLE, "requires a PowerShell runtime")
+    def test_self_test_rejects_same_process_watcher_resource_growth(self):
+        result = self.run_self_test_with_injected_waiter(
+            r"""
+switch ($InjectedEvent) {
+    'none' { 'WAIT_RESULT=timeout'; break }
+    'ordinary' { 'WAIT_RESULT=timeout'; break }
+    'logout' { 'WAIT_RESULT=timeout'; break }
+    'shutdown' { 'WAIT_RESULT=shutdown/restart'; break }
+}
+""",
+            setup=r"""
+$script:FixtureResourceCounts = [System.Collections.Generic.Queue[uint32]]::new()
+$script:FixtureResourceCounts.Enqueue(41)
+$script:FixtureResourceCounts.Enqueue(42)
+function Get-ShutdownWaiterUserObjectCount {
+    return $script:FixtureResourceCounts.Dequeue()
+}
+""",
+        )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(
+            result.stderr.splitlines(),
+            [
+                "shutdown-aware wait self-test failed",
+                "WAIT_SELF_TEST_TIMEOUT=timeout",
+                "WAIT_SELF_TEST_ORDINARY=timeout",
+                "WAIT_SELF_TEST_LOGOUT=timeout",
+                "WAIT_SELF_TEST_SHUTDOWN=shutdown/restart",
+                "WAIT_SELF_TEST_CLEANUP=unreleased",
+            ],
+        )
 
     @unittest.skipUnless(POWERSHELL_AVAILABLE, "requires a PowerShell runtime")
     def test_self_test_requires_logout_to_reach_timeout(self):
