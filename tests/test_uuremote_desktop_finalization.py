@@ -24,7 +24,42 @@ def step_block(workflow: str, name: str) -> str:
     return workflow[start:] if next_step < 0 else workflow[start:next_step]
 
 
+def shell_if_block(script: str, gate: str) -> str:
+    lines = script.splitlines()
+    start = next(index for index, line in enumerate(lines) if line.strip() == gate)
+    depth = 0
+
+    for index in range(start, len(lines)):
+        statement = lines[index].strip()
+        if statement.startswith("if "):
+            depth += 1
+        elif statement == "fi":
+            depth -= 1
+            if depth == 0:
+                return "\n".join(lines[start : index + 1])
+
+    raise ValueError(f"Unterminated shell if block: {gate}")
+
+
 class CustomCodeWorkflowTests(unittest.TestCase):
+    def assert_failed_diagnostic_contract(self, launch: str):
+        exhausted = 'if [ "$device_id_ready" -ne 1 ]'
+        debug_gate = 'if [ "${UUREMOTE_DEBUG:-0}" != "0" ]; then'
+        diagnostic = ".github/workflows/apple.sh diagnose-device-id || true"
+        generic_failure = "UU Remote device readiness failed after 120 attempts"
+        debug_block = shell_if_block(launch, debug_gate)
+        debug_lines = [line.strip() for line in debug_block.splitlines()]
+
+        self.assertEqual(launch.count(diagnostic), 1)
+        self.assertEqual(debug_lines[1:-1].count(diagnostic), 1)
+        self.assertEqual(debug_lines[0], debug_gate)
+        self.assertEqual(debug_lines[-1], "fi")
+        self.assertLess(launch.index(exhausted), launch.index(debug_gate))
+        self.assertLess(
+            launch.index(debug_block) + len(debug_block),
+            launch.index(generic_failure),
+        )
+
     def test_custom_code_is_required_masked_and_step_scoped(self):
         workflow = text(WORKFLOW_PATH)
         job_environment = workflow[
@@ -68,15 +103,23 @@ class CustomCodeWorkflowTests(unittest.TestCase):
 
     def test_failed_diagnostic_readiness_runs_structural_diagnostics_once(self):
         launch = step_block(text(WORKFLOW_PATH), "Launch GameViewer")
-        exhausted = 'if [ "$device_id_ready" -ne 1 ]'
-        debug_gate = 'if [ "${UUREMOTE_DEBUG:-0}" != "0" ]; then'
-        diagnostic = ".github/workflows/apple.sh diagnose-device-id || true"
-        generic_failure = "UU Remote device readiness failed after 120 attempts"
+        self.assert_failed_diagnostic_contract(launch)
 
-        self.assertEqual(launch.count(diagnostic), 1)
-        self.assertLess(launch.index(exhausted), launch.index(debug_gate))
-        self.assertLess(launch.index(debug_gate), launch.index(diagnostic))
-        self.assertLess(launch.index(diagnostic), launch.index(generic_failure))
+    def test_failed_diagnostic_contract_rejects_call_after_debug_gate(self):
+        invalid_launch = """
+            if [ "$device_id_ready" -ne 1 ]
+            then
+                if [ "${UUREMOTE_DEBUG:-0}" != "0" ]; then
+                    echo "debug enabled"
+                fi
+                .github/workflows/apple.sh diagnose-device-id || true
+                echo "UU Remote device readiness failed after 120 attempts" >&2
+                exit 1
+            fi
+        """
+
+        with self.assertRaises(AssertionError):
+            self.assert_failed_diagnostic_contract(invalid_launch)
 
 
 @unittest.skipUnless(BASH_AVAILABLE, "requires /bin/bash")
