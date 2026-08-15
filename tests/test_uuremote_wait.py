@@ -53,6 +53,29 @@ class WaitWorkflowContractTests(unittest.TestCase):
             block,
         )
 
+    def test_device_id_logging_evidence_is_diagnostic_only_and_precedes_provisioning(self):
+        workflow = text(WORKFLOW_PATH)
+        self.assertIn("      - name: Test device ID logging\n", workflow)
+        block = step_block(workflow, "Test device ID logging")
+        commands = [
+            line.strip()
+            for line in block.split("        run: |\n", 1)[1].splitlines()
+            if line.strip()
+        ]
+
+        self.assertIn("if: env.UUREMOTE_DEBUG != '0'", block)
+        self.assertEqual(
+            commands,
+            [
+                "/bin/bash tests/test_macos_device_id_logging.sh",
+                "python -m unittest tests.test_uuremote_wait tests.test_uuremote_desktop_finalization -v",
+            ],
+        )
+        self.assertLess(
+            workflow.index("      - name: Test device ID logging"),
+            workflow.index("      - name: Configure macOS host"),
+        )
+
 
 @unittest.skipUnless(BASH_AVAILABLE, "requires /bin/bash")
 class WaitShellContractTests(unittest.TestCase):

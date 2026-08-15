@@ -39,6 +39,13 @@ jobs:
         run: |
             .github/workflows/apple.sh self-test-wait-connections
 
+      - name: Test device ID logging
+        if: env.UUREMOTE_DEBUG != '0'
+        shell: bash
+        run: |
+            /bin/bash tests/test_macos_device_id_logging.sh
+            python -m unittest tests.test_uuremote_wait tests.test_uuremote_desktop_finalization -v
+
       - name: Configure macOS host
         shell: bash
         env:
