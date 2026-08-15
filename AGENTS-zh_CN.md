@@ -44,7 +44,7 @@
 
 ## 项目安全与验证
 
-* 将帐户密码、UU Remote custom codes 和远程设备连接信息视为敏感信息。尤其是 `UUREMOTE_ACCOUNT_PASSWORD` 和 `UUREMOTE_CUSTOM_CODE` 属于 secrets。
+* 将帐户密码和 UU Remote custom codes 视为 secrets。UU Remote device ID 是可以记录到日志的 operational identifier；除非已批准设计另有规定，否则其他远程设备连接信息仍然是敏感信息。尤其是 `UUREMOTE_ACCOUNT_PASSWORD` 和 `UUREMOTE_CUSTOM_CODE` 属于 secrets。
 * 绝不在 source、tests、defaults、logs、screenshots 或 artifacts 中硬编码真实凭据。
 * 通过 step-scoped environment variables 传递 secrets；在可能会记录命令的操作开始前进行 masking，并在可行时尽快从 environment 中移除。
 * 未经明确批准的设计，不得启用直接 root 或 Administrator login，也不得削弱 SSH、UAC、firewall 或 operating-system permission controls。

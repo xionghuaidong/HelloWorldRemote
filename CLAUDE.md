@@ -44,7 +44,7 @@ When Superpowers is available, follow its full workflow for significant work rat
 
 ## Project safety and validation
 
-* Treat account passwords, UU Remote custom codes, and remote-device connection information as sensitive. In particular, `UUREMOTE_ACCOUNT_PASSWORD` and `UUREMOTE_CUSTOM_CODE` are secrets.
+* Treat account passwords and UU Remote custom codes as secrets. A UU Remote device ID is a loggable operational identifier; other remote-device connection information remains sensitive unless an approved design says otherwise. In particular, `UUREMOTE_ACCOUNT_PASSWORD` and `UUREMOTE_CUSTOM_CODE` are secrets.
 * Never hard-code real credentials in source, tests, defaults, logs, screenshots, or artifacts.
 * Pass secrets through step-scoped environment variables, mask them before potentially logging commands run, and remove them from the environment as soon as practical.
 * Do not enable direct root or Administrator login, and do not weaken SSH, UAC, firewall, or operating-system permission controls without an explicitly approved design.

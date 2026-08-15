@@ -76,7 +76,7 @@ Debug levels are cumulative:
 | `2` | Level 1 plus repeat configuration and verify idempotency. |
 | `3` | Level 2 plus 20 state-preserving live samples at 15-second intervals. |
 
-The artifact name is `uuremote-diagnostics` on both platforms. Each platform writes only to its runner temporary directory. Diagnostic capture must not expose secrets or remote-device connection data.
+The artifact name is `uuremote-diagnostics` on both platforms. Each platform writes only to its runner temporary directory. Diagnostic capture must not expose secrets, device IDs, or other remote-device connection data.
 
 ## 6. Architecture
 
@@ -121,7 +121,8 @@ Launch readiness is idempotent:
 - Otherwise launch the verified executable with its installation directory as the working directory.
 - Poll the CLI for a non-empty device ID for at most 60 seconds.
 - Treat non-zero CLI results as transient only until the deadline.
-- Never print custom codes or remote-device connection information.
+- Every successful run prints `DEVICE_ID=<complete device ID>` during launch readiness. The debug-level `0` production wait also prints `WAIT_CONNECTIONS DEVICE_ID=<complete device ID>` immediately before waiting.
+- Never print custom codes, account passwords, failed CLI attempts, raw CLI stderr, or other unapproved remote-device connection information.
 - Fail after the deadline with a generic readiness error and attempt count.
 
 ## 9. Custom-code security and configuration
@@ -217,6 +218,7 @@ The suite covers:
 - Step-scoped custom-code secret handling and absence of hard-coded values.
 - Windows helper mode dispatch and validation exit codes.
 - Bounded application and device-ID readiness.
+- Approved launch/readiness and production-wait device-ID messages, without raw failed CLI output.
 - State-preserving desktop finalization and diagnostic paths.
 - Wait timeout, zero, invalid input, injected ordinary event, and injected shutdown event.
 - Six-commit documentation rules and existing agent-environment contracts remain unaffected.
@@ -229,10 +231,10 @@ All behavior changes follow red-green-refactor: add the focused failing contract
 
 After local and review gates pass, validate the Windows workflow using repository secrets without displaying their values:
 
-1. `debug_level=1`, `wait_connections_seconds=0`: verify custom-code configuration, final screenshot, artifact upload, and a real mobile-client connection.
+1. `debug_level=1`, `wait_connections_seconds=0`: verify the launch/readiness `DEVICE_ID=<complete device ID>` output, custom-code configuration, final screenshot, artifact upload, and a real mobile-client connection.
 2. `debug_level=2`, `wait_connections_seconds=0`: verify the second configuration pass is idempotent.
 3. `debug_level=3`, `wait_connections_seconds=0`: verify 20 state-preserving live samples.
-4. `debug_level=0`, `wait_connections_seconds=5`: verify no artifact and a timeout result.
+4. `debug_level=0`, `wait_connections_seconds=5`: verify no artifact, `WAIT_CONNECTIONS DEVICE_ID=<complete device ID>` immediately before waiting, and a timeout result.
 5. A dedicated remote shutdown or restart run: verify the shutdown-aware path when the host remains alive long enough to report it.
 
 Any live failure enters systematic debugging using sanitized logs and diagnostics. It does not authorize weakening operating-system protections.

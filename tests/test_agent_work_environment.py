@@ -59,6 +59,28 @@ class AgentInstructionContractTests(unittest.TestCase):
                 )
                 self.assertEqual(lines[3], "")
 
+    def test_device_id_is_loggable_while_credentials_remain_secret(self):
+        english_policy = (
+            "A UU Remote device ID is a loggable operational identifier"
+        )
+        chinese_policy = "UU Remote device ID 是可以记录到日志的 operational identifier"
+        secret_token = "UUREMOTE_CUSTOM_CODE"
+
+        for name in ("AGENTS.md", "CLAUDE.md"):
+            contents = text(ROOT / name)
+            self.assertIn(english_policy, contents)
+            self.assertIn(secret_token, contents)
+            self.assertIn("remains sensitive", contents)
+
+        for name in ("AGENTS-zh_CN.md", "CLAUDE-zh_CN.md"):
+            contents = text(ROOT / name)
+            self.assertIn(chinese_policy, contents)
+            self.assertIn(secret_token, contents)
+            self.assertIn("仍然是敏感信息", contents)
+
+        self.assertIn("DEVICE_ID=<complete device ID>", text(ROOT / "README.md"))
+        self.assertIn("DEVICE_ID=<完整 device ID>", text(ROOT / "README-zh_CN.md"))
+
 
 class EntryPointContractTests(unittest.TestCase):
     def test_readmes_have_navigation(self):

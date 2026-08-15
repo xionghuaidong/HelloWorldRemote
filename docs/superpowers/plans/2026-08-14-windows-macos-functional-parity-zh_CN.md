@@ -364,11 +364,11 @@ git commit -m "feat: add Windows shutdown-aware wait"
 
 **接口：**
 - 输入：`Get-UURemotePaths`、已安装 `GameViewer.exe`、已安装 `uuyc-cli.exe` 和 60 秒 deadline。
-- 输出：`Get-UURemoteDeviceId`、`Start-UURemoteAndWaitDevice`、`Assert-UURemoteReadiness`、modes `launch-and-wait-device` 与 `verify-unattended-readiness`，以及脱敏 tokens `DEVICE_ID_STATE=ready` 和 `UNATTENDED_READINESS=verified`。
+- 输出：`Get-UURemoteDeviceId`、`Start-UURemoteAndWaitDevice`、`Assert-UURemoteReadiness`、modes `launch-and-wait-device` 与 `verify-unattended-readiness`、获批准的 readiness output `DEVICE_ID=<完整 device ID>` 后接 `DEVICE_ID_STATE=ready`，以及 `UNATTENDED_READINESS=verified`。
 
 - [ ] **步骤 1：编写失败的 bounded-readiness behavior tests**
 
-添加要求 60 秒 deadline、500 ms interval、通用 readiness token、无 device ID 输出和正确 workflow 顺序的 tests：
+添加要求 60 秒 deadline、500 ms interval、获批准的 device-ID readiness output 和正确 workflow 顺序的 tests：
 
 ```python
 class WindowsReadinessContractTests(unittest.TestCase):
@@ -392,12 +392,14 @@ class WindowsReadinessBehaviorTests(unittest.TestCase):
             check=False,
         )
 
-    def test_readiness_retries_transient_failures_without_exposing_device_id(self):
+    def test_readiness_retries_transient_failures_and_reports_the_device_id_after_success(self):
         result = self.run_harness("readiness-success")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("DEVICE_ID_STATE=ready", result.stdout)
+        self.assertEqual(
+            [line for line in result.stdout.splitlines() if line.startswith("DEVICE_ID")],
+            ["DEVICE_ID=device-id-fixture", "DEVICE_ID_STATE=ready"],
+        )
         self.assertIn("ATTEMPTS=3", result.stdout)
-        self.assertNotIn("device-id-fixture", result.stdout + result.stderr)
 
     def test_readiness_timeout_is_bounded_and_sanitized(self):
         result = self.run_harness("readiness-timeout")
@@ -416,7 +418,7 @@ python -m unittest tests.test_windows_parity.WindowsReadinessContractTests tests
 
 - [ ] **步骤 3：实施有边界的 readiness**
 
-`Get-UURemoteDeviceId` 调用 `--device-id`，仅在 CLI 退出 zero 时返回 trimmed non-empty string，且绝不输出它。`Start-UURemoteAndWaitDevice` 接受内部 parameters `TimeoutSeconds = 60` 和 `PollMilliseconds = 500`，验证两条 paths，复用 `Get-Process -Name GameViewer`；否则启动 launcher，并轮询到 deadline。Runtime route 始终使用 defaults。成功只输出 `DEVICE_ID_STATE=ready`；deadline failure 抛出包含尝试次数的通用错误。
+`Get-UURemoteDeviceId` 调用 `--device-id`，仅在 CLI 退出 zero 时返回 trimmed non-empty string，且绝不输出原始 CLI output。`Start-UURemoteAndWaitDevice` 接受内部 parameters `TimeoutSeconds = 60` 和 `PollMilliseconds = 500`，验证两条 paths，复用 `Get-Process -Name GameViewer`；否则启动 launcher，并轮询到 deadline。Runtime route 始终使用 defaults。成功输出 `DEVICE_ID=<完整 device ID>` 后接 `DEVICE_ID_STATE=ready`；deadline failure 抛出包含尝试次数的通用错误。
 
 Harness 通过 dot-source 加载真实 helper 但不执行 route，只把 external process/CLI boundaries 替换为 deterministic functions，并使用 `TimeoutSeconds = 1`、`PollMilliseconds = 10` 调用 `Start-UURemoteAndWaitDevice`。`readiness-success` 只在 attempt 3 返回 fixture 并输出 `ATTEMPTS=3`；`readiness-timeout` 永不返回 ID，并退出 `1`。Harness 不得复制 readiness logic。
 
@@ -430,7 +432,7 @@ Harness 通过 dot-source 加载真实 helper 但不执行 route，只把 extern
 python -m unittest tests.test_windows_parity.WindowsReadinessContractTests tests.test_windows_parity.WindowsReadinessBehaviorTests tests.test_windows_parity.SharedWorkflowContractTests -v
 ```
 
-预期：所有 tests 通过，workflow 不包含 device ID 输出。
+预期：所有 tests 通过；成功 readiness 输出 `DEVICE_ID=device-id-fixture` 后接 `DEVICE_ID_STATE=ready`，失败尝试仍不输出。
 
 - [ ] **步骤 5：提交**
 
@@ -554,11 +556,11 @@ git commit -m "feat: align Windows diagnostics and idempotency"
 
 **接口：**
 - 输入：已建立的 macOS 行为，以及 Tasks 1 到 5 的共享 workflow contract。
-- 输出：公共 artifact name/path、不记录 device ID、跨 workflow ordering checks，以及 `/bin/bash`/AppKit behavior tests 的干净 platform skips。
+- 输出：公共 artifact name/path、获批准的 device-ID log output、跨 workflow ordering checks，以及 `/bin/bash`/AppKit behavior tests 的干净 platform skips。
 
 - [ ] **步骤 1：编写失败的跨平台与 platform-gate tests**
 
-向 `SharedWorkflowContractTests` 添加以下两个 tests，要求两份 workflows 使用公共 artifact，并且都不记录 device ID 值：
+向 `SharedWorkflowContractTests` 添加以下两个 tests，要求两份 workflows 使用公共 artifact：
 
 ```python
     def test_both_workflows_use_the_shared_artifact_contract(self):
@@ -589,20 +591,20 @@ python -m unittest discover -s tests -v
 
 - [ ] **步骤 3：对齐 macOS 并应用精确 platform gates**
 
-把 macOS artifact name 改为 `uuremote-diagnostics`，workflow path 改为 `${{ runner.temp }}/uuremote-diagnostics/`，`apple.sh` evidence directory 改为 `${RUNNER_TEMP:-/tmp}/uuremote-diagnostics`。把 device-ID value output 替换为通用 `DEVICE_ID_STATE=ready`，同时保留 non-empty check。
+把 macOS artifact name 改为 `uuremote-diagnostics`，workflow path 改为 `${{ runner.temp }}/uuremote-diagnostics/`，`apple.sh` evidence directory 改为 `${RUNNER_TEMP:-/tmp}/uuremote-diagnostics`。每次成功 run 都会在 launch readiness 阶段打印 `DEVICE_ID=<完整 device ID>`。debug level `0` 的 production wait 还会在开始等待前打印 `WAIT_CONNECTIONS DEVICE_ID=<完整 device ID>`。
 
 更新现有 artifact assertions，并应用步骤 1 列出的四个精确 Bash gates。不得跳过 static contract tests。
 
-从两份 workflows 删除 device-ID value logging。该敏感输出要求由 task reviewer 和下方显式 security scan 检查，不伪装成 source-token behavior test。
+保持 device-ID values 不出现在 diagnostic artifacts 中，但从两份 workflows 输出获批准的日志 contract：每次成功 run 都会在 launch readiness 阶段打印 `DEVICE_ID=<完整 device ID>`，debug level `0` 的 production wait 会在开始等待前打印 `WAIT_CONNECTIONS DEVICE_ID=<完整 device ID>`。task reviewer 和显式 security scan 仍必须确认自定义码、帐户密码、原始 CLI output 和其他未经批准的连接信息绝不出现在 logs 中。
 
 - [ ] **步骤 4：运行完整本地 suite 并观察 GREEN**
 
 ```powershell
 python -m unittest discover -s tests -v
-rg -n -e 'echo "deviceId:' -e 'Write-Host "deviceId:' .github/workflows/macos.yml .github/workflows/windows.yml
+rg -n "DEVICE_ID=|WAIT_CONNECTIONS DEVICE_ID=" .github/workflows tests
 ```
 
-Windows 预期：全部可运行 tests 通过，Bash/AppKit-only behavior tests 报告 skips 而不是 errors，security scan 无匹配。macOS 预期：Bash tests 正常执行，AppKit behavior 仍处于 active 状态。
+Windows 预期：全部可运行 tests 通过，Bash/AppKit-only behavior tests 报告 skips 而不是 errors，scan 只在获批准的 readiness 和 wait boundaries 中找到 device-ID output。macOS 预期：Bash tests 正常执行，AppKit behavior 仍处于 active 状态。
 
 - [ ] **步骤 5：提交**
 
@@ -679,12 +681,12 @@ git commit -m "docs: document unified UU Remote workflows"
 
 没有当前用户授权时，不得 dispatch workflows 或访问 repository secrets。Task reviews 和最终 branch review 均干净后，请求授权并通过 GitHub Actions 运行以下 matrix：
 
-1. Windows，`debug_level=1`、`wait_connections_seconds=0`：要求通用 custom-code success、`FINAL_DESKTOP_STATE=ready`、artifact upload、干净 final screenshot 和真实手机客户端连接。
-2. Windows，`debug_level=2`、`wait_connections_seconds=0`：要求第二次 pass 报告 readiness 和 finalization，且不存在重复 application instances。
-3. Windows，`debug_level=3`、`wait_connections_seconds=0`：要求 20 个名为 `live-01.png` 到 `live-20.png` 的文件，并且不存在 foreground UU Remote window。
-4. Windows，`debug_level=0`、`wait_connections_seconds=5`：要求 `WAIT_RESULT=timeout`，且没有 diagnostic artifact。
+1. Windows，`debug_level=1`、`wait_connections_seconds=0`：要求在 launch readiness 期间输出 `DEVICE_ID=<完整 device ID>`、通用 custom-code success、`FINAL_DESKTOP_STATE=ready`、artifact upload、干净 final screenshot 和真实手机客户端连接。
+2. Windows，`debug_level=2`、`wait_connections_seconds=0`：要求在 launch readiness 期间输出 `DEVICE_ID=<完整 device ID>`，第二次 pass 报告 readiness 和 finalization，且不存在重复 application instances。
+3. Windows，`debug_level=3`、`wait_connections_seconds=0`：要求在 launch readiness 期间输出 `DEVICE_ID=<完整 device ID>`、20 个名为 `live-01.png` 到 `live-20.png` 的文件，并且不存在 foreground UU Remote window。
+4. Windows，`debug_level=0`、`wait_connections_seconds=5`：要求在 launch readiness 期间输出 `DEVICE_ID=<完整 device ID>`，并在 `WAIT_RESULT=timeout` 前立即输出 `WAIT_CONNECTIONS DEVICE_ID=<完整 device ID>`，且没有 diagnostic artifact。
 5. 一次专用 Windows remote shutdown 或 restart run：当 workflow 存活到足以记录时，要求 `WAIT_RESULT=shutdown/restart`；如果 GitHub 先终止 runner，记录平台限制，但不得削弱 shutdown behavior。
-6. macOS 在 debug level `0` 和 `1` 的 smoke runs：验证重命名后的 artifact contract 和日志中不存在 device-ID values，同时保留已有 permissions 和 desktop finalization。
+6. macOS 在 debug level `0` 和 `1` 的 smoke runs：验证重命名后的 artifact contract、在 launch readiness 期间输出 `DEVICE_ID=<完整 device ID>`、debug level `0` 在开始等待前立即输出 `WAIT_CONNECTIONS DEVICE_ID=<完整 device ID>`，以及保留已有 permissions 和 desktop finalization。
 
 如果 live run 失败，使用 `superpowers:systematic-debugging`，只保留经过脱敏的 logs/artifacts，增加能够捕获已发现 contract 的失败 repository test，并在再次 live run 前重复 review。
 

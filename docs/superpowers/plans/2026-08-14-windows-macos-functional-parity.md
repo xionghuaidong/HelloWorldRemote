@@ -374,7 +374,7 @@ git commit -m "feat: add Windows shutdown-aware wait"
 
 **Interfaces:**
 - Consumes: `Get-UURemotePaths`, installed `GameViewer.exe`, installed `uuyc-cli.exe`, and a 60-second deadline.
-- Produces: `Get-UURemoteDeviceId`, `Start-UURemoteAndWaitDevice`, `Assert-UURemoteReadiness`, modes `launch-and-wait-device` and `verify-unattended-readiness`, and sanitized tokens `DEVICE_ID_STATE=ready` and `UNATTENDED_READINESS=verified`.
+- Produces: `Get-UURemoteDeviceId`, `Start-UURemoteAndWaitDevice`, `Assert-UURemoteReadiness`, modes `launch-and-wait-device` and `verify-unattended-readiness`, approved readiness output `DEVICE_ID=<complete device ID>` followed by `DEVICE_ID_STATE=ready`, and `UNATTENDED_READINESS=verified`.
 
 - [ ] **Step 1: Write failing bounded-readiness behavior tests**
 
@@ -400,12 +400,14 @@ class WindowsReadinessBehaviorTests(unittest.TestCase):
             check=False,
         )
 
-    def test_readiness_retries_transient_failures_without_exposing_device_id(self):
+    def test_readiness_retries_transient_failures_and_reports_the_device_id_after_success(self):
         result = self.run_harness("readiness-success")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("DEVICE_ID_STATE=ready", result.stdout)
+        self.assertEqual(
+            [line for line in result.stdout.splitlines() if line.startswith("DEVICE_ID")],
+            ["DEVICE_ID=device-id-fixture", "DEVICE_ID_STATE=ready"],
+        )
         self.assertIn("ATTEMPTS=3", result.stdout)
-        self.assertNotIn("device-id-fixture", result.stdout + result.stderr)
 
     def test_readiness_timeout_is_bounded_and_sanitized(self):
         result = self.run_harness("readiness-timeout")
@@ -424,7 +426,7 @@ Expected: failures because launch logic remains inline and the helper modes are 
 
 - [ ] **Step 3: Implement bounded readiness**
 
-`Get-UURemoteDeviceId` invokes `--device-id`, returns a trimmed non-empty string only when the CLI exits zero, and never writes it. `Start-UURemoteAndWaitDevice` accepts internal parameters `TimeoutSeconds = 60` and `PollMilliseconds = 500`, verifies both paths, reuses `Get-Process -Name GameViewer`, otherwise starts the launcher, and polls until the deadline. The runtime route always uses the defaults. Success prints only `DEVICE_ID_STATE=ready`; deadline failure throws a generic message with the attempt count.
+`Get-UURemoteDeviceId` invokes `--device-id`, returns a trimmed non-empty string only when the CLI exits zero, and never writes raw CLI output. `Start-UURemoteAndWaitDevice` accepts internal parameters `TimeoutSeconds = 60` and `PollMilliseconds = 500`, verifies both paths, reuses `Get-Process -Name GameViewer`, otherwise starts the launcher, and polls until the deadline. The runtime route always uses the defaults. Success prints `DEVICE_ID=<complete device ID>` followed by `DEVICE_ID_STATE=ready`; deadline failure throws a generic message with the attempt count.
 
 The harness dot-sources the real helper without executing its route, replaces only the external process/CLI boundaries with deterministic functions, and calls `Start-UURemoteAndWaitDevice` with `TimeoutSeconds = 1` and `PollMilliseconds = 10`. `readiness-success` returns the fixture only on attempt 3 and prints `ATTEMPTS=3`; `readiness-timeout` never returns an ID and exits `1`. The harness must not copy readiness logic.
 
@@ -438,7 +440,7 @@ Replace the inline launch loop with the helper mode and add the named readiness 
 python -m unittest tests.test_windows_parity.WindowsReadinessContractTests tests.test_windows_parity.WindowsReadinessBehaviorTests tests.test_windows_parity.SharedWorkflowContractTests -v
 ```
 
-Expected: all tests pass; workflow contains no device ID output.
+Expected: all tests pass; successful readiness emits `DEVICE_ID=device-id-fixture` followed by `DEVICE_ID_STATE=ready`, while failed attempts remain absent.
 
 - [ ] **Step 5: Commit**
 
@@ -560,7 +562,7 @@ git commit -m "feat: align Windows diagnostics and idempotency"
 
 **Interfaces:**
 - Consumes: established macOS behavior and the shared workflow contract from Tasks 1 through 5.
-- Produces: common artifact name/path, no device-ID logging, cross-workflow ordering checks, and clean platform skips for `/bin/bash`/AppKit behavior tests.
+- Produces: common artifact name/path, approved device-ID log output, cross-workflow ordering checks, and clean platform skips for `/bin/bash`/AppKit behavior tests.
 
 - [ ] **Step 1: Write failing cross-platform and platform-gate tests**
 
@@ -595,20 +597,20 @@ Expected before implementation: the shared artifact/device-output assertions fai
 
 - [ ] **Step 3: Align macOS and apply exact platform gates**
 
-Change the macOS artifact name to `uuremote-diagnostics`, its workflow path to `${{ runner.temp }}/uuremote-diagnostics/`, and `apple.sh` evidence directory to `${RUNNER_TEMP:-/tmp}/uuremote-diagnostics`. Replace the device-ID value output with generic `DEVICE_ID_STATE=ready` while retaining the non-empty check.
+Change the macOS artifact name to `uuremote-diagnostics`, its workflow path to `${{ runner.temp }}/uuremote-diagnostics/`, and `apple.sh` evidence directory to `${RUNNER_TEMP:-/tmp}/uuremote-diagnostics`. Every successful run prints `DEVICE_ID=<complete device ID>` during launch readiness. The debug-level `0` production wait also prints `WAIT_CONNECTIONS DEVICE_ID=<complete device ID>` immediately before waiting.
 
 Update existing artifact assertions and apply the four exact Bash gates listed in Step 1. Do not skip static contract tests that run correctly on Windows.
 
-Remove device-ID value logging from both workflows. This sensitive-output requirement is checked by the task reviewer and by the explicit security scan below; it is not represented as a source-token behavior test.
+Keep device-ID values out of diagnostic artifacts, but emit the approved log contract from both workflows: every successful run prints `DEVICE_ID=<complete device ID>` during launch readiness, and the debug-level `0` production wait prints `WAIT_CONNECTIONS DEVICE_ID=<complete device ID>` immediately before waiting. The task reviewer and explicit security scan must still confirm that custom codes, account passwords, raw CLI output, and other unapproved connection information never reach logs.
 
 - [ ] **Step 4: Run the full local suite and observe GREEN**
 
 ```powershell
 python -m unittest discover -s tests -v
-rg -n -e 'echo "deviceId:' -e 'Write-Host "deviceId:' .github/workflows/macos.yml .github/workflows/windows.yml
+rg -n "DEVICE_ID=|WAIT_CONNECTIONS DEVICE_ID=" .github/workflows tests
 ```
 
-Expected on Windows: all runnable tests pass; Bash/AppKit-only behavior tests are reported as skips, not errors; the security scan has no matches. Expected on macOS: Bash tests execute normally and AppKit behavior remains active.
+Expected on Windows: all runnable tests pass; Bash/AppKit-only behavior tests are reported as skips, not errors; the scan finds device-ID output only at approved readiness and wait boundaries. Expected on macOS: Bash tests execute normally and AppKit behavior remains active.
 
 - [ ] **Step 5: Commit**
 
@@ -685,12 +687,12 @@ git commit -m "docs: document unified UU Remote workflows"
 
 Do not dispatch workflows or expose repository secrets without current user authorization. After task reviews and final branch review are clean, request authorization and run this matrix through GitHub Actions:
 
-1. Windows with `debug_level=1`, `wait_connections_seconds=0`: require generic custom-code success, `FINAL_DESKTOP_STATE=ready`, artifact upload, a clean final screenshot, and a real mobile-client connection.
-2. Windows with `debug_level=2`, `wait_connections_seconds=0`: require the second pass to report readiness and finalization without duplicate application instances.
-3. Windows with `debug_level=3`, `wait_connections_seconds=0`: require 20 files named `live-01.png` through `live-20.png` and no foreground UU Remote window.
-4. Windows with `debug_level=0`, `wait_connections_seconds=5`: require `WAIT_RESULT=timeout` and no diagnostic artifact.
+1. Windows with `debug_level=1`, `wait_connections_seconds=0`: require `DEVICE_ID=<complete device ID>` during launch readiness, generic custom-code success, `FINAL_DESKTOP_STATE=ready`, artifact upload, a clean final screenshot, and a real mobile-client connection.
+2. Windows with `debug_level=2`, `wait_connections_seconds=0`: require `DEVICE_ID=<complete device ID>` during launch readiness and the second pass to report readiness and finalization without duplicate application instances.
+3. Windows with `debug_level=3`, `wait_connections_seconds=0`: require `DEVICE_ID=<complete device ID>` during launch readiness, 20 files named `live-01.png` through `live-20.png`, and no foreground UU Remote window.
+4. Windows with `debug_level=0`, `wait_connections_seconds=5`: require `DEVICE_ID=<complete device ID>` during launch readiness, `WAIT_CONNECTIONS DEVICE_ID=<complete device ID>` immediately before `WAIT_RESULT=timeout`, and no diagnostic artifact.
 5. A dedicated Windows remote shutdown or restart run: require `WAIT_RESULT=shutdown/restart` when the workflow remains alive long enough to record it; if GitHub terminates the runner first, record the platform limitation without weakening shutdown behavior.
-6. macOS smoke runs at debug levels `0` and `1`: verify the renamed artifact contract and absence of device-ID values in logs while preserving established permissions and desktop finalization.
+6. macOS smoke runs at debug levels `0` and `1`: verify the renamed artifact contract, `DEVICE_ID=<complete device ID>` during launch readiness, the debug-level `0` `WAIT_CONNECTIONS DEVICE_ID=<complete device ID>` output immediately before waiting, and preserved permissions and desktop finalization.
 
 If a live run fails, use `superpowers:systematic-debugging`, preserve only sanitized logs/artifacts, add a failing repository test that captures the discovered contract, and repeat review before another live run.
 

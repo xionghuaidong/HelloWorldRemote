@@ -11,6 +11,7 @@ HelloWorldRemote 为 UU Remote/GameViewer 自动化 GitHub Actions runner。macO
 - [macOS 工作流](.github/workflows/macos.yml) 和 [Windows 工作流](.github/workflows/windows.yml) 都是手动触发的特定平台工作流。
 - 两个工作流都提供必填的 `workflow_dispatch` inputs：`debug_level` 可取 `0` 到 `3`，默认值为 `0`；`wait_connections_seconds` 为从 `0` 到 `21000` 的整数，默认值为 `300`。
 - 两个工作流都需要 `UUREMOTE_CUSTOM_CODE` repository secret。只有 macOS 还需要 `UUREMOTE_ACCOUNT_PASSWORD` repository secret 来配置其主机。
+- 每次成功 run 都会在 launch readiness 阶段打印 `DEVICE_ID=<完整 device ID>`。debug level `0` 的 production wait 还会在开始等待前打印 `WAIT_CONNECTIONS DEVICE_ID=<完整 device ID>`。
 
 ## 诊断与连接等待
 
