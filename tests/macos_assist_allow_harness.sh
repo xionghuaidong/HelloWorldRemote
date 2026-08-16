@@ -34,6 +34,7 @@ fi
 umask 077
 
 root="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+mode="${1:?}"
 source_script="${MACOS_ASSIST_ALLOW_SUBJECT_SOURCE:-$root/.github/workflows/apple.sh}"
 temporary_directory="$(mktemp -d "${TMPDIR:-/tmp}/uuremote-assist-allow-test.XXXXXX")"
 subject="$temporary_directory/subject.sh"
@@ -43,7 +44,7 @@ fixture_pid_paths=""
 fixture_groups=""
 
 cleanup_harness() {
-    local pid pid_path group
+    local pid pid_path group cleanup_attempt
 
     for pid in $fixture_pids; do
         case "$pid" in
@@ -66,12 +67,26 @@ cleanup_harness() {
             *) /bin/kill -KILL -- "-$group" 2>/dev/null || true ;;
         esac
     done
-    rm -rf -- "$temporary_directory"
+    cleanup_attempt=0
+    while [ "$cleanup_attempt" -lt 20 ]; do
+        if rm -rf -- "$temporary_directory" 2>/dev/null; then
+            return
+        fi
+        cleanup_attempt="$((cleanup_attempt + 1))"
+        sleep 0.05
+    done
+    rm -rf -- "$temporary_directory" 2>/dev/null || true
 }
 trap cleanup_harness EXIT
 
 awk '/^if \[ "\$mode" = "self-test-kcpassword" \]; then$/ { exit } { print }' \
     "$source_script" >"$subject"
+case "$mode" in
+    fault-*)
+        sed '/^def cleanup_owned_process():$/a\    return False' "$subject" >"$subject.fault"
+        mv "$subject.fault" "$subject"
+        ;;
+esac
 if [ ! -x /usr/bin/python3 ]; then
     python_command="$(command -v python3 || command -v python)"
     python_wrapper="$temporary_directory/python3"
@@ -81,10 +96,12 @@ if [ ! -x /usr/bin/python3 ]; then
     mv "$subject.portable" "$subject"
 fi
 
-mode="${1:?}"
 scenario="${2:?}"
 
-if [ "$mode" = "process" ]; then
+case "$mode" in
+    process|fault-*) ;;
+    *) false ;;
+esac && {
     status_path="$temporary_directory/status"
     output_path="$temporary_directory/output"
     parent_pid_path="$temporary_directory/parent.pid"
@@ -112,6 +129,14 @@ if [ "$mode" = "process" ]; then
             then
                 echo "Hanging fixture unexpectedly succeeded" >&2
                 exit 1
+            fi
+            if [ "$mode" = fault-timeout ]; then
+                if [ -s "$status_path" ]; then
+                    echo "Unconfirmed cleanup wrote a status" >&2
+                    exit 1
+                fi
+                printf 'STATUS=absent\n'
+                exit 0
             fi
             for pid_path in "$parent_pid_path" "$child_pid_path"; do
                 pid="$(cat "$pid_path")"
@@ -180,7 +205,7 @@ if [ "$mode" = "process" ]; then
             printf 'GUI_COMMAND=%s\n' "${gui_command%|}"
             exit 0
             ;;
-        signal-term)
+        signal-term|signal-int|signal-hup)
             runner_status_path="$temporary_directory/runner-status"
             (
                 . "$subject"
@@ -212,7 +237,12 @@ if [ "$mode" = "process" ]; then
                 echo "Timed runner PID was unavailable" >&2
                 exit 1
             fi
-            /bin/kill -TERM "$runner_python_pid"
+            case "$scenario" in
+                signal-int) signal_name=INT ;;
+                signal-term) signal_name=TERM ;;
+                signal-hup) signal_name=HUP ;;
+            esac
+            /bin/kill -"$signal_name" "$runner_python_pid"
             if wait "$runner_shell_pid"; then
                 runner_exit=0
             else
@@ -222,7 +252,12 @@ if [ "$mode" = "process" ]; then
                 echo "Interrupted runner did not fail closed" >&2
                 exit 1
             fi
-            if [ "$(cat "$runner_status_path")" != unavailable ]; then
+            if [ "$mode" = fault-signal ]; then
+                if [ -s "$runner_status_path" ]; then
+                    echo "Unconfirmed cleanup wrote a status" >&2
+                    exit 1
+                fi
+            elif [ "$(cat "$runner_status_path")" != unavailable ]; then
                 echo "Interrupted runner status was not unavailable" >&2
                 exit 1
             fi
@@ -238,7 +273,11 @@ if [ "$mode" = "process" ]; then
                 echo "Process group was not released" >&2
                 exit 1
             fi
-            printf 'STATUS=unavailable\n'
+            if [ "$mode" = fault-signal ]; then
+                printf 'STATUS=absent\n'
+            else
+                printf 'STATUS=unavailable\n'
+            fi
             printf 'PROCESS_GROUP_RELEASED=true\n'
             exit 0
             ;;
@@ -293,6 +332,24 @@ if [ "$mode" = "process" ]; then
             printf 'PROCESS_GROUP_RELEASED=true\n'
             exit 0
             ;;
+        leader-fault)
+            if [ "$mode" != fault-leader ]; then
+                exit 2
+            fi
+            if run_bounded_uuremote_cli_to_file_with_status \
+                "$output_path" "$status_path" 3000 /bin/bash "$0" fixture-leader-completes \
+                "$parent_pid_path" "$child_pid_path"
+            then
+                echo "Fault leader unexpectedly succeeded" >&2
+                exit 1
+            fi
+            if [ -s "$status_path" ]; then
+                echo "Unconfirmed cleanup wrote a status" >&2
+                exit 1
+            fi
+            printf 'STATUS=absent\n'
+            exit 0
+            ;;
         cleanup-fallback)
             /bin/bash -c 'trap "" TERM; while :; do sleep 1; done' &
             fixture_pids="$!"
@@ -303,7 +360,7 @@ if [ "$mode" = "process" ]; then
     esac
     printf 'STATUS=%s\n' "$(cat "$status_path")"
     exit 0
-fi
+}
 
 if [ "$mode" = "aggregate" ]; then
     . "$subject"

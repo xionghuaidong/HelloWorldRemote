@@ -341,6 +341,27 @@ class MacOSAssistAllowProcessTests(unittest.TestCase):
             "STATUS=unavailable\nPROCESS_GROUP_RELEASED=true\n",
         )
 
+    def test_unconfirmed_timeout_cleanup_publishes_no_status(self):
+        result = self.run_harness("fault-timeout", "timeout")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, "")
+        self.assertEqual(result.stdout, "STATUS=absent\n")
+
+    def test_unconfirmed_completed_leader_cleanup_publishes_no_status(self):
+        result = self.run_harness("fault-leader", "leader-fault")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "STATUS=absent\n")
+
+    def test_unconfirmed_signal_cleanup_publishes_no_status(self):
+        for scenario in ("signal-int", "signal-term", "signal-hup"):
+            with self.subTest(scenario=scenario):
+                result = self.run_harness("fault-signal", scenario)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(
+                    result.stdout,
+                    "STATUS=absent\nPROCESS_GROUP_RELEASED=true\n",
+                )
+
     def test_exit_cleanup_kills_a_recorded_fixture_child(self):
         result = self.run_harness("process", "cleanup-fallback")
         self.assertEqual(result.returncode, 0, result.stderr)
