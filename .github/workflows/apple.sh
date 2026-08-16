@@ -494,9 +494,20 @@ try:
             write_status("timeout")
             exit_code = 124
     else:
-        safe_return_code = return_code if 0 <= return_code <= 255 else 1
-        write_status(f"completed:{safe_return_code}")
-        exit_code = safe_return_code
+        try:
+            group_remains = process_group_alive()
+        except OSError:
+            group_remains = True
+        if group_remains is True:
+            cleanup_in_progress = True
+            block_handled_signals_for_cleanup()
+            cleanup_owned_process()
+            write_status("unavailable")
+            exit_code = 125
+        else:
+            safe_return_code = return_code if 0 <= return_code <= 255 else 1
+            write_status(f"completed:{safe_return_code}")
+            exit_code = safe_return_code
 except HandledSignal:
     cleanup_in_progress = True
     block_handled_signals_for_cleanup()

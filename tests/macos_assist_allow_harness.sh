@@ -23,6 +23,14 @@ if [ "${1:-}" = "fixture-term-observed" ]; then
     while :; do sleep 1; done
 fi
 
+if [ "${1:-}" = "fixture-leader-completes" ]; then
+    printf '%s\n' "$$" >"${2:?}"
+    /bin/bash -c 'trap "" TERM; printf "%s\n" "$$" >"$1"; while :; do sleep 1; done' \
+        fixture-child "${3:?}" &
+    while [ ! -s "${3:?}" ]; do sleep 0.01; done
+    exit 0
+fi
+
 umask 077
 
 root="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -254,6 +262,34 @@ if [ "$mode" = "process" ]; then
             fi
             printf 'STATUS=%s\n' "$(cat "$status_path")"
             printf 'TERM_OBSERVED=true\n'
+            printf 'PROCESS_GROUP_RELEASED=true\n'
+            exit 0
+            ;;
+        leader-completes)
+            if run_bounded_uuremote_cli_to_file_with_status \
+                "$output_path" "$status_path" 3000 /bin/bash "$0" fixture-leader-completes \
+                "$parent_pid_path" "$child_pid_path"
+            then
+                echo "Completed leader fixture unexpectedly succeeded" >&2
+                exit 1
+            fi
+            for pid_path in "$parent_pid_path" "$child_pid_path"; do
+                pid="$(cat "$pid_path")"
+                if kill -0 "$pid" 2>/dev/null; then
+                    echo "Process group was not released" >&2
+                    exit 1
+                fi
+            done
+            parent_pid="$(cat "$parent_pid_path")"
+            if kill -0 -- "-$parent_pid" 2>/dev/null; then
+                echo "Process group was not released" >&2
+                exit 1
+            fi
+            if [ "$(cat "$status_path")" != unavailable ]; then
+                echo "Completed leader status was not unavailable" >&2
+                exit 1
+            fi
+            printf 'STATUS=unavailable\n'
             printf 'PROCESS_GROUP_RELEASED=true\n'
             exit 0
             ;;
