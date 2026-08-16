@@ -350,46 +350,38 @@ def write_status(value):
         status.write(value + "\n")
     os.replace(temporary_status_path, status_path)
 
-try:
-    output_descriptor = os.open(
-        output_path,
-        os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
-        0o600,
-    )
-    with os.fdopen(output_descriptor, "wb") as output:
-        process = subprocess.Popen(
-            command,
-            stdin=subprocess.DEVNULL,
-            stdout=output,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-        process_group_id = process.pid
-except OSError:
-    write_status("unavailable")
-    raise SystemExit(125)
+class HandledSignal(Exception):
+    pass
 
-try:
-    return_code = process.wait(timeout=timeout_seconds)
-except subprocess.TimeoutExpired:
-    def signal_process_group(signal_number):
-        if os.name == "nt":
-            if signal_number == signal.SIGTERM:
-                process.terminate()
-            else:
-                process.kill()
+process = None
+process_group_id = None
+previous_handlers = {}
+previous_signal_mask = None
+handled_signals = tuple(
+    getattr(signal, name)
+    for name in ("SIGINT", "SIGTERM", "SIGHUP")
+    if hasattr(signal, name)
+)
+
+def signal_process_group(signal_number):
+    if os.name == "nt":
+        if signal_number == signal.SIGTERM:
+            process.terminate()
         else:
-            os.killpg(process_group_id, signal_number)
+            process.kill()
+    else:
+        os.killpg(process_group_id, signal_number)
 
-    def process_group_alive():
-        if os.name == "nt":
-            return None
-        try:
-            os.killpg(process_group_id, 0)
-        except ProcessLookupError:
-            return False
-        return True
+def process_group_alive():
+    if os.name == "nt":
+        return None
+    try:
+        os.killpg(process_group_id, 0)
+    except ProcessLookupError:
+        return False
+    return True
 
+def cleanup_owned_process():
     cleanup_confirmed = False
     try:
         signal_process_group(signal.SIGTERM)
@@ -406,42 +398,118 @@ except subprocess.TimeoutExpired:
         group_remains = None
 
     if group_remains is False:
-        cleanup_confirmed = process.poll() is not None
+        return process.poll() is not None
+
+    try:
+        signal_process_group(signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    cleanup_deadline = time.monotonic() + 0.5
+    try:
+        process.wait(timeout=max(0, cleanup_deadline - time.monotonic()))
+    except subprocess.TimeoutExpired:
+        return False
+
+    if group_remains is None:
+        return False
+    while time.monotonic() < cleanup_deadline:
+        try:
+            if not process_group_alive():
+                cleanup_confirmed = True
+                break
+        except OSError:
+            break
+        time.sleep(0.01)
     else:
         try:
-            signal_process_group(signal.SIGKILL)
-        except ProcessLookupError:
+            cleanup_confirmed = not process_group_alive()
+        except OSError:
             pass
-        cleanup_deadline = time.monotonic() + 0.5
+    return cleanup_confirmed
+
+cleanup_in_progress = False
+cleanup_signal_mask = None
+
+def interrupt_handler(_signum, _frame):
+    if cleanup_in_progress:
+        return
+    raise HandledSignal
+
+def block_handled_signals_for_cleanup():
+    global cleanup_signal_mask
+    if os.name != "nt" and hasattr(signal, "pthread_sigmask"):
+        cleanup_signal_mask = signal.pthread_sigmask(
+            signal.SIG_BLOCK,
+            handled_signals,
+        )
+
+exit_code = 125
+
+try:
+    if os.name != "nt" and hasattr(signal, "pthread_sigmask"):
+        previous_signal_mask = signal.pthread_sigmask(
+            signal.SIG_BLOCK,
+            handled_signals,
+        )
+    for handled_signal in handled_signals:
         try:
-            process.wait(timeout=max(0, cleanup_deadline - time.monotonic()))
-        except subprocess.TimeoutExpired:
+            previous_handlers[handled_signal] = signal.signal(
+                handled_signal,
+                interrupt_handler,
+            )
+        except ValueError:
             pass
+    output_descriptor = os.open(
+        output_path,
+        os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+        0o600,
+    )
+    with os.fdopen(output_descriptor, "wb") as output:
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=output,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        process_group_id = process.pid
+    if previous_signal_mask is not None:
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous_signal_mask)
+        previous_signal_mask = None
+    try:
+        return_code = process.wait(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired:
+        cleanup_in_progress = True
+        block_handled_signals_for_cleanup()
+        if not cleanup_owned_process():
+            write_status("unavailable")
+            exit_code = 125
         else:
-            if group_remains is not None:
-                while time.monotonic() < cleanup_deadline:
-                    try:
-                        if not process_group_alive():
-                            cleanup_confirmed = True
-                            break
-                    except OSError:
-                        break
-                    time.sleep(0.01)
-                else:
-                    try:
-                        cleanup_confirmed = not process_group_alive()
-                    except OSError:
-                        pass
+            write_status("timeout")
+            exit_code = 124
+    else:
+        safe_return_code = return_code if 0 <= return_code <= 255 else 1
+        write_status(f"completed:{safe_return_code}")
+        exit_code = safe_return_code
+except HandledSignal:
+    cleanup_in_progress = True
+    block_handled_signals_for_cleanup()
+    if process is not None:
+        cleanup_owned_process()
+    write_status("unavailable")
+    exit_code = 125
+except OSError:
+    write_status("unavailable")
+    exit_code = 125
+finally:
+    for handled_signal, previous_handler in previous_handlers.items():
+        signal.signal(handled_signal, previous_handler)
+    if cleanup_signal_mask is not None:
+        signal.pthread_sigmask(signal.SIG_SETMASK, cleanup_signal_mask)
+    elif previous_signal_mask is not None:
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous_signal_mask)
 
-    if not cleanup_confirmed:
-        write_status("unavailable")
-        raise SystemExit(125)
-    write_status("timeout")
-    raise SystemExit(124)
-
-safe_return_code = return_code if 0 <= return_code <= 255 else 1
-write_status(f"completed:{safe_return_code}")
-raise SystemExit(safe_return_code)
+raise SystemExit(exit_code)
 PYTHON
 }
 

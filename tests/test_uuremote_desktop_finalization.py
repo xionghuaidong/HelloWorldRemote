@@ -297,6 +297,18 @@ class MacOSAssistAllowProcessTests(unittest.TestCase):
             "GUI_COMMAND=sudo|launchctl|asuser|501|sudo|-u|#501|/bin/true\n",
         )
 
+    def test_term_interrupt_reaps_the_owned_process_group_fail_closed(self):
+        started = time.monotonic()
+        result = self.run_harness("process", "signal-term")
+        elapsed = time.monotonic() - started
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertLess(elapsed, 5)
+        self.assertEqual(result.stderr, "")
+        self.assertEqual(
+            result.stdout,
+            "STATUS=unavailable\nPROCESS_GROUP_RELEASED=true\n",
+        )
+
     def test_exit_cleanup_kills_a_recorded_fixture_child(self):
         result = self.run_harness("process", "cleanup-fallback")
         self.assertEqual(result.returncode, 0, result.stderr)

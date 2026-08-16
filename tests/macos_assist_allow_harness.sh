@@ -165,6 +165,68 @@ if [ "$mode" = "process" ]; then
             printf 'GUI_COMMAND=%s\n' "${gui_command%|}"
             exit 0
             ;;
+        signal-term)
+            runner_status_path="$temporary_directory/runner-status"
+            (
+                . "$subject"
+                run_bounded_uuremote_cli_to_file_with_status \
+                    "$output_path" "$runner_status_path" 30000 /bin/bash "$0" fixture-hang \
+                    "$parent_pid_path" "$child_pid_path"
+            ) &
+            runner_shell_pid="$!"
+            fixture_pids="$runner_shell_pid"
+            runner_python_pid=""
+            signal_wait_attempt=0
+            while [ "$signal_wait_attempt" -lt 40 ]; do
+                if [ -s "$parent_pid_path" ] && [ -s "$child_pid_path" ]; then
+                    case "$(uname -s)" in
+                        MINGW*|MSYS*)
+                            runner_python_pid="$(powershell.exe -NoProfile -Command \
+                                "\$child = Get-CimInstance Win32_Process -Filter 'ParentProcessId = $runner_shell_pid' | Select-Object -First 1 -ExpandProperty ProcessId; if (\$child) { [Console]::Write(\$child) }" 2>/dev/null)"
+                            ;;
+                        *) runner_python_pid="$(/usr/bin/pgrep -P "$runner_shell_pid" | head -n 1)" ;;
+                    esac
+                    if [ -n "$runner_python_pid" ]; then
+                        break
+                    fi
+                fi
+                signal_wait_attempt="$((signal_wait_attempt + 1))"
+                sleep 0.05
+            done
+            if [ -z "$runner_python_pid" ]; then
+                echo "Timed runner PID was unavailable" >&2
+                exit 1
+            fi
+            /bin/kill -TERM "$runner_python_pid"
+            if wait "$runner_shell_pid"; then
+                runner_exit=0
+            else
+                runner_exit="$?"
+            fi
+            if [ "$runner_exit" -ne 125 ]; then
+                echo "Interrupted runner did not fail closed" >&2
+                exit 1
+            fi
+            if [ "$(cat "$runner_status_path")" != unavailable ]; then
+                echo "Interrupted runner status was not unavailable" >&2
+                exit 1
+            fi
+            for pid_path in "$parent_pid_path" "$child_pid_path"; do
+                pid="$(cat "$pid_path")"
+                if kill -0 "$pid" 2>/dev/null; then
+                    echo "Process group was not released" >&2
+                    exit 1
+                fi
+            done
+            parent_pid="$(cat "$parent_pid_path")"
+            if kill -0 -- "-$parent_pid" 2>/dev/null; then
+                echo "Process group was not released" >&2
+                exit 1
+            fi
+            printf 'STATUS=unavailable\n'
+            printf 'PROCESS_GROUP_RELEASED=true\n'
+            exit 0
+            ;;
         cleanup-fallback)
             /bin/bash -c 'trap "" TERM; while :; do sleep 1; done' &
             fixture_pids="$!"
