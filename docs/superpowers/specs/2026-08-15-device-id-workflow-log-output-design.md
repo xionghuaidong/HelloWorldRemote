@@ -90,7 +90,7 @@ The workflows do not apply `::add-mask::` to device IDs because masking would re
 
 The macOS `assist id` command may return a pretty-printed JSON envelope rather than the ID alone. The helper parses that envelope internally, requires the approved success/data/deviceId structure, rejects malformed or duplicate-key JSON, and validates only the extracted `deviceId`. A legacy non-JSON single-line response remains accepted through the same final device-ID validator. JSON-looking output that fails envelope validation never falls back to the legacy path.
 
-The `Launch GameViewer` polling loop validates the first successfully extracted `assist id` value, emits the launch/readiness pair, and unsets its local value.
+The `apple.sh launch-and-wait-device` route owns macOS launch and readiness: it launches GameViewer only when absent, validates the first successfully extracted `assist id` value, emits the launch/readiness pair, and keeps the application alive after readiness. The helper uses a 60-second overall deadline and a 500-millisecond poll interval.
 
 The real `wait_connections` route obtains and validates the current `assist id` value, emits the wait message, and then invokes the existing Swift watcher. The watcher self-test remains independent from the installed CLI.
 

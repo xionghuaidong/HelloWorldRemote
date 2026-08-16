@@ -44,22 +44,15 @@ def shell_if_block(script: str, gate: str) -> str:
 
 class CustomCodeWorkflowTests(unittest.TestCase):
     def assert_failed_diagnostic_contract(self, launch: str):
-        exhausted = 'if [ "$device_id_ready" -ne 1 ]'
+        outer_gate = "if .github/workflows/apple.sh launch-and-wait-device"
         debug_gate = 'if [ "${UUREMOTE_DEBUG:-0}" != "0" ]; then'
         diagnostic = ".github/workflows/apple.sh diagnose-device-id || true"
-        generic_failure = "UU Remote device readiness failed after 120 attempts"
-        debug_block = shell_if_block(launch, debug_gate)
-        debug_lines = [line.strip() for line in debug_block.splitlines()]
+        outer = shell_if_block(launch, outer_gate)
+        debug = shell_if_block(outer, debug_gate)
 
-        self.assertEqual(launch.count(diagnostic), 1)
-        self.assertEqual(debug_lines[1:-1].count(diagnostic), 1)
-        self.assertEqual(debug_lines[0], debug_gate)
-        self.assertEqual(debug_lines[-1], "fi")
-        self.assertLess(launch.index(exhausted), launch.index(debug_gate))
-        self.assertLess(
-            launch.index(debug_block) + len(debug_block),
-            launch.index(generic_failure),
-        )
+        self.assertEqual(outer.count(diagnostic), 1)
+        self.assertEqual(debug.count(diagnostic), 1)
+        self.assertIn('exit "$launch_status"', outer)
 
     def test_custom_code_is_required_masked_and_step_scoped(self):
         workflow = text(WORKFLOW_PATH)
@@ -82,40 +75,44 @@ class CustomCodeWorkflowTests(unittest.TestCase):
         self.assertNotIn("johnDOE123", combined)
         self.assertNotIn('echo "customCode: $output"', combined)
 
-    def test_device_id_readiness_fails_closed_after_bounded_polling(self):
-        workflow = text(WORKFLOW_PATH)
-        block = step_block(workflow, "Launch GameViewer")
-
-        self.assertIn("device_id_ready=0", block)
-        self.assertIn("device_id_ready=1", block)
-        self.assertIn('if [ "$device_id_ready" -ne 1 ]', block)
-        self.assertIn("UU Remote device readiness failed after 120 attempts", block)
-
-    def test_device_id_readiness_delegates_to_the_apple_helper(self):
+    def test_launch_delegates_the_complete_readiness_contract_once(self):
         launch = step_block(text(WORKFLOW_PATH), "Launch GameViewer")
-        self.assertIn("apple.sh report-device-id readiness", launch)
+        self.assertEqual(launch.count("apple.sh launch-and-wait-device"), 1)
+        for obsolete in (
+            "device_id_ready",
+            "for ((i=1; i<=120; i++))",
+            "apple.sh report-device-id readiness",
+            "gtimeout",
+            "brew install coreutils",
+        ):
+            self.assertNotIn(obsolete, launch)
 
-    def test_launch_redirects_background_process_output_to_null_device(self):
+    def test_failed_delegation_runs_diagnostics_only_inside_the_debug_gate(self):
         launch = step_block(text(WORKFLOW_PATH), "Launch GameViewer")
-        self.assertIn(
-            "/Applications/UURemote.app/Contents/MacOS/UURemote >/dev/null 2>&1 &",
+        outer = shell_if_block(
             launch,
+            "if .github/workflows/apple.sh launch-and-wait-device",
         )
-
-    def test_failed_diagnostic_readiness_runs_structural_diagnostics_once(self):
-        launch = step_block(text(WORKFLOW_PATH), "Launch GameViewer")
-        self.assert_failed_diagnostic_contract(launch)
+        debug = shell_if_block(
+            outer,
+            'if [ "${UUREMOTE_DEBUG:-0}" != "0" ]; then',
+        )
+        self.assertEqual(outer.count("apple.sh diagnose-device-id || true"), 1)
+        self.assertEqual(debug.count("apple.sh diagnose-device-id || true"), 1)
+        self.assertIn('exit "$launch_status"', outer)
 
     def test_failed_diagnostic_contract_rejects_call_after_debug_gate(self):
         invalid_launch = """
-            if [ "$device_id_ready" -ne 1 ]
+            if .github/workflows/apple.sh launch-and-wait-device
             then
+                :
+            else
+                launch_status="$?"
                 if [ "${UUREMOTE_DEBUG:-0}" != "0" ]; then
                     echo "debug enabled"
                 fi
                 .github/workflows/apple.sh diagnose-device-id || true
-                echo "UU Remote device readiness failed after 120 attempts" >&2
-                exit 1
+                exit "$launch_status"
             fi
         """
 

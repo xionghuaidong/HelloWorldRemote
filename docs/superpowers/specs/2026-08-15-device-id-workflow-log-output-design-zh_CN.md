@@ -90,7 +90,7 @@ Workflows 不会对 device IDs 使用 `::add-mask::`，因为 masking 会把操�
 
 macOS `assist id` command 可能返回 pretty-printed JSON envelope，而不是只返回 ID。Helper 在内部解析该 envelope，要求已批准的 success/data/deviceId 结构，拒绝 malformed 或 duplicate-key JSON，并且只验证提取出的 `deviceId`。Legacy 非 JSON 单行 response 继续通过同一个最终 device-ID validator 接受。未通过 envelope validation 的 JSON-looking output 绝不回退到 legacy path。
 
-`Launch GameViewer` polling loop 验证首次成功提取的 `assist id` 值，输出 launch/readiness 两行，然后 unset 其局部值。
+`apple.sh launch-and-wait-device` route 负责 macOS 启动与 readiness：它仅在 GameViewer 未运行时启动它，验证首次成功提取的 `assist id` 值，输出 launch/readiness 两行，并在 readiness 后保持应用继续运行。Helper 使用 60 秒整体 deadline 和 500 毫秒轮询间隔。
 
 真实 `wait_connections` route 获取并验证当前 `assist id` 值、输出 wait 消息，然后调用现有 Swift watcher。Watcher self-test 继续独立于已安装 CLI。
 

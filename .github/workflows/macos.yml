@@ -72,32 +72,16 @@ jobs:
       - name: Launch GameViewer
         shell: bash
         run: |
-            ls -l /Applications/UURemote.app/Contents/MacOS/UURemote
-            brew install coreutils
-            gtimeout 60s /Applications/UURemote.app/Contents/MacOS/UURemote >/dev/null 2>&1 &
-
-            device_id_ready=0
-            for ((i=1; i<=120; i++))
-            do
-                echo "Waiting deviceId [$i/120] ..."
-                if .github/workflows/apple.sh report-device-id readiness
-                then
-                    device_id_ready=1
-                    break
-                fi
-                echo "UU Remote device ID is unavailable, retrying in 500 ms" >&2
-                sleep 0.5
-            done
-
-            if [ "$device_id_ready" -ne 1 ]
+            if .github/workflows/apple.sh launch-and-wait-device
             then
+                :
+            else
+                launch_status="$?"
                 if [ "${UUREMOTE_DEBUG:-0}" != "0" ]; then
                     .github/workflows/apple.sh diagnose-device-id || true
                 fi
-                echo "UU Remote device readiness failed after 120 attempts" >&2
-                exit 1
+                exit "$launch_status"
             fi
-            unset device_id_ready
 
       - name: Configure UU Remote custom code
         shell: bash

@@ -322,6 +322,33 @@ class AgentInstructionContractTests(unittest.TestCase):
                             mutated_chinese,
                         )
 
+    def test_active_macos_readiness_documents_delegate_timing_to_the_helper(self):
+        documents = (
+            "docs/superpowers/specs/2026-08-15-device-id-workflow-log-output-design.md",
+            "docs/superpowers/specs/2026-08-15-device-id-workflow-log-output-design-zh_CN.md",
+            "docs/superpowers/plans/2026-08-15-device-id-workflow-log-output.md",
+            "docs/superpowers/plans/2026-08-15-device-id-workflow-log-output-zh_CN.md",
+            "docs/superpowers/specs/2026-08-16-macos-device-id-readiness-design.md",
+            "docs/superpowers/specs/2026-08-16-macos-device-id-readiness-design-zh_CN.md",
+        )
+        obsolete_requirements = (
+            "Preserve 120 attempts",
+            "保留 120 attempts",
+            "The `Launch GameViewer` polling loop",
+            "`Launch GameViewer` polling loop",
+            "macos.yml owns the production polling loop",
+            "macos.yml 负责 production polling loop",
+        )
+
+        for name in documents:
+            with self.subTest(name=name):
+                contents = text(ROOT / name)
+                self.assertIn("launch-and-wait-device", contents)
+                self.assertTrue("60-second" in contents or "60 秒" in contents)
+                self.assertTrue("500-millisecond" in contents or "500 毫秒" in contents)
+                for obsolete_requirement in obsolete_requirements:
+                    self.assertNotIn(obsolete_requirement, contents)
+
 
 class EntryPointContractTests(unittest.TestCase):
     def test_readmes_have_navigation(self):

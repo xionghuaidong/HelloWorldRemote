@@ -564,20 +564,11 @@ fi
 
 Keep the zero-wait and watcher result lines unchanged after this message. Keep `self_test_wait_connections` independent of the CLI.
 
-- [ ] **Step 5: Delegate the macOS launch loop to the helper**
+- [ ] **Step 5: Superseded macOS launch composition**
 
-Replace the inline `assist id` capture with:
+The former YAML-owned 120-attempt composition is superseded by the approved [2026-08-16 macOS device-ID readiness design](../specs/2026-08-16-macos-device-id-readiness-design.md). Implement launch/readiness changes according to the corresponding [2026-08-16 readiness plan](2026-08-16-macos-device-id-readiness.md).
 
-```bash
-if .github/workflows/apple.sh report-device-id readiness
-then
-    device_id_ready=1
-    break
-fi
-echo "UU Remote device ID is unavailable, retrying in 500 ms" >&2
-```
-
-Do not store or print raw CLI output in YAML. Preserve 120 attempts, the 500 ms interval, fail-closed exhaustion, step ordering, and every existing debug gate.
+The production `apple.sh launch-and-wait-device` helper launches GameViewer only when absent, owns the 60-second overall deadline and 500-millisecond poll interval, emits the validated launch/readiness pair, and preserves the application's lifetime. `macos.yml` delegates once, propagates the helper status exactly, and runs safe diagnostics only after failure when debug is nonzero. Do not store or print raw CLI output in YAML; preserve step ordering and every existing debug gate.
 
 - [ ] **Step 6: Run macOS GREEN, syntax, and artifact-redaction checks**
 
