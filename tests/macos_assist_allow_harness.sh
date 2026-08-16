@@ -402,6 +402,12 @@ if [ "$mode" = "aggregate" ]; then
                 printf '{"success":true,"enabled":true}' >"$output_path"; controlled_now=100 ;;
             clock-status-post-call:1)
                 printf '{"success":true,"enabled":true}' >"$output_path"; controlled_now=100 ;;
+            fault-mktemp:1|fault-chmod:1|fault-truncate:1)
+                printf '{"success":true,"enabled":true}' >"$output_path"; controlled_now=100 ;;
+            fault-cleanup:1)
+                printf '{"success":true,"enabled":true,"deviceId":"device-id-fixture","customCode":"CustomCodeFixture"}' >"$output_path"
+                controlled_now=100
+                ;;
             hostile-failure:1)
                 printf '{"success":true,"enabled":false,"deviceId":"device-id-fixture\\nFORGED_OUTPUT=true","customCode":"CustomCodeFixture"}' >"$output_path"
                 controlled_now=60000
@@ -501,6 +507,48 @@ if [ "$mode" = "aggregate" ]; then
                 1 0 1 0 0 0 0 0 0 0 0 0 0 0 1 1 1 cli-nonzero 0
             exit "$?"
             ;;
+        fault-mktemp)
+            uuremote_assist_mktemp_directory() {
+                return 1
+            }
+            ;;
+        fault-chmod)
+            uuremote_assist_chmod() {
+                return 1
+            }
+            ;;
+        fault-truncate)
+            truncate_calls=0
+            uuremote_assist_truncate_file() {
+                truncate_calls="$((truncate_calls + 1))"
+                [ "$truncate_calls" -lt 4 ] || return 1
+                : >"$1"
+            }
+            ;;
+        fault-status-write)
+            uuremote_python3() {
+                python3 "$@"
+            }
+            run_bounded_gui_cli_to_file() {
+                local output_path="$1"
+                local status_path="$2"
+                local timeout_milliseconds="$3"
+                local status_directory
+                status_directory="$(/usr/bin/dirname "$status_path")"
+                /bin/chmod 0500 "$status_directory"
+                run_bounded_uuremote_cli_to_file_with_status \
+                    "$output_path" "$status_path" "$timeout_milliseconds" \
+                    /bin/echo '{"success":true,"enabled":true,"deviceId":"device-id-fixture","customCode":"CustomCodeFixture"}'
+                local bounded_status="$?"
+                /bin/chmod 0700 "$status_directory"
+                return "$bounded_status"
+            }
+            ;;
+        fault-cleanup)
+            uuremote_assist_remove_files() {
+                return 1
+            }
+            ;;
         transient-success|debug0-failure) ;;
         *) exit 2 ;;
     esac
@@ -515,7 +563,7 @@ if [ "$mode" = "aggregate" ]; then
         exit 1
     fi
     case "$scenario" in
-        late-success|invalid-clock|invalid-clock-loop|invalid-clock-post-call|clock-status-start|clock-status-loop|clock-status-post-call)
+        late-success|invalid-clock|invalid-clock-loop|invalid-clock-post-call|clock-status-start|clock-status-loop|clock-status-post-call|fault-mktemp|fault-chmod|fault-truncate|fault-status-write|fault-cleanup)
         printf 'TEMPORARY_TREE_EMPTY=true\n'
             ;;
     esac

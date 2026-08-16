@@ -203,6 +203,22 @@ class MacOSDiagnosticRedactionTests(unittest.TestCase):
 
 
 @unittest.skipUnless(BASH_AVAILABLE, "requires /bin/bash")
+class MacOSCliOutputRedactionEntrypointTests(unittest.TestCase):
+    def test_actual_cli_output_redaction_entrypoint_contract(self):
+        result = subprocess.run(
+            ["/bin/bash", str(ROOT / "tests/test_macos_cli_output_redaction.sh")],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertEqual(result.stdout, "macOS CLI output redaction contract passed\n")
+        self.assertEqual(result.stderr, "")
+
+
+@unittest.skipUnless(BASH_AVAILABLE, "requires /bin/bash")
 class MacOSAssistAllowClassifierTests(unittest.TestCase):
     def run_scenario(self, scenario: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
@@ -474,11 +490,30 @@ class MacOSAssistAllowAggregationTests(unittest.TestCase):
             with self.subTest(scenario=scenario):
                 result = self.run_harness(scenario)
                 self.assertEqual(result.returncode, 1)
-                self.assertIn("TEMPORARY_TREE_EMPTY=true", result.stdout)
+                self.assertEqual(result.stdout, "TEMPORARY_TREE_EMPTY=true\n")
                 self.assertEqual(
                     result.stderr,
                     "Could not enable unattended control within 60 seconds\n",
                 )
+
+    def test_internal_boundary_failures_are_generic_only_and_cleaned_up(self):
+        for scenario in (
+            "fault-mktemp",
+            "fault-chmod",
+            "fault-truncate",
+            "fault-status-write",
+            "fault-cleanup",
+        ):
+            with self.subTest(scenario=scenario):
+                result = self.run_harness(scenario)
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(result.stdout, "TEMPORARY_TREE_EMPTY=true\n")
+                self.assertEqual(
+                    result.stderr,
+                    "Could not enable unattended control within 60 seconds\n",
+                )
+                self.assertNotIn("device-id-fixture", result.stdout + result.stderr)
+                self.assertNotIn("CustomCodeFixture", result.stdout + result.stderr)
 
     def test_invalid_monotonic_clock_fails_closed_and_cleans_up(self):
         for scenario in (

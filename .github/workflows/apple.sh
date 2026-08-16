@@ -310,6 +310,10 @@ self_test_wait_connections() (
     echo "shutdown-aware wait self-test passed"
 )
 
+uuremote_python3() {
+    /usr/bin/python3 "$@"
+}
+
 run_bounded_uuremote_cli_to_file_with_status() {
     local output_path="$1"
     local status_path="$2"
@@ -321,7 +325,7 @@ run_bounded_uuremote_cli_to_file_with_status() {
         return 2
     fi
 
-    /usr/bin/python3 - \
+    uuremote_python3 - \
         "$output_path" "$status_path" "$timeout_milliseconds" "$@" <<'PYTHON'
 import os
 import pathlib
@@ -336,19 +340,23 @@ timeout_seconds = int(sys.argv[3]) / 1000
 command = sys.argv[4:]
 
 def write_status(value):
-    if str(status_path) == os.devnull:
-        with open(os.devnull, "w", encoding="ascii") as status:
+    try:
+        if str(status_path) == os.devnull:
+            with open(os.devnull, "w", encoding="ascii") as status:
+                status.write(value + "\n")
+            return True
+        temporary_status_path = status_path.with_name(status_path.name + ".tmp")
+        descriptor = os.open(
+            temporary_status_path,
+            os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+            0o600,
+        )
+        with os.fdopen(descriptor, "w", encoding="ascii", newline="\n") as status:
             status.write(value + "\n")
-        return
-    temporary_status_path = status_path.with_name(status_path.name + ".tmp")
-    descriptor = os.open(
-        temporary_status_path,
-        os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
-        0o600,
-    )
-    with os.fdopen(descriptor, "w", encoding="ascii", newline="\n") as status:
-        status.write(value + "\n")
-    os.replace(temporary_status_path, status_path)
+        os.replace(temporary_status_path, status_path)
+    except OSError:
+        return False
+    return True
 
 class HandledSignal(Exception):
     pass
@@ -515,7 +523,7 @@ except HandledSignal:
         cleanup_owned_process()
     write_status("unavailable")
     exit_code = 125
-except OSError:
+except Exception:
     write_status("unavailable")
     exit_code = 125
 finally:
@@ -1290,6 +1298,22 @@ wait_for_cli() {
         "$CLI" status
 }
 
+uuremote_assist_mktemp_directory() {
+    /usr/bin/mktemp -d "$1"
+}
+
+uuremote_assist_chmod() {
+    /bin/chmod "$@"
+}
+
+uuremote_assist_truncate_file() {
+    : >"$1"
+}
+
+uuremote_assist_remove_files() {
+    /bin/rm -f -- "$@"
+}
+
 ensure_assist_allowed() (
     local deadline now remaining attempt_timeout sleep_timeout record record_path record_lines
     local category response_bytes safe_exit tabless category_total
@@ -1307,13 +1331,22 @@ ensure_assist_allowed() (
     cleanup_assist_attempt() {
         local cleanup_status=0
         if [ -n "$response_path" ]; then
-            /bin/rm -f -- "$response_path" || cleanup_status=1
+            if ! uuremote_assist_remove_files "$response_path" 2>/dev/null; then
+                cleanup_status=1
+                /bin/rm -f -- "$response_path" 2>/dev/null || cleanup_status=1
+            fi
         fi
         if [ -n "$status_path" ]; then
-            /bin/rm -f -- "$status_path" "$status_path.tmp" || cleanup_status=1
+            if ! uuremote_assist_remove_files "$status_path" "$status_path.tmp" 2>/dev/null; then
+                cleanup_status=1
+                /bin/rm -f -- "$status_path" "$status_path.tmp" 2>/dev/null || cleanup_status=1
+            fi
         fi
         if [ -n "$record_path" ]; then
-            /bin/rm -f -- "$record_path" || cleanup_status=1
+            if ! uuremote_assist_remove_files "$record_path" 2>/dev/null; then
+                cleanup_status=1
+                /bin/rm -f -- "$record_path" 2>/dev/null || cleanup_status=1
+            fi
         fi
         if [ -n "$assist_temp_dir" ]; then
             /bin/rmdir "$assist_temp_dir" 2>/dev/null || cleanup_status=1
@@ -1322,18 +1355,18 @@ ensure_assist_allowed() (
     }
 
     umask 077
-    assist_temp_dir="$(/usr/bin/mktemp -d \
-        "${TMPDIR:-/tmp}/uuremote-assist-allow.XXXXXX")" || return 1
+    assist_temp_dir="$(uuremote_assist_mktemp_directory \
+        "${TMPDIR:-/tmp}/uuremote-assist-allow.XXXXXX" 2>/dev/null)" || return 1
     trap 'cleanup_assist_attempt || exit 1' EXIT
     trap 'cleanup_assist_attempt; exit 1' HUP INT TERM
-    /bin/chmod 0700 "$assist_temp_dir" || return 1
+    uuremote_assist_chmod 0700 "$assist_temp_dir" 2>/dev/null || return 1
     response_path="$assist_temp_dir/response"
     status_path="$assist_temp_dir/status"
     record_path="$assist_temp_dir/record"
-    : >"$response_path"
-    : >"$status_path"
-    : >"$record_path"
-    /bin/chmod 0600 "$response_path" "$status_path" "$record_path" || return 1
+    uuremote_assist_truncate_file "$response_path" 2>/dev/null || return 1
+    uuremote_assist_truncate_file "$status_path" 2>/dev/null || return 1
+    uuremote_assist_truncate_file "$record_path" 2>/dev/null || return 1
+    uuremote_assist_chmod 0600 "$response_path" "$status_path" "$record_path" 2>/dev/null || return 1
 
     read_assist_now() {
         now="$(uuremote_now_milliseconds)" || return 1
@@ -1357,13 +1390,13 @@ ensure_assist_allowed() (
         attempts="$((attempts + 1))"
         attempt_timeout=3000
         [ "$remaining" -ge "$attempt_timeout" ] || attempt_timeout="$remaining"
-        : >"$response_path"
-        : >"$status_path"
+        uuremote_assist_truncate_file "$response_path" 2>/dev/null || return 1
+        uuremote_assist_truncate_file "$status_path" 2>/dev/null || return 1
         run_bounded_gui_cli_to_file \
             "$response_path" "$status_path" "$attempt_timeout" \
-            "$CLI" assist allow on || true
+            "$CLI" assist allow on >/dev/null 2>/dev/null || true
 
-        status_record="$(/bin/cat "$status_path")" || return 1
+        status_record="$(/bin/cat "$status_path" 2>/dev/null)" || return 1
         case "$status_record" in
             timeout)
                 execution_state=timeout
@@ -1384,14 +1417,14 @@ ensure_assist_allowed() (
             *) return 1 ;;
         esac
 
-        : >"$record_path"
+        uuremote_assist_truncate_file "$record_path" 2>/dev/null || return 1
         classify_assist_allow_response \
-            "$response_path" "$execution_state" "$execution_exit" >"$record_path" || return 1
-        : >"$response_path"
-        record_lines="$(/usr/bin/wc -l <"$record_path" | /usr/bin/tr -d '[:space:]')"
+            "$response_path" "$execution_state" "$execution_exit" 2>/dev/null >"$record_path" || return 1
+        uuremote_assist_truncate_file "$response_path" 2>/dev/null || return 1
+        record_lines="$(/usr/bin/wc -l 2>/dev/null <"$record_path" | /usr/bin/tr -d '[:space:]' 2>/dev/null)" || return 1
         [ "$record_lines" = 1 ] || return 1
-        record="$(/bin/cat "$record_path")" || return 1
-        : >"$record_path"
+        record="$(/bin/cat "$record_path" 2>/dev/null)" || return 1
+        uuremote_assist_truncate_file "$record_path" 2>/dev/null || return 1
         case "$record" in
             *$'\r'*|*$'\n'*) return 1 ;;
         esac
@@ -1521,17 +1554,29 @@ self_test_cli_output_redaction() {
     fi
 
     CLI="$test_cli"
+    debug_level=0
+    console_uid=501
     run_in_gui() {
         local fixture_cli="$1"
         shift
         /bin/bash "$fixture_cli" "$@"
     }
+    run_bounded_gui_cli_to_file() {
+        local output_path="$1"
+        local status_path="$2"
+        local timeout_milliseconds="$3"
+        local fixture_cli="$4"
+        shift 4
+        run_bounded_uuremote_cli_to_file_with_status \
+            "$output_path" "$status_path" "$timeout_milliseconds" \
+            /bin/bash "$fixture_cli" "$@"
+    }
     sleep() {
         :
     }
 
-    wait_for_cli
-    ensure_assist_allowed
+    wait_for_cli || return 1
+    ensure_assist_allowed || return 1
     echo "CLI output redaction self-test passed"
 }
 

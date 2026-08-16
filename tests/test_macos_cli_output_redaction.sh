@@ -5,11 +5,11 @@ if [ "${UUREMOTE_CLI_OUTPUT_FIXTURE:-0}" = "1" ]; then
     case "${*:-}" in
         status)
             count_path="${UUREMOTE_STATUS_COUNT_PATH:?}"
-            success_field='"success" : true'
+            response_prefix='"success" : true'
             ;;
         "assist allow on")
             count_path="${UUREMOTE_ASSIST_COUNT_PATH:?}"
-            success_field='"enabled" : true'
+            response_prefix='"success" : true, "enabled" : true'
             ;;
         *)
             exit 2
@@ -25,12 +25,12 @@ if [ "${UUREMOTE_CLI_OUTPUT_FIXTURE:-0}" = "1" ]; then
 
     if [ "$count" -eq 1 ]; then
         printf '{%s, "deviceId" : "%s", "customCode" : "%s"\n' \
-            "$success_field" \
+            "$response_prefix" \
             "${UUREMOTE_FIXTURE_DEVICE_ID:?}" \
             "${UUREMOTE_FIXTURE_CUSTOM_CODE:?}"
     else
         printf '{%s, "deviceId" : "%s", "customCode" : "%s"}\n' \
-            "$success_field" \
+            "$response_prefix" \
             "${UUREMOTE_FIXTURE_DEVICE_ID:?}" \
             "${UUREMOTE_FIXTURE_CUSTOM_CODE:?}"
     fi
