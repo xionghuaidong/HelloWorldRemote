@@ -2,6 +2,7 @@ from pathlib import Path
 import os
 import plistlib
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -14,6 +15,7 @@ DIAGNOSTIC_HARNESS_PATH = ROOT / "tests/test_macos_diagnostic_redaction.sh"
 MACOS_READINESS_HARNESS_PATH = ROOT / "tests/macos_readiness_harness.sh"
 MACOS_ASSIST_ALLOW_HARNESS_PATH = ROOT / "tests/macos_assist_allow_harness.sh"
 BASH_AVAILABLE = Path("/bin/bash").exists()
+NATIVE_MACOS_BASH_AVAILABLE = BASH_AVAILABLE and sys.platform == "darwin"
 
 
 def text(path: Path) -> str:
@@ -341,31 +343,48 @@ class MacOSAssistAllowProcessTests(unittest.TestCase):
             "STATUS=unavailable\nPROCESS_GROUP_RELEASED=true\n",
         )
 
-    def test_unconfirmed_timeout_cleanup_publishes_no_status(self):
-        result = self.run_harness("fault-timeout", "timeout")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stderr, "")
-        self.assertEqual(result.stdout, "STATUS=absent\n")
-
-    def test_cleanup_exception_after_real_timeout_cleanup_publishes_no_status(self):
-        result = self.run_harness("fault-raises", "timeout")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stderr, "")
-        self.assertEqual(result.stdout, "STATUS=absent\n")
-
-    def test_unconfirmed_completed_leader_cleanup_publishes_no_status(self):
-        result = self.run_harness("fault-leader", "leader-fault")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout, "STATUS=absent\n")
-
-    def test_unconfirmed_signal_cleanup_publishes_no_status(self):
-        for scenario in ("signal-int", "signal-term", "signal-hup"):
-            with self.subTest(scenario=scenario):
-                result = self.run_harness("fault-signal", scenario)
+    def test_timeout_cleanup_false_and_raises_fail_closed(self):
+        for mode in ("fault-timeout", "fault-raises"):
+            with self.subTest(mode=mode):
+                started = time.monotonic()
+                result = self.run_harness(mode, "timeout")
+                elapsed = time.monotonic() - started
                 self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertLess(elapsed, 5)
+                self.assertEqual(result.stderr, "")
+                expected = "EXIT=125\nSTATUS=absent\n"
+                if NATIVE_MACOS_BASH_AVAILABLE:
+                    expected += "PROCESS_GROUP_RELEASED=true\n"
+                self.assertEqual(result.stdout, expected)
+
+    @unittest.skipUnless(
+        NATIVE_MACOS_BASH_AVAILABLE,
+        "requires native macOS process-group cleanup and reaping",
+    )
+    def test_cleanup_faults_reap_real_groups_before_return(self):
+        cases = (
+            ("fault-timeout", "timeout"),
+            ("fault-raises", "timeout"),
+            ("fault-leader", "leader-fault"),
+            ("fault-leader-raises", "leader-fault"),
+            ("fault-signal", "signal-int"),
+            ("fault-signal", "signal-term"),
+            ("fault-signal", "signal-hup"),
+            ("fault-signal-raises", "signal-int"),
+            ("fault-signal-raises", "signal-term"),
+            ("fault-signal-raises", "signal-hup"),
+        )
+        for mode, scenario in cases:
+            with self.subTest(mode=mode, scenario=scenario):
+                started = time.monotonic()
+                result = self.run_harness(mode, scenario)
+                elapsed = time.monotonic() - started
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertLess(elapsed, 5)
+                self.assertEqual(result.stderr, "")
                 self.assertEqual(
                     result.stdout,
-                    "STATUS=absent\nPROCESS_GROUP_RELEASED=true\n",
+                    "EXIT=125\nSTATUS=absent\nPROCESS_GROUP_RELEASED=true\n",
                 )
 
     def test_exit_cleanup_kills_a_recorded_fixture_child(self):
@@ -401,6 +420,7 @@ class MacOSAssistAllowAggregationTests(unittest.TestCase):
     def test_outer_caller_hides_mutated_real_cleanup_failures(self):
         for mode in ("outer-cleanup-false", "outer-cleanup-raises"):
             with self.subTest(mode=mode):
+                started = time.monotonic()
                 result = subprocess.run(
                     ["/bin/bash", str(MACOS_ASSIST_ALLOW_HARNESS_PATH), mode, mode],
                     cwd=ROOT,
@@ -408,12 +428,23 @@ class MacOSAssistAllowAggregationTests(unittest.TestCase):
                     capture_output=True,
                     check=False,
                 )
+                elapsed = time.monotonic() - started
                 self.assertEqual(result.returncode, 1)
+                self.assertLess(elapsed, 5)
                 self.assertEqual(result.stdout, "")
                 self.assertEqual(
                     result.stderr,
                     "Could not enable unattended control within 60 seconds\n",
                 )
+                for marker in (
+                    "ASSIST_DIAGNOSTIC_",
+                    "STATUS=",
+                    "Traceback",
+                    "device-id-fixture",
+                    "CustomCodeFixture",
+                    "FORGED_OUTPUT",
+                ):
+                    self.assertNotIn(marker, result.stdout + result.stderr)
 
     def test_transient_failures_then_success_emit_only_success(self):
         result = self.run_harness("transient-success")

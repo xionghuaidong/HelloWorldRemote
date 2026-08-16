@@ -43,9 +43,106 @@ fixture_pids=""
 fixture_pid_paths=""
 fixture_groups=""
 
+is_native_macos() {
+    [ "$(uname -s)" = Darwin ]
+}
+
+record_fixture_group_when_known() {
+    local pid group
+
+    if ! is_native_macos || [ ! -s "$parent_pid_path" ]; then
+        return 0
+    fi
+    pid="$(cat "$parent_pid_path")"
+    case "$pid" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    group="$(/bin/ps -o pgid= -p "$pid" | /usr/bin/tr -d '[:space:]')"
+    case "$group" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    [ "$group" = "$pid" ] || return 1
+    fixture_groups="$group"
+}
+
+assert_recorded_fixture_teardown() {
+    local pid pid_path group
+
+    if ! is_native_macos; then
+        # Windows owns only the direct child; native macOS proves group teardown.
+        return 0
+    fi
+    for pid_path in $fixture_pid_paths; do
+        [ -s "$pid_path" ] || return 1
+        pid="$(cat "$pid_path")"
+        case "$pid" in
+            ''|*[!0-9]*) return 1 ;;
+        esac
+        if /bin/kill -0 "$pid" 2>/dev/null; then
+            return 1
+        fi
+    done
+    [ -n "$fixture_groups" ] || return 1
+    for group in $fixture_groups; do
+        case "$group" in
+            ''|*[!0-9]*) return 1 ;;
+        esac
+        if /bin/kill -0 -- "-$group" 2>/dev/null; then
+            return 1
+        fi
+    done
+}
+
+run_recorded_bounded_fixture() {
+    local output_path="$1"
+    local status_path="$2"
+    local timeout_milliseconds="$3"
+    local runner_pid wait_attempt runner_exit
+    shift 3
+
+    (
+        run_bounded_uuremote_cli_to_file_with_status \
+            "$output_path" "$status_path" "$timeout_milliseconds" "$@"
+    ) &
+    runner_pid="$!"
+    fixture_pids="$fixture_pids $runner_pid"
+    wait_attempt=0
+    while [ "$wait_attempt" -lt 40 ]; do
+        if [ -s "$parent_pid_path" ] && [ -s "$child_pid_path" ]; then
+            if record_fixture_group_when_known; then
+                break
+            fi
+            if is_native_macos; then
+                /bin/kill -KILL "$runner_pid" 2>/dev/null || true
+                wait "$runner_pid" 2>/dev/null || true
+                return 125
+            fi
+        fi
+        wait_attempt="$((wait_attempt + 1))"
+        sleep 0.05
+    done
+    if [ ! -s "$parent_pid_path" ] || [ ! -s "$child_pid_path" ]; then
+        /bin/kill -KILL "$runner_pid" 2>/dev/null || true
+        wait "$runner_pid" 2>/dev/null || true
+        return 125
+    fi
+    if wait "$runner_pid"; then
+        runner_exit=0
+    else
+        runner_exit="$?"
+    fi
+    return "$runner_exit"
+}
+
 cleanup_harness() {
     local pid pid_path group cleanup_attempt
 
+    for group in $fixture_groups; do
+        case "$group" in
+            ''|*[!0-9]*) ;;
+            *) /bin/kill -KILL -- "-$group" 2>/dev/null || true ;;
+        esac
+    done
     for pid in $fixture_pids; do
         case "$pid" in
             ''|*[!0-9]*) ;;
@@ -57,15 +154,9 @@ cleanup_harness() {
             pid="$(cat "$pid_path")"
             case "$pid" in
                 ''|*[!0-9]*) ;;
-                *) /bin/kill -KILL "$pid" 2>/dev/null || true ;;
+                *) /bin/kill -KILL "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true ;;
             esac
         fi
-    done
-    for group in $fixture_groups; do
-        case "$group" in
-            ''|*[!0-9]*) ;;
-            *) /bin/kill -KILL -- "-$group" 2>/dev/null || true ;;
-        esac
     done
     cleanup_attempt=0
     while [ "$cleanup_attempt" -lt 20 ]; do
@@ -91,7 +182,7 @@ case "$mode" in
             /^cleanup_in_progress = False$/ {
                 print "def cleanup_owned_process():"
                 print "    cleanup_owned_process_real()"
-                if (fault_mode == "fault-raises" || fault_mode == "outer-cleanup-raises") {
+                if (fault_mode == "fault-raises" || fault_mode == "fault-leader-raises" || fault_mode == "fault-signal-raises" || fault_mode == "outer-cleanup-raises") {
                     print "    raise RuntimeError"
                 } else {
                     print "    return False"
@@ -138,19 +229,37 @@ esac && {
             fi
             ;;
         timeout)
-            if run_bounded_uuremote_cli_to_file_with_status \
+            if [ "$mode" = fault-timeout ] || [ "$mode" = fault-raises ]; then
+                run_boundary=run_recorded_bounded_fixture
+            else
+                run_boundary=run_bounded_uuremote_cli_to_file_with_status
+            fi
+            if "$run_boundary" \
                 "$output_path" "$status_path" 3000 /bin/bash "$0" fixture-hang \
                 "$parent_pid_path" "$child_pid_path"
             then
                 echo "Hanging fixture unexpectedly succeeded" >&2
                 exit 1
+            else
+                bounded_exit="$?"
             fi
             if [ "$mode" = fault-timeout ] || [ "$mode" = fault-raises ]; then
+                if [ "$bounded_exit" -ne 125 ]; then
+                    echo "Unconfirmed cleanup did not fail closed" >&2
+                    exit 1
+                fi
                 if [ -s "$status_path" ]; then
                     echo "Unconfirmed cleanup wrote a status" >&2
                     exit 1
                 fi
-                printf 'STATUS=absent\n'
+                if ! assert_recorded_fixture_teardown; then
+                    echo "Unconfirmed cleanup left a recorded process" >&2
+                    exit 1
+                fi
+                printf 'EXIT=125\nSTATUS=absent\n'
+                if is_native_macos; then
+                    printf 'PROCESS_GROUP_RELEASED=true\n'
+                fi
                 exit 0
             fi
             for pid_path in "$parent_pid_path" "$child_pid_path"; do
@@ -234,6 +343,10 @@ esac && {
             signal_wait_attempt=0
             while [ "$signal_wait_attempt" -lt 40 ]; do
                 if [ -s "$parent_pid_path" ] && [ -s "$child_pid_path" ]; then
+                    if ! record_fixture_group_when_known && is_native_macos; then
+                        echo "Fixture process group was unavailable" >&2
+                        exit 1
+                    fi
                     case "$(uname -s)" in
                         MINGW*|MSYS*)
                             runner_python_pid="$(powershell.exe -NoProfile -Command \
@@ -267,7 +380,7 @@ esac && {
                 echo "Interrupted runner did not fail closed" >&2
                 exit 1
             fi
-            if [ "$mode" = fault-signal ]; then
+            if [ "$mode" = fault-signal ] || [ "$mode" = fault-signal-raises ]; then
                 if [ -s "$runner_status_path" ]; then
                     echo "Unconfirmed cleanup wrote a status" >&2
                     exit 1
@@ -276,24 +389,31 @@ esac && {
                 echo "Interrupted runner status was not unavailable" >&2
                 exit 1
             fi
-            for pid_path in "$parent_pid_path" "$child_pid_path"; do
-                pid="$(cat "$pid_path")"
-                if kill -0 "$pid" 2>/dev/null; then
+            if [ "$mode" = fault-signal ] || [ "$mode" = fault-signal-raises ]; then
+                if ! assert_recorded_fixture_teardown; then
+                    echo "Unconfirmed signal cleanup left a recorded process" >&2
+                    exit 1
+                fi
+                printf 'EXIT=125\nSTATUS=absent\n'
+                if is_native_macos; then
+                    printf 'PROCESS_GROUP_RELEASED=true\n'
+                fi
+            else
+                for pid_path in "$parent_pid_path" "$child_pid_path"; do
+                    pid="$(cat "$pid_path")"
+                    if kill -0 "$pid" 2>/dev/null; then
+                        echo "Process group was not released" >&2
+                        exit 1
+                    fi
+                done
+                parent_pid="$(cat "$parent_pid_path")"
+                if kill -0 -- "-$parent_pid" 2>/dev/null; then
                     echo "Process group was not released" >&2
                     exit 1
                 fi
-            done
-            parent_pid="$(cat "$parent_pid_path")"
-            if kill -0 -- "-$parent_pid" 2>/dev/null; then
-                echo "Process group was not released" >&2
-                exit 1
-            fi
-            if [ "$mode" = fault-signal ]; then
-                printf 'STATUS=absent\n'
-            else
                 printf 'STATUS=unavailable\n'
+                printf 'PROCESS_GROUP_RELEASED=true\n'
             fi
-            printf 'PROCESS_GROUP_RELEASED=true\n'
             exit 0
             ;;
         term-observed)
@@ -348,21 +468,34 @@ esac && {
             exit 0
             ;;
         leader-fault)
-            if [ "$mode" != fault-leader ]; then
+            if [ "$mode" != fault-leader ] && [ "$mode" != fault-leader-raises ]; then
                 exit 2
             fi
-            if run_bounded_uuremote_cli_to_file_with_status \
+            if run_recorded_bounded_fixture \
                 "$output_path" "$status_path" 3000 /bin/bash "$0" fixture-leader-completes \
                 "$parent_pid_path" "$child_pid_path"
             then
                 echo "Fault leader unexpectedly succeeded" >&2
+                exit 1
+            else
+                bounded_exit="$?"
+            fi
+            if [ "$bounded_exit" -ne 125 ]; then
+                echo "Unconfirmed leader cleanup did not fail closed" >&2
                 exit 1
             fi
             if [ -s "$status_path" ]; then
                 echo "Unconfirmed cleanup wrote a status" >&2
                 exit 1
             fi
-            printf 'STATUS=absent\n'
+            if ! assert_recorded_fixture_teardown; then
+                echo "Unconfirmed leader cleanup left a recorded process" >&2
+                exit 1
+            fi
+            printf 'EXIT=125\nSTATUS=absent\n'
+            if is_native_macos; then
+                printf 'PROCESS_GROUP_RELEASED=true\n'
+            fi
             exit 0
             ;;
         cleanup-fallback)
@@ -452,10 +585,20 @@ esac && {
         shift 3
         boundary_calls="$((boundary_calls + 1))"
         if [ "$mode" = outer-cleanup-false ] || [ "$mode" = outer-cleanup-raises ]; then
-            run_bounded_uuremote_cli_to_file_with_status \
+            if run_recorded_bounded_fixture \
                 "$output_path" "$status_path" "$timeout_milliseconds" \
                 /bin/bash "$0" fixture-hang "$parent_pid_path" "$child_pid_path"
-            return "$?"
+            then
+                return 0
+            fi
+            bounded_exit="$?"
+            if [ "$bounded_exit" -ne 125 ] || [ -s "$status_path" ]; then
+                return 125
+            fi
+            if ! assert_recorded_fixture_teardown; then
+                return 125
+            fi
+            return 125
         fi
         printf 'completed:0\n' >"$status_path"
         case "$scenario:$boundary_calls" in
@@ -641,8 +784,20 @@ esac && {
 
     if [ "$scenario" = outer-false ] || [ "$scenario" = outer-raises ] || \
         [ "$mode" = outer-cleanup-false ] || [ "$mode" = outer-cleanup-raises ]; then
-        enable_assist_or_fail
-        exit "$?"
+        if enable_assist_or_fail; then
+            status=0
+        else
+            status="$?"
+        fi
+        if is_native_macos; then
+            if [ ! -d "$temporary_tree" ] || [ -n "$(find "$temporary_tree" -mindepth 1 -print -quit)" ]; then
+                exit 125
+            fi
+        fi
+        if [ ! -s "${parent_pid_path:-}" ] || [ ! -s "${child_pid_path:-}" ]; then
+            exit 125
+        fi
+        exit "$status"
     fi
 
     if ensure_assist_allowed; then
