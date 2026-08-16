@@ -23,7 +23,37 @@ source_script="${MACOS_ASSIST_ALLOW_SUBJECT_SOURCE:-$root/.github/workflows/appl
 temporary_directory="$(mktemp -d "${TMPDIR:-/tmp}/uuremote-assist-allow-test.XXXXXX")"
 subject="$temporary_directory/subject.sh"
 response_path="$temporary_directory/response"
-trap 'rm -rf -- "$temporary_directory"' EXIT
+fixture_pids=""
+fixture_pid_paths=""
+fixture_groups=""
+
+cleanup_harness() {
+    local pid pid_path group
+
+    for pid in $fixture_pids; do
+        case "$pid" in
+            ''|*[!0-9]*) ;;
+            *) /bin/kill -KILL "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true ;;
+        esac
+    done
+    for pid_path in $fixture_pid_paths; do
+        if [ -r "$pid_path" ]; then
+            pid="$(cat "$pid_path")"
+            case "$pid" in
+                ''|*[!0-9]*) ;;
+                *) /bin/kill -KILL "$pid" 2>/dev/null || true ;;
+            esac
+        fi
+    done
+    for group in $fixture_groups; do
+        case "$group" in
+            ''|*[!0-9]*) ;;
+            *) /bin/kill -KILL -- "-$group" 2>/dev/null || true ;;
+        esac
+    done
+    rm -rf -- "$temporary_directory"
+}
+trap cleanup_harness EXIT
 
 awk '/^if \[ "\$mode" = "self-test-kcpassword" \]; then$/ { exit } { print }' \
     "$source_script" >"$subject"
@@ -44,6 +74,7 @@ if [ "$mode" = "process" ]; then
     output_path="$temporary_directory/output"
     parent_pid_path="$temporary_directory/parent.pid"
     child_pid_path="$temporary_directory/child.pid"
+    fixture_pid_paths="$parent_pid_path $child_pid_path"
 
     . "$subject"
     case "$scenario" in
@@ -134,6 +165,12 @@ if [ "$mode" = "process" ]; then
             printf 'GUI_COMMAND=%s\n' "${gui_command%|}"
             exit 0
             ;;
+        cleanup-fallback)
+            /bin/bash -c 'trap "" TERM; while :; do sleep 1; done' &
+            fixture_pids="$!"
+            printf 'FALLBACK_PID=%s\n' "$fixture_pids"
+            exit 0
+            ;;
         *) exit 2 ;;
     esac
     printf 'STATUS=%s\n' "$(cat "$status_path")"
@@ -171,6 +208,21 @@ if [ "$mode" = "aggregate" ]; then
                     printf '%s\n' "$controlled_now"
                 else
                     printf 'not-a-decimal-clock\n'
+                fi
+                ;;
+            clock-status-start) return 7 ;;
+            clock-status-loop)
+                if [ "$clock_calls" -eq 1 ]; then
+                    printf '%s\n' "$controlled_now"
+                else
+                    return 7
+                fi
+                ;;
+            clock-status-post-call)
+                if [ "$clock_calls" -le 2 ]; then
+                    printf '%s\n' "$controlled_now"
+                else
+                    return 7
                 fi
                 ;;
             *) printf '%s\n' "$controlled_now" ;;
@@ -216,7 +268,11 @@ if [ "$mode" = "aggregate" ]; then
                 printf '{"success":true,"enabled":true}' >"$output_path"; controlled_now=100 ;;
             record-trailing-newline:1|record-trailing-tab:1|record-extra-field:1)
                 printf '{"success":true,"enabled":true}' >"$output_path"; controlled_now=100 ;;
+            record-embedded-cr:1|record-enabled-unavailable:1|record-timeout-zero:1|record-cli-nonzero-zero:1)
+                printf '{"success":true,"enabled":true}' >"$output_path"; controlled_now=100 ;;
             invalid-clock-post-call:1)
+                printf '{"success":true,"enabled":true}' >"$output_path"; controlled_now=100 ;;
+            clock-status-post-call:1)
                 printf '{"success":true,"enabled":true}' >"$output_path"; controlled_now=100 ;;
             hostile-failure:1)
                 printf '{"success":true,"enabled":false,"deviceId":"device-id-fixture\\nFORGED_OUTPUT=true","customCode":"CustomCodeFixture"}' >"$output_path"
@@ -227,7 +283,7 @@ if [ "$mode" = "aggregate" ]; then
     }
 
     case "$scenario" in
-        deadline-bounds|debug1-failure|hostile-failure|late-success|invalid-clock|invalid-clock-loop|invalid-clock-post-call) debug_level=1 ;;
+        deadline-bounds|debug1-failure|hostile-failure|late-success|invalid-clock|invalid-clock-loop|invalid-clock-post-call|clock-status-start|clock-status-loop|clock-status-post-call) debug_level=1 ;;
         debug2-failure) debug_level=2 ;;
         debug3-failure) debug_level=3 ;;
         internal-invalid-record)
@@ -250,6 +306,21 @@ if [ "$mode" = "aggregate" ]; then
                     record-trailing-newline) printf '%s\n\n' "$record" ;;
                     record-trailing-tab) printf '%s\t\n' "$record" ;;
                     record-extra-field) printf '%s\textra\n' "$record" ;;
+                esac
+            }
+            ;;
+        record-embedded-cr|record-enabled-unavailable|record-timeout-zero|record-cli-nonzero-zero)
+            debug_level=1
+            eval "$(declare -f classify_assist_allow_response | \
+                /usr/bin/sed '1s/classify_assist_allow_response/classify_assist_allow_response_real/')"
+            classify_assist_allow_response() {
+                local record
+                record="$(classify_assist_allow_response_real "$@")" || return "$?"
+                case "$scenario" in
+                    record-embedded-cr) printf 'enabled-true\r\t31\t0\n' ;;
+                    record-enabled-unavailable) printf 'enabled-true\t31\tunavailable\n' ;;
+                    record-timeout-zero) printf 'timeout\t0\t0\n' ;;
+                    record-cli-nonzero-zero) printf 'cli-nonzero\t0\t0\n' ;;
                 esac
             }
             ;;
@@ -287,6 +358,21 @@ if [ "$mode" = "aggregate" ]; then
                 1 0 0 0 0 0 0 0 0 0 0 0 1 0 33 32 32 enabled-false 0
             exit "$?"
             ;;
+        report-zero-attempts)
+            report_assist_allow_diagnostics \
+                0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 enabled-false 0
+            exit "$?"
+            ;;
+        report-final-category-without-evidence)
+            report_assist_allow_diagnostics \
+                1 0 0 0 0 1 0 0 0 0 0 0 0 0 1 1 1 enabled-false 0
+            exit "$?"
+            ;;
+        report-exit-relation)
+            report_assist_allow_diagnostics \
+                1 0 1 0 0 0 0 0 0 0 0 0 0 0 1 1 1 cli-nonzero 0
+            exit "$?"
+            ;;
         transient-success|debug0-failure) ;;
         *) exit 2 ;;
     esac
@@ -301,7 +387,7 @@ if [ "$mode" = "aggregate" ]; then
         exit 1
     fi
     case "$scenario" in
-        late-success|invalid-clock|invalid-clock-loop|invalid-clock-post-call)
+        late-success|invalid-clock|invalid-clock-loop|invalid-clock-post-call|clock-status-start|clock-status-loop|clock-status-post-call)
         printf 'TEMPORARY_TREE_EMPTY=true\n'
             ;;
     esac

@@ -297,6 +297,13 @@ class MacOSAssistAllowProcessTests(unittest.TestCase):
             "GUI_COMMAND=sudo|launchctl|asuser|501|sudo|-u|#501|/bin/true\n",
         )
 
+    def test_exit_cleanup_kills_a_recorded_fixture_child(self):
+        result = self.run_harness("process", "cleanup-fallback")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        _, value = result.stdout.strip().split("=", 1)
+        with self.assertRaises(ProcessLookupError):
+            os.kill(int(value), 0)
+
 
 @unittest.skipUnless(BASH_AVAILABLE, "requires /bin/bash")
 class MacOSAssistAllowAggregationTests(unittest.TestCase):
@@ -401,6 +408,9 @@ class MacOSAssistAllowAggregationTests(unittest.TestCase):
             "report-count-exceeds-attempts",
             "report-count-sum-mismatch",
             "report-byte-order",
+            "report-zero-attempts",
+            "report-final-category-without-evidence",
+            "report-exit-relation",
         ):
             with self.subTest(scenario=scenario):
                 result = self.run_harness(scenario)
@@ -413,11 +423,30 @@ class MacOSAssistAllowAggregationTests(unittest.TestCase):
             "record-trailing-newline",
             "record-trailing-tab",
             "record-extra-field",
+            "record-embedded-cr",
+            "record-enabled-unavailable",
+            "record-timeout-zero",
+            "record-cli-nonzero-zero",
         ):
             with self.subTest(scenario=scenario):
                 result = self.run_harness(scenario)
                 self.assertEqual(result.returncode, 1)
                 self.assertEqual(result.stdout, "")
+                self.assertEqual(
+                    result.stderr,
+                    "Could not enable unattended control within 60 seconds\n",
+                )
+
+    def test_nonzero_monotonic_clock_fails_closed_and_cleans_up(self):
+        for scenario in (
+            "clock-status-start",
+            "clock-status-loop",
+            "clock-status-post-call",
+        ):
+            with self.subTest(scenario=scenario):
+                result = self.run_harness(scenario)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("TEMPORARY_TREE_EMPTY=true", result.stdout)
                 self.assertEqual(
                     result.stderr,
                     "Could not enable unattended control within 60 seconds\n",
