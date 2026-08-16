@@ -604,7 +604,9 @@ function Invoke-ShutdownWaiter {
         if ($PSVersionTable.PSEdition -eq 'Core') {
             $references += @(
                 'System.Windows.Forms.Primitives.dll',
-                'System.ComponentModel.Primitives.dll'
+                'System.ComponentModel.Primitives.dll',
+                'System.Threading.Thread.dll',
+                (Resolve-Path -LiteralPath (Join-Path $PSHOME 'System.Private.Windows.Core.dll')).Path
             )
         }
         Add-Type -Path $watcherSource -ReferencedAssemblies $references

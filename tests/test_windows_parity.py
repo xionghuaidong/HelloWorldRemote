@@ -14,6 +14,10 @@ MACOS_WORKFLOW = ROOT / ".github/workflows/macos.yml"
 WINDOWS_WORKFLOW = ROOT / ".github/workflows/windows.yml"
 WINDOWS_HELPER = ROOT / ".github/workflows/windows.ps1"
 WINDOWS_HELPER_HARNESS = ROOT / "tests/windows_helper_harness.ps1"
+PORTABLE_POWERSHELL_CORE = (
+    Path.home()
+    / ".cache/codex-runtimes/codex-primary-runtime/dependencies/native/powershell/pwsh.exe"
+)
 
 
 def path_powershell_runtimes() -> tuple[str, ...]:
@@ -22,6 +26,10 @@ def path_powershell_runtimes() -> tuple[str, ...]:
         runtime = shutil.which(command)
         if runtime is not None and runtime not in runtimes:
             runtimes.append(runtime)
+    if PORTABLE_POWERSHELL_CORE.is_file():
+        portable_runtime = str(PORTABLE_POWERSHELL_CORE)
+        if portable_runtime not in runtimes:
+            runtimes.append(portable_runtime)
     return tuple(runtimes)
 
 
@@ -364,7 +372,7 @@ Invoke-WindowsHelperRoute
         )
 
     @unittest.skipUnless(POWERSHELL_AVAILABLE, "requires a PowerShell runtime")
-    def test_self_test_passes_for_each_path_discovered_runtime(self):
+    def test_self_test_passes_for_each_supported_runtime(self):
         for runtime in POWERSHELL_RUNTIMES:
             with self.subTest(runtime=runtime):
                 result = run_windows_helper("self-test-wait-connections", powershell=runtime)
