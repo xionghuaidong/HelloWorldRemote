@@ -1040,6 +1040,67 @@ emit("enabled-true")
 PYTHON
 }
 
+report_assist_allow_diagnostics() {
+    [ "$#" -eq 19 ] || return 2
+    local attempts="$1" timeout_count="$2" cli_nonzero_count="$3"
+    local empty_count="$4" invalid_utf8_count="$5" invalid_json_count="$6"
+    local not_object_count="$7" success_missing_count="$8"
+    local success_wrong_type_count="$9"
+    shift 9
+    local success_false_count="$1" enabled_missing_count="$2"
+    local enabled_wrong_type_count="$3" enabled_false_count="$4"
+    local enabled_true_count="$5" response_bytes_min="$6"
+    local response_bytes_max="$7" response_bytes_final="$8"
+    local final_category="$9"
+    shift 9
+    local final_cli_exit="$1" value
+
+    for value in \
+        "$attempts" "$timeout_count" "$cli_nonzero_count" "$empty_count" \
+        "$invalid_utf8_count" "$invalid_json_count" "$not_object_count" \
+        "$success_missing_count" "$success_wrong_type_count" "$success_false_count" \
+        "$enabled_missing_count" "$enabled_wrong_type_count" \
+        "$enabled_false_count" "$enabled_true_count" \
+        "$response_bytes_min" "$response_bytes_max" "$response_bytes_final"
+    do
+        case "$value" in
+            ''|*[!0-9]*) return 2 ;;
+        esac
+    done
+    case "$final_category" in
+        timeout|cli-nonzero|empty|invalid-utf8|invalid-json|not-object|\
+        success-missing|success-wrong-type|success-false|enabled-missing|\
+        enabled-wrong-type|enabled-false|enabled-true)
+            ;;
+        *) return 2 ;;
+    esac
+    case "$final_cli_exit" in
+        timeout|unavailable) ;;
+        ''|*[!0-9]*) return 2 ;;
+        *) [ "$final_cli_exit" -le 255 ] || return 2 ;;
+    esac
+
+    printf 'ASSIST_DIAGNOSTIC_ATTEMPTS=%s\n' "$attempts"
+    printf 'ASSIST_DIAGNOSTIC_TIMEOUT_COUNT=%s\n' "$timeout_count"
+    printf 'ASSIST_DIAGNOSTIC_CLI_NONZERO_COUNT=%s\n' "$cli_nonzero_count"
+    printf 'ASSIST_DIAGNOSTIC_EMPTY_COUNT=%s\n' "$empty_count"
+    printf 'ASSIST_DIAGNOSTIC_INVALID_UTF8_COUNT=%s\n' "$invalid_utf8_count"
+    printf 'ASSIST_DIAGNOSTIC_INVALID_JSON_COUNT=%s\n' "$invalid_json_count"
+    printf 'ASSIST_DIAGNOSTIC_NOT_OBJECT_COUNT=%s\n' "$not_object_count"
+    printf 'ASSIST_DIAGNOSTIC_SUCCESS_MISSING_COUNT=%s\n' "$success_missing_count"
+    printf 'ASSIST_DIAGNOSTIC_SUCCESS_WRONG_TYPE_COUNT=%s\n' "$success_wrong_type_count"
+    printf 'ASSIST_DIAGNOSTIC_SUCCESS_FALSE_COUNT=%s\n' "$success_false_count"
+    printf 'ASSIST_DIAGNOSTIC_ENABLED_MISSING_COUNT=%s\n' "$enabled_missing_count"
+    printf 'ASSIST_DIAGNOSTIC_ENABLED_WRONG_TYPE_COUNT=%s\n' "$enabled_wrong_type_count"
+    printf 'ASSIST_DIAGNOSTIC_ENABLED_FALSE_COUNT=%s\n' "$enabled_false_count"
+    printf 'ASSIST_DIAGNOSTIC_ENABLED_TRUE_COUNT=%s\n' "$enabled_true_count"
+    printf 'ASSIST_DIAGNOSTIC_RESPONSE_BYTES_MIN=%s\n' "$response_bytes_min"
+    printf 'ASSIST_DIAGNOSTIC_RESPONSE_BYTES_MAX=%s\n' "$response_bytes_max"
+    printf 'ASSIST_DIAGNOSTIC_RESPONSE_BYTES_FINAL=%s\n' "$response_bytes_final"
+    printf 'ASSIST_DIAGNOSTIC_FINAL_CATEGORY=%s\n' "$final_category"
+    printf 'ASSIST_DIAGNOSTIC_FINAL_CLI_EXIT=%s\n' "$final_cli_exit"
+}
+
 wait_for_uuremote_cli_true_field() (
     local field_name="$1"
     local state_token="$2"
@@ -1086,11 +1147,165 @@ wait_for_cli() {
         "$CLI" status
 }
 
-ensure_assist_allowed() {
-    wait_for_uuremote_cli_true_field \
-        enabled 'ASSIST_STATE=enabled' 120 \
-        "$CLI" assist allow on
-}
+ensure_assist_allowed() (
+    local deadline now remaining attempt_timeout sleep_timeout record
+    local category response_bytes safe_exit extra_field category_total
+    local execution_state execution_exit status_record
+    local assist_temp_dir="" response_path="" status_path=""
+    local attempts=0
+    local timeout_count=0 cli_nonzero_count=0 empty_count=0
+    local invalid_utf8_count=0 invalid_json_count=0 not_object_count=0
+    local success_missing_count=0 success_wrong_type_count=0 success_false_count=0
+    local enabled_missing_count=0 enabled_wrong_type_count=0
+    local enabled_false_count=0 enabled_true_count=0
+    local response_bytes_min="" response_bytes_max=0 response_bytes_final=0
+    local final_category=unavailable final_cli_exit=unavailable
+
+    cleanup_assist_attempt() {
+        local cleanup_status=0
+        if [ -n "$response_path" ]; then
+            /bin/rm -f -- "$response_path" || cleanup_status=1
+        fi
+        if [ -n "$status_path" ]; then
+            /bin/rm -f -- "$status_path" "$status_path.tmp" || cleanup_status=1
+        fi
+        if [ -n "$assist_temp_dir" ]; then
+            /bin/rmdir "$assist_temp_dir" 2>/dev/null || cleanup_status=1
+        fi
+        return "$cleanup_status"
+    }
+
+    umask 077
+    assist_temp_dir="$(/usr/bin/mktemp -d \
+        "${TMPDIR:-/tmp}/uuremote-assist-allow.XXXXXX")" || return 1
+    trap 'cleanup_assist_attempt || exit 1' EXIT
+    trap 'cleanup_assist_attempt; exit 1' HUP INT TERM
+    /bin/chmod 0700 "$assist_temp_dir" || return 1
+    response_path="$assist_temp_dir/response"
+    status_path="$assist_temp_dir/status"
+    : >"$response_path"
+    : >"$status_path"
+    /bin/chmod 0600 "$response_path" "$status_path" || return 1
+
+    now="$(uuremote_now_milliseconds)"
+    deadline="$((now + 60000))"
+    while :; do
+        now="$(uuremote_now_milliseconds)"
+        remaining="$((deadline - now))"
+        [ "$remaining" -gt 0 ] || break
+        attempts="$((attempts + 1))"
+        attempt_timeout=3000
+        [ "$remaining" -ge "$attempt_timeout" ] || attempt_timeout="$remaining"
+        : >"$response_path"
+        : >"$status_path"
+        run_bounded_gui_cli_to_file \
+            "$response_path" "$status_path" "$attempt_timeout" \
+            "$CLI" assist allow on || true
+
+        status_record="$(/bin/cat "$status_path")" || return 1
+        case "$status_record" in
+            timeout)
+                execution_state=timeout
+                execution_exit=unavailable
+                ;;
+            unavailable)
+                execution_state=unavailable
+                execution_exit=unavailable
+                ;;
+            completed:*)
+                execution_state=completed
+                execution_exit="${status_record#completed:}"
+                case "$execution_exit" in
+                    ''|*[!0-9]*) return 1 ;;
+                esac
+                [ "$execution_exit" -le 255 ] || return 1
+                ;;
+            *) return 1 ;;
+        esac
+
+        record="$(classify_assist_allow_response \
+            "$response_path" "$execution_state" "$execution_exit")" || return 1
+        : >"$response_path"
+        IFS=$'\t' read -r category response_bytes safe_exit extra_field <<<"$record"
+        [ -z "$extra_field" ] || return 1
+        case "$response_bytes" in
+            ''|*[!0-9]*) return 1 ;;
+        esac
+        case "$safe_exit" in
+            timeout|unavailable) ;;
+            ''|*[!0-9]*) return 1 ;;
+            *) [ "$safe_exit" -le 255 ] || return 1 ;;
+        esac
+
+        case "$category" in
+            timeout) timeout_count="$((timeout_count + 1))" ;;
+            cli-nonzero) cli_nonzero_count="$((cli_nonzero_count + 1))" ;;
+            empty) empty_count="$((empty_count + 1))" ;;
+            invalid-utf8) invalid_utf8_count="$((invalid_utf8_count + 1))" ;;
+            invalid-json) invalid_json_count="$((invalid_json_count + 1))" ;;
+            not-object) not_object_count="$((not_object_count + 1))" ;;
+            success-missing) success_missing_count="$((success_missing_count + 1))" ;;
+            success-wrong-type) success_wrong_type_count="$((success_wrong_type_count + 1))" ;;
+            success-false) success_false_count="$((success_false_count + 1))" ;;
+            enabled-missing) enabled_missing_count="$((enabled_missing_count + 1))" ;;
+            enabled-wrong-type) enabled_wrong_type_count="$((enabled_wrong_type_count + 1))" ;;
+            enabled-false) enabled_false_count="$((enabled_false_count + 1))" ;;
+            enabled-true) enabled_true_count="$((enabled_true_count + 1))" ;;
+            *) return 1 ;;
+        esac
+
+        if [ "$attempts" -eq 1 ] || [ "$response_bytes" -lt "$response_bytes_min" ]; then
+            response_bytes_min="$response_bytes"
+        fi
+        if [ "$response_bytes" -gt "$response_bytes_max" ]; then
+            response_bytes_max="$response_bytes"
+        fi
+        response_bytes_final="$response_bytes"
+        final_category="$category"
+        final_cli_exit="$safe_exit"
+
+        now="$(uuremote_now_milliseconds)"
+        remaining="$((deadline - now))"
+        if [ "$category" = enabled-true ] && [ "$remaining" -gt 0 ]; then
+            cleanup_assist_attempt || return 1
+            trap - EXIT HUP INT TERM
+            printf 'ASSIST_STATE=enabled\n'
+            return 0
+        fi
+        [ "$remaining" -gt 0 ] || break
+        sleep_timeout=500
+        [ "$remaining" -ge "$sleep_timeout" ] || sleep_timeout="$remaining"
+        wait_uuremote_poll "$sleep_timeout"
+    done
+
+    [ "$attempts" -gt 0 ] || return 1
+    category_total="$((
+        timeout_count + cli_nonzero_count + empty_count +
+        invalid_utf8_count + invalid_json_count + not_object_count +
+        success_missing_count + success_wrong_type_count + success_false_count +
+        enabled_missing_count + enabled_wrong_type_count +
+        enabled_false_count + enabled_true_count
+    ))"
+    [ "$category_total" -eq "$attempts" ] || return 1
+
+    case "$debug_level" in
+        0) ;;
+        1|2|3)
+            report_assist_allow_diagnostics \
+                "$attempts" "$timeout_count" "$cli_nonzero_count" "$empty_count" \
+                "$invalid_utf8_count" "$invalid_json_count" "$not_object_count" \
+                "$success_missing_count" "$success_wrong_type_count" "$success_false_count" \
+                "$enabled_missing_count" "$enabled_wrong_type_count" \
+                "$enabled_false_count" "$enabled_true_count" \
+                "$response_bytes_min" "$response_bytes_max" "$response_bytes_final" \
+                "$final_category" "$final_cli_exit" >&2 || return 1
+            ;;
+        *) return 1 ;;
+    esac
+    cleanup_assist_attempt || return 1
+    trap - EXIT HUP INT TERM
+    return 1
+)
 
 self_test_diagnostic_redaction() {
     local test_cli="${UUREMOTE_DIAGNOSTIC_TEST_CLI:-}"

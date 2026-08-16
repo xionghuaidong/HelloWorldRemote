@@ -19,13 +19,14 @@ fi
 umask 077
 
 root="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+source_script="${MACOS_ASSIST_ALLOW_SUBJECT_SOURCE:-$root/.github/workflows/apple.sh}"
 temporary_directory="$(mktemp -d "${TMPDIR:-/tmp}/uuremote-assist-allow-test.XXXXXX")"
 subject="$temporary_directory/subject.sh"
 response_path="$temporary_directory/response"
 trap 'rm -rf -- "$temporary_directory"' EXIT
 
 awk '/^if \[ "\$mode" = "self-test-kcpassword" \]; then$/ { exit } { print }' \
-    "$root/.github/workflows/apple.sh" >"$subject"
+    "$source_script" >"$subject"
 if [ ! -x /usr/bin/python3 ]; then
     python_command="$(command -v python3 || command -v python)"
     python_wrapper="$temporary_directory/python3"
@@ -137,6 +138,118 @@ if [ "$mode" = "process" ]; then
     esac
     printf 'STATUS=%s\n' "$(cat "$status_path")"
     exit 0
+fi
+
+if [ "$mode" = "aggregate" ]; then
+    . "$subject"
+
+    debug_level=0
+    console_uid=501
+    controlled_now=0
+    boundary_calls=0
+    temporary_tree="$temporary_directory/assist-tree"
+    mkdir -m 700 "$temporary_tree"
+    TMPDIR="$temporary_tree"
+
+    uuremote_now_milliseconds() {
+        printf '%s\n' "$controlled_now"
+    }
+
+    wait_uuremote_poll() {
+        if [ "$scenario" = "deadline-bounds" ] && [ "$1" -ne 500 ]; then
+            echo "Polling interval exceeded the remaining deadline" >&2
+            exit 1
+        fi
+        controlled_now="$((controlled_now + $1))"
+    }
+
+    run_bounded_gui_cli_to_file() {
+        local output_path="$1"
+        local status_path="$2"
+        local timeout_milliseconds="$3"
+        shift 3
+        boundary_calls="$((boundary_calls + 1))"
+        printf 'completed:0\n' >"$status_path"
+        case "$scenario:$boundary_calls" in
+            deadline-bounds:1)
+                [ "$timeout_milliseconds" -eq 3000 ] || exit 1
+                printf '{"success":true,"enabled":false}' >"$output_path"
+                controlled_now=59000
+                ;;
+            deadline-bounds:2)
+                [ "$timeout_milliseconds" -eq 500 ] || exit 1
+                printf '{"success":true,"enabled":false}' >"$output_path"
+                controlled_now=60000
+                ;;
+            transient-success:1) printf '{' >"$output_path"; controlled_now=100 ;;
+            transient-success:2) printf '{"success":true,"enabled":false}' >"$output_path"; controlled_now=700 ;;
+            transient-success:3) printf '{"success":true,"enabled":true}' >"$output_path"; controlled_now=1300 ;;
+            debug0-failure:1|debug1-failure:1|debug2-failure:1|debug3-failure:1)
+                printf '{' >"$output_path"; controlled_now=100 ;;
+            debug0-failure:*|debug1-failure:*|debug2-failure:*|debug3-failure:*)
+                printf '{"success":true,"enabled":false}' >"$output_path"; controlled_now=60000 ;;
+            late-success:1)
+                printf '{"success":true,"enabled":true}' >"$output_path"; controlled_now=60000 ;;
+            internal-invalid-record:1)
+                printf '{"success":true,"enabled":true}' >"$output_path"; controlled_now=100 ;;
+            hostile-failure:1)
+                printf '{"success":true,"enabled":false,"deviceId":"device-id-fixture\\nFORGED_OUTPUT=true","customCode":"CustomCodeFixture"}' >"$output_path"
+                controlled_now=60000
+                ;;
+            *) exit 2 ;;
+        esac
+    }
+
+    case "$scenario" in
+        deadline-bounds|debug1-failure|hostile-failure|late-success) debug_level=1 ;;
+        debug2-failure) debug_level=2 ;;
+        debug3-failure) debug_level=3 ;;
+        internal-invalid-record)
+            debug_level=1
+            eval "$(declare -f classify_assist_allow_response | \
+                /usr/bin/sed '1s/classify_assist_allow_response/classify_assist_allow_response_real/')"
+            classify_assist_allow_response() {
+                classify_assist_allow_response_real "$@" >/dev/null || return "$?"
+                printf 'invalid-category\t0\t0\n'
+            }
+            ;;
+        report-valid)
+            report_assist_allow_diagnostics \
+                2 0 0 0 0 1 0 0 0 0 0 0 1 0 1 32 32 enabled-false 0
+            exit "$?"
+            ;;
+        report-invalid-count)
+            report_assist_allow_diagnostics \
+                invalid 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 enabled-false 0
+            exit "$?"
+            ;;
+        report-invalid-arity)
+            report_assist_allow_diagnostics
+            exit "$?"
+            ;;
+        report-invalid-exit)
+            report_assist_allow_diagnostics \
+                1 0 0 0 0 0 0 0 0 0 0 0 1 0 1 32 32 enabled-false 256
+            exit "$?"
+            ;;
+        transient-success|debug0-failure) ;;
+        *) exit 2 ;;
+    esac
+
+    if ensure_assist_allowed; then
+        exit 0
+    else
+        status="$?"
+    fi
+    if [ ! -d "$temporary_tree" ] || [ -n "$(find "$temporary_tree" -mindepth 1 -print -quit)" ]; then
+        echo "Temporary tree was not empty" >&2
+        exit 1
+    fi
+    if [ "$scenario" = "late-success" ]; then
+        printf 'TEMPORARY_TREE_EMPTY=true\n'
+    fi
+    echo "Could not enable unattended control within 60 seconds" >&2
+    exit "$status"
 fi
 
 if [ "$mode" != "classify" ]; then

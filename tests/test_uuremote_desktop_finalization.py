@@ -299,6 +299,117 @@ class MacOSAssistAllowProcessTests(unittest.TestCase):
 
 
 @unittest.skipUnless(BASH_AVAILABLE, "requires /bin/bash")
+class MacOSAssistAllowAggregationTests(unittest.TestCase):
+    def run_harness(self, scenario: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["/bin/bash", str(MACOS_ASSIST_ALLOW_HARNESS_PATH), "aggregate", scenario],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+    def test_transient_failures_then_success_emit_only_success(self):
+        result = self.run_harness("transient-success")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "ASSIST_STATE=enabled\n")
+
+    def test_debug_zero_failure_is_generic_only(self):
+        result = self.run_harness("debug0-failure")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(
+            result.stderr,
+            "Could not enable unattended control within 60 seconds\n",
+        )
+
+    def test_debug_levels_emit_complete_fixed_summary(self):
+        field_names = [
+            "ASSIST_DIAGNOSTIC_ATTEMPTS",
+            "ASSIST_DIAGNOSTIC_TIMEOUT_COUNT",
+            "ASSIST_DIAGNOSTIC_CLI_NONZERO_COUNT",
+            "ASSIST_DIAGNOSTIC_EMPTY_COUNT",
+            "ASSIST_DIAGNOSTIC_INVALID_UTF8_COUNT",
+            "ASSIST_DIAGNOSTIC_INVALID_JSON_COUNT",
+            "ASSIST_DIAGNOSTIC_NOT_OBJECT_COUNT",
+            "ASSIST_DIAGNOSTIC_SUCCESS_MISSING_COUNT",
+            "ASSIST_DIAGNOSTIC_SUCCESS_WRONG_TYPE_COUNT",
+            "ASSIST_DIAGNOSTIC_SUCCESS_FALSE_COUNT",
+            "ASSIST_DIAGNOSTIC_ENABLED_MISSING_COUNT",
+            "ASSIST_DIAGNOSTIC_ENABLED_WRONG_TYPE_COUNT",
+            "ASSIST_DIAGNOSTIC_ENABLED_FALSE_COUNT",
+            "ASSIST_DIAGNOSTIC_ENABLED_TRUE_COUNT",
+            "ASSIST_DIAGNOSTIC_RESPONSE_BYTES_MIN",
+            "ASSIST_DIAGNOSTIC_RESPONSE_BYTES_MAX",
+            "ASSIST_DIAGNOSTIC_RESPONSE_BYTES_FINAL",
+            "ASSIST_DIAGNOSTIC_FINAL_CATEGORY",
+            "ASSIST_DIAGNOSTIC_FINAL_CLI_EXIT",
+        ]
+        for level in (1, 2, 3):
+            with self.subTest(level=level):
+                result = self.run_harness(f"debug{level}-failure")
+                self.assertEqual(result.returncode, 1)
+                lines = result.stderr.splitlines()
+                self.assertEqual(
+                    [line.split("=", 1)[0] for line in lines[:-1]], field_names
+                )
+                self.assertEqual(
+                    lines[-1], "Could not enable unattended control within 60 seconds"
+                )
+                counts = {
+                    line.split("=", 1)[0]: line.split("=", 1)[1]
+                    for line in lines[:-1]
+                }
+                category_total = sum(
+                    int(value)
+                    for key, value in counts.items()
+                    if key.endswith("_COUNT")
+                )
+                self.assertEqual(category_total, int(counts["ASSIST_DIAGNOSTIC_ATTEMPTS"]))
+
+    def test_late_success_fails_and_temporary_tree_is_empty(self):
+        result = self.run_harness("late-success")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("ASSIST_DIAGNOSTIC_ENABLED_TRUE_COUNT=1", result.stderr)
+        self.assertIn("TEMPORARY_TREE_EMPTY=true", result.stdout)
+
+    def test_per_call_timeout_and_poll_are_bounded_by_remaining_deadline(self):
+        result = self.run_harness("deadline-bounds")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("ASSIST_DIAGNOSTIC_ATTEMPTS=2", result.stderr)
+
+    def test_invalid_diagnostic_record_fails_closed(self):
+        result = self.run_harness("internal-invalid-record")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(
+            result.stderr,
+            "Could not enable unattended control within 60 seconds\n",
+        )
+
+    def test_reporter_emits_only_validated_fixed_fields(self):
+        result = self.run_harness("report-valid")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(result.stdout.splitlines()), 19)
+        self.assertEqual(result.stderr, "")
+
+    def test_reporter_rejects_invalid_counts_arity_and_exit_values(self):
+        for scenario in ("report-invalid-count", "report-invalid-arity", "report-invalid-exit"):
+            with self.subTest(scenario=scenario):
+                result = self.run_harness(scenario)
+                self.assertEqual(result.returncode, 2)
+                self.assertEqual(result.stdout, "")
+                self.assertEqual(result.stderr, "")
+
+    def test_hostile_responses_never_reach_logs_or_artifacts(self):
+        result = self.run_harness("hostile-failure")
+        self.assertEqual(result.returncode, 1)
+        combined = result.stdout + result.stderr
+        for marker in ("CustomCodeFixture", "device-id-fixture", "FORGED_OUTPUT"):
+            self.assertNotIn(marker, combined)
+
+
+@unittest.skipUnless(BASH_AVAILABLE, "requires /bin/bash")
 class MacOSReadinessBehaviorTests(unittest.TestCase):
     def run_scenario(self, scenario: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
@@ -651,6 +762,15 @@ class PermissionFinalizationContractTests(unittest.TestCase):
 
 
 class DiagnosticStateContractTests(unittest.TestCase):
+    def test_assist_diagnostics_stay_in_the_step_log(self):
+        workflow = text(WORKFLOW_PATH)
+        permission = step_block(workflow, "Configure UU Remote permissions")
+        upload = step_block(workflow, "Upload UU Remote diagnostics")
+
+        self.assertIn("UUREMOTE_DEBUG:", workflow)
+        self.assertEqual(permission.count(".github/workflows/apple.sh"), 1)
+        self.assertNotIn("ASSIST_DIAGNOSTIC_", upload)
+
     def test_final_and_live_snapshots_do_not_open_uuremote(self):
         script = text(SCRIPT_PATH)
         capture = script[
