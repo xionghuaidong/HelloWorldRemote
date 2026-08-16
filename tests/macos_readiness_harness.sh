@@ -80,7 +80,7 @@ if [ "$scenario" = "late-success" ]; then
 else
     read_uuremote_device_id() {
         printf '%s\n' "$1" >>"$bounded_timeouts"
-        observed_attempts="$(/usr/bin/wc -l <"$bounded_timeouts")"
+        observed_attempts="$(/usr/bin/wc -l <"$bounded_timeouts" | /usr/bin/tr -d '[:space:]')"
         case "$scenario" in
             absent-transient-success)
                 [ "$observed_attempts" -ge 3 ] || return 1
@@ -111,7 +111,7 @@ esac
 status="$?"
 set -e
 if [ -s "$bounded_timeouts" ]; then
-    observed_attempts="$(/usr/bin/wc -l <"$bounded_timeouts")"
+    observed_attempts="$(/usr/bin/wc -l <"$bounded_timeouts" | /usr/bin/tr -d '[:space:]')"
     timeouts="$(/usr/bin/paste -sd, "$bounded_timeouts")"
 fi
 case "$scenario" in
@@ -125,7 +125,7 @@ case "$scenario" in
         ;;
     late-success)
         printf 'ATTEMPTS=%s STARTS=%s SLEEPS=%s TIMEOUTS=%s\n' \
-            "${observed_attempts// /}" "$starts" "$sleeps" "$timeouts" >&2
+            "$observed_attempts" "$starts" "$sleeps" "$timeouts" >&2
         ;;
     invalid-timing|missing-paths|launch-failure)
         printf 'ATTEMPTS=%s STARTS=%s SLEEPS=%s TIMEOUTS=%s\n' \
