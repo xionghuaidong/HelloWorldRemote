@@ -1,6 +1,14 @@
 #!/bin/bash
 set -euo pipefail
 
+if [ "${1:-}" = "fixture-hang" ]; then
+    printf '%s\n' "$$" >"${2:?}"
+    /bin/bash -c 'trap "" TERM; printf "%s\n" "$$" >"$1"; while :; do sleep 1; done' \
+        fixture-child "${3:?}" &
+    trap '' TERM
+    while :; do sleep 1; done
+fi
+
 umask 077
 
 root="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -20,7 +28,58 @@ if [ ! -x /usr/bin/python3 ]; then
     mv "$subject.portable" "$subject"
 fi
 
+mode="${1:?}"
 scenario="${2:?}"
+
+if [ "$mode" = "process" ]; then
+    status_path="$temporary_directory/status"
+    output_path="$temporary_directory/output"
+    parent_pid_path="$temporary_directory/parent.pid"
+    child_pid_path="$temporary_directory/child.pid"
+
+    . "$subject"
+    case "$scenario" in
+        completed)
+            run_bounded_uuremote_cli_to_file_with_status \
+                "$output_path" "$status_path" 3000 /bin/true
+            ;;
+        nonzero)
+            if run_bounded_uuremote_cli_to_file_with_status \
+                "$output_path" "$status_path" 3000 /bin/bash -c 'exit 17'
+            then
+                echo "Nonzero fixture unexpectedly succeeded" >&2
+                exit 1
+            fi
+            ;;
+        timeout)
+            if run_bounded_uuremote_cli_to_file_with_status \
+                "$output_path" "$status_path" 3000 /bin/bash "$0" fixture-hang \
+                "$parent_pid_path" "$child_pid_path"
+            then
+                echo "Hanging fixture unexpectedly succeeded" >&2
+                exit 1
+            fi
+            for pid_path in "$parent_pid_path" "$child_pid_path"; do
+                pid="$(cat "$pid_path")"
+                if kill -0 "$pid" 2>/dev/null; then
+                    echo "Process group was not released" >&2
+                    exit 1
+                fi
+            done
+            printf 'STATUS=%s\n' "$(cat "$status_path")"
+            printf 'PROCESS_GROUP_RELEASED=true\n'
+            exit 0
+            ;;
+        *) exit 2 ;;
+    esac
+    printf 'STATUS=%s\n' "$(cat "$status_path")"
+    exit 0
+fi
+
+if [ "$mode" != "classify" ]; then
+    exit 2
+fi
+
 case "$scenario" in
     timeout) execution_state=timeout; cli_exit=unavailable; : >"$response_path" ;;
     unavailable) execution_state=unavailable; cli_exit=unavailable; : >"$response_path" ;;

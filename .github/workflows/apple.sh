@@ -310,25 +310,44 @@ self_test_wait_connections() (
     echo "shutdown-aware wait self-test passed"
 )
 
-run_bounded_uuremote_cli_to_file() {
+run_bounded_uuremote_cli_to_file_with_status() {
     local output_path="$1"
-    local timeout_milliseconds="$2"
-    shift 2
+    local status_path="$2"
+    local timeout_milliseconds="$3"
+    shift 3
 
     if ! [[ "$timeout_milliseconds" =~ ^[0-9]+$ ]] ||
         [ "$timeout_milliseconds" -lt 1 ] || [ "$#" -eq 0 ]; then
         return 2
     fi
 
-    /usr/bin/python3 - "$output_path" "$timeout_milliseconds" "$@" <<'PYTHON'
+    /usr/bin/python3 - \
+        "$output_path" "$status_path" "$timeout_milliseconds" "$@" <<'PYTHON'
 import os
+import pathlib
 import signal
 import subprocess
 import sys
 
 output_path = sys.argv[1]
-timeout_seconds = int(sys.argv[2]) / 1000
-command = sys.argv[3:]
+status_path = pathlib.Path(sys.argv[2])
+timeout_seconds = int(sys.argv[3]) / 1000
+command = sys.argv[4:]
+
+def write_status(value):
+    if str(status_path) == os.devnull:
+        with open(os.devnull, "w", encoding="ascii") as status:
+            status.write(value + "\n")
+        return
+    temporary_status_path = status_path.with_name(status_path.name + ".tmp")
+    descriptor = os.open(
+        temporary_status_path,
+        os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+        0o600,
+    )
+    with os.fdopen(descriptor, "w", encoding="ascii", newline="\n") as status:
+        status.write(value + "\n")
+    os.replace(temporary_status_path, status_path)
 
 try:
     output_descriptor = os.open(
@@ -345,6 +364,7 @@ try:
             start_new_session=True,
         )
 except OSError:
+    write_status("unavailable")
     raise SystemExit(125)
 
 try:
@@ -371,10 +391,32 @@ except subprocess.TimeoutExpired:
         except ProcessLookupError:
             pass
         process.wait()
+    write_status("timeout")
     raise SystemExit(124)
 
-raise SystemExit(return_code if 0 <= return_code <= 255 else 1)
+safe_return_code = return_code if 0 <= return_code <= 255 else 1
+write_status(f"completed:{safe_return_code}")
+raise SystemExit(safe_return_code)
 PYTHON
+}
+
+run_bounded_uuremote_cli_to_file() {
+    local output_path="$1"
+    local timeout_milliseconds="$2"
+    shift 2
+    run_bounded_uuremote_cli_to_file_with_status \
+        "$output_path" /dev/null "$timeout_milliseconds" "$@"
+}
+
+run_bounded_gui_cli_to_file() {
+    local output_path="$1"
+    local status_path="$2"
+    local timeout_milliseconds="$3"
+    shift 3
+    run_bounded_uuremote_cli_to_file_with_status \
+        "$output_path" "$status_path" "$timeout_milliseconds" \
+        /usr/bin/sudo /bin/launchctl asuser "$console_uid" \
+        /usr/bin/sudo -u "#$console_uid" "$@"
 }
 
 read_uuremote_device_id() (

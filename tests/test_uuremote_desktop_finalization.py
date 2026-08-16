@@ -3,6 +3,7 @@ import os
 import plistlib
 import subprocess
 import tempfile
+import time
 import unittest
 
 
@@ -248,6 +249,36 @@ class MacOSAssistAllowClassifierTests(unittest.TestCase):
         self.assertNotIn("CustomCodeFixture", result.stdout + result.stderr)
         self.assertNotIn("device-id-fixture", result.stdout + result.stderr)
         self.assertNotIn("FORGED_OUTPUT", result.stdout + result.stderr)
+
+
+@unittest.skipUnless(BASH_AVAILABLE, "requires /bin/bash")
+class MacOSAssistAllowProcessTests(unittest.TestCase):
+    def run_harness(self, mode: str, scenario: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["/bin/bash", str(MACOS_ASSIST_ALLOW_HARNESS_PATH), mode, scenario],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+    def test_completed_process_records_exact_safe_status(self):
+        result = self.run_harness("process", "completed")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "STATUS=completed:0\n")
+
+    def test_nonzero_process_records_exact_safe_status(self):
+        result = self.run_harness("process", "nonzero")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "STATUS=completed:17\n")
+
+    def test_hanging_process_group_is_terminated_and_reaped(self):
+        started = time.monotonic()
+        result = self.run_harness("process", "timeout")
+        elapsed = time.monotonic() - started
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertLess(elapsed, 5)
+        self.assertEqual(result.stdout, "STATUS=timeout\nPROCESS_GROUP_RELEASED=true\n")
 
 
 @unittest.skipUnless(BASH_AVAILABLE, "requires /bin/bash")
