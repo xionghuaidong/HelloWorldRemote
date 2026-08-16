@@ -309,6 +309,14 @@ class MacOSAssistAllowProcessTests(unittest.TestCase):
             "STATUS=unavailable\nPROCESS_GROUP_RELEASED=true\n",
         )
 
+    def test_spawned_child_receives_term_after_signal_masked_launch(self):
+        result = self.run_harness("process", "term-observed")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            result.stdout,
+            "STATUS=timeout\nTERM_OBSERVED=true\nPROCESS_GROUP_RELEASED=true\n",
+        )
+
     def test_exit_cleanup_kills_a_recorded_fixture_child(self):
         result = self.run_harness("process", "cleanup-fallback")
         self.assertEqual(result.returncode, 0, result.stderr)

@@ -464,6 +464,11 @@ try:
         os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
         0o600,
     )
+    popen_options = {}
+    if previous_signal_mask is not None:
+        def restore_child_signal_mask():
+            signal.pthread_sigmask(signal.SIG_SETMASK, previous_signal_mask)
+        popen_options["preexec_fn"] = restore_child_signal_mask
     with os.fdopen(output_descriptor, "wb") as output:
         process = subprocess.Popen(
             command,
@@ -471,6 +476,7 @@ try:
             stdout=output,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
+            **popen_options,
         )
         process_group_id = process.pid
     if previous_signal_mask is not None:

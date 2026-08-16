@@ -16,6 +16,13 @@ if [ "${1:-}" = "fixture-leader-exits" ]; then
     while :; do sleep 1; done
 fi
 
+if [ "${1:-}" = "fixture-term-observed" ]; then
+    printf '%s\n' "$$" >"${2:?}"
+    term_observed_path="${3:?}"
+    trap 'printf "TERM\n" >"$term_observed_path"; exit 0' TERM
+    while :; do sleep 1; done
+fi
+
 umask 077
 
 root="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -224,6 +231,29 @@ if [ "$mode" = "process" ]; then
                 exit 1
             fi
             printf 'STATUS=unavailable\n'
+            printf 'PROCESS_GROUP_RELEASED=true\n'
+            exit 0
+            ;;
+        term-observed)
+            term_observed_path="$temporary_directory/term-observed"
+            if run_bounded_uuremote_cli_to_file_with_status \
+                "$output_path" "$status_path" 3000 /bin/bash "$0" fixture-term-observed \
+                "$parent_pid_path" "$term_observed_path"
+            then
+                echo "TERM observation fixture unexpectedly succeeded" >&2
+                exit 1
+            fi
+            if [ "$(cat "$term_observed_path")" != TERM ]; then
+                echo "Spawned child did not observe TERM" >&2
+                exit 1
+            fi
+            parent_pid="$(cat "$parent_pid_path")"
+            if kill -0 "$parent_pid" 2>/dev/null || kill -0 -- "-$parent_pid" 2>/dev/null; then
+                echo "Process group was not released" >&2
+                exit 1
+            fi
+            printf 'STATUS=%s\n' "$(cat "$status_path")"
+            printf 'TERM_OBSERVED=true\n'
             printf 'PROCESS_GROUP_RELEASED=true\n'
             exit 0
             ;;
