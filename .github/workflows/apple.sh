@@ -334,12 +334,6 @@ try:
         os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
         0o600,
     )
-except OSError as error:
-    if os.environ.get("UUREMOTE_DIAGNOSTIC_TEST_CLI"):
-        print(f"BOUNDED_CLI_RESULT=output-open-error:{error.errno}", file=sys.stderr)
-    raise SystemExit(125)
-
-try:
     with os.fdopen(output_descriptor, "wb") as output:
         process = subprocess.Popen(
             command,
@@ -348,9 +342,7 @@ try:
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
-except OSError as error:
-    if os.environ.get("UUREMOTE_DIAGNOSTIC_TEST_CLI"):
-        print(f"BOUNDED_CLI_RESULT=process-launch-error:{error.errno}", file=sys.stderr)
+except OSError:
     raise SystemExit(125)
 
 try:
@@ -377,12 +369,8 @@ except subprocess.TimeoutExpired:
         except ProcessLookupError:
             pass
         process.wait()
-    if os.environ.get("UUREMOTE_DIAGNOSTIC_TEST_CLI"):
-        print("BOUNDED_CLI_RESULT=timeout", file=sys.stderr)
     raise SystemExit(124)
 
-if os.environ.get("UUREMOTE_DIAGNOSTIC_TEST_CLI") and return_code != 0:
-    print(f"BOUNDED_CLI_RESULT=child-exit:{return_code}", file=sys.stderr)
 raise SystemExit(return_code if 0 <= return_code <= 255 else 1)
 PYTHON
 }
