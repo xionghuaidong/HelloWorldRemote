@@ -1,6 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
+umask 077
+
 root="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 temporary_directory="$(mktemp -d "${TMPDIR:-/tmp}/uuremote-assist-allow-test.XXXXXX")"
 subject="$temporary_directory/subject.sh"
@@ -21,6 +23,7 @@ fi
 scenario="${2:?}"
 case "$scenario" in
     timeout) execution_state=timeout; cli_exit=unavailable; : >"$response_path" ;;
+    unavailable) execution_state=unavailable; cli_exit=unavailable; : >"$response_path" ;;
     cli-nonzero) execution_state=completed; cli_exit=17; printf 'vendor failure' >"$response_path" ;;
     empty) execution_state=completed; cli_exit=0; : >"$response_path" ;;
     invalid-utf8) execution_state=completed; cli_exit=0; printf '\377' >"$response_path" ;;
@@ -42,6 +45,15 @@ case "$scenario" in
         ;;
     *) exit 2 ;;
 esac
+
+case "$(uname -s)" in
+    Darwin) response_mode="$(/usr/bin/stat -f '%Lp' "$response_path")" ;;
+    *) response_mode="$(/usr/bin/stat -c '%a' "$response_path")" ;;
+esac
+if [ "$response_mode" != 600 ]; then
+    echo "Response fixture permissions are not private" >&2
+    exit 1
+fi
 
 . "$subject"
 classify_assist_allow_response "$response_path" "$execution_state" "$cli_exit"

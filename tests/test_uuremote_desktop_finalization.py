@@ -186,6 +186,8 @@ class CustomCodeValidationTests(unittest.TestCase):
                 if value:
                     self.assertNotIn(value, result.stdout + result.stderr)
 
+@unittest.skipUnless(BASH_AVAILABLE, "requires /bin/bash")
+class MacOSDiagnosticRedactionTests(unittest.TestCase):
     def test_diagnostic_artifact_redacts_device_and_custom_code_values(self):
         result = subprocess.run(
             ["/bin/bash", str(DIAGNOSTIC_HARNESS_PATH)],
@@ -213,6 +215,7 @@ class MacOSAssistAllowClassifierTests(unittest.TestCase):
     def test_every_response_shape_has_one_safe_category(self):
         cases = {
             "timeout": ("timeout", "timeout"),
+            "unavailable": ("cli-nonzero", "unavailable"),
             "cli-nonzero": ("cli-nonzero", "17"),
             "empty": ("empty", "0"),
             "invalid-utf8": ("invalid-utf8", "0"),
