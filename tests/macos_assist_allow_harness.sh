@@ -146,13 +146,35 @@ if [ "$mode" = "aggregate" ]; then
     debug_level=0
     console_uid=501
     controlled_now=0
+    clock_count_path="$temporary_directory/clock-count"
+    printf '0\n' >"$clock_count_path"
     boundary_calls=0
     temporary_tree="$temporary_directory/assist-tree"
     mkdir -m 700 "$temporary_tree"
     TMPDIR="$temporary_tree"
 
     uuremote_now_milliseconds() {
-        printf '%s\n' "$controlled_now"
+        clock_calls="$(cat "$clock_count_path")"
+        clock_calls="$((clock_calls + 1))"
+        printf '%s\n' "$clock_calls" >"$clock_count_path"
+        case "$scenario" in
+            invalid-clock) printf 'not-a-decimal-clock\n' ;;
+            invalid-clock-loop)
+                if [ "$clock_calls" -eq 1 ]; then
+                    printf '%s\n' "$controlled_now"
+                else
+                    printf 'not-a-decimal-clock\n'
+                fi
+                ;;
+            invalid-clock-post-call)
+                if [ "$clock_calls" -le 2 ]; then
+                    printf '%s\n' "$controlled_now"
+                else
+                    printf 'not-a-decimal-clock\n'
+                fi
+                ;;
+            *) printf '%s\n' "$controlled_now" ;;
+        esac
     }
 
     wait_uuremote_poll() {
@@ -192,6 +214,10 @@ if [ "$mode" = "aggregate" ]; then
                 printf '{"success":true,"enabled":true}' >"$output_path"; controlled_now=60000 ;;
             internal-invalid-record:1)
                 printf '{"success":true,"enabled":true}' >"$output_path"; controlled_now=100 ;;
+            record-trailing-newline:1|record-trailing-tab:1|record-extra-field:1)
+                printf '{"success":true,"enabled":true}' >"$output_path"; controlled_now=100 ;;
+            invalid-clock-post-call:1)
+                printf '{"success":true,"enabled":true}' >"$output_path"; controlled_now=100 ;;
             hostile-failure:1)
                 printf '{"success":true,"enabled":false,"deviceId":"device-id-fixture\\nFORGED_OUTPUT=true","customCode":"CustomCodeFixture"}' >"$output_path"
                 controlled_now=60000
@@ -201,7 +227,7 @@ if [ "$mode" = "aggregate" ]; then
     }
 
     case "$scenario" in
-        deadline-bounds|debug1-failure|hostile-failure|late-success) debug_level=1 ;;
+        deadline-bounds|debug1-failure|hostile-failure|late-success|invalid-clock|invalid-clock-loop|invalid-clock-post-call) debug_level=1 ;;
         debug2-failure) debug_level=2 ;;
         debug3-failure) debug_level=3 ;;
         internal-invalid-record)
@@ -211,6 +237,20 @@ if [ "$mode" = "aggregate" ]; then
             classify_assist_allow_response() {
                 classify_assist_allow_response_real "$@" >/dev/null || return "$?"
                 printf 'invalid-category\t0\t0\n'
+            }
+            ;;
+        record-trailing-newline|record-trailing-tab|record-extra-field)
+            debug_level=1
+            eval "$(declare -f classify_assist_allow_response | \
+                /usr/bin/sed '1s/classify_assist_allow_response/classify_assist_allow_response_real/')"
+            classify_assist_allow_response() {
+                local record
+                record="$(classify_assist_allow_response_real "$@")" || return "$?"
+                case "$scenario" in
+                    record-trailing-newline) printf '%s\n\n' "$record" ;;
+                    record-trailing-tab) printf '%s\t\n' "$record" ;;
+                    record-extra-field) printf '%s\textra\n' "$record" ;;
+                esac
             }
             ;;
         report-valid)
@@ -232,6 +272,21 @@ if [ "$mode" = "aggregate" ]; then
                 1 0 0 0 0 0 0 0 0 0 0 0 1 0 1 32 32 enabled-false 256
             exit "$?"
             ;;
+        report-count-exceeds-attempts)
+            report_assist_allow_diagnostics \
+                1 0 0 0 0 2 0 0 0 0 0 0 0 0 1 32 32 invalid-json 0
+            exit "$?"
+            ;;
+        report-count-sum-mismatch)
+            report_assist_allow_diagnostics \
+                2 0 0 0 0 1 0 0 0 0 0 0 0 0 1 32 32 invalid-json 0
+            exit "$?"
+            ;;
+        report-byte-order)
+            report_assist_allow_diagnostics \
+                1 0 0 0 0 0 0 0 0 0 0 0 1 0 33 32 32 enabled-false 0
+            exit "$?"
+            ;;
         transient-success|debug0-failure) ;;
         *) exit 2 ;;
     esac
@@ -245,9 +300,11 @@ if [ "$mode" = "aggregate" ]; then
         echo "Temporary tree was not empty" >&2
         exit 1
     fi
-    if [ "$scenario" = "late-success" ]; then
+    case "$scenario" in
+        late-success|invalid-clock|invalid-clock-loop|invalid-clock-post-call)
         printf 'TEMPORARY_TREE_EMPTY=true\n'
-    fi
+            ;;
+    esac
     echo "Could not enable unattended control within 60 seconds" >&2
     exit "$status"
 fi

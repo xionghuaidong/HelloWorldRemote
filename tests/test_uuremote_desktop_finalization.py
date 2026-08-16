@@ -394,12 +394,49 @@ class MacOSAssistAllowAggregationTests(unittest.TestCase):
         self.assertEqual(result.stderr, "")
 
     def test_reporter_rejects_invalid_counts_arity_and_exit_values(self):
-        for scenario in ("report-invalid-count", "report-invalid-arity", "report-invalid-exit"):
+        for scenario in (
+            "report-invalid-count",
+            "report-invalid-arity",
+            "report-invalid-exit",
+            "report-count-exceeds-attempts",
+            "report-count-sum-mismatch",
+            "report-byte-order",
+        ):
             with self.subTest(scenario=scenario):
                 result = self.run_harness(scenario)
                 self.assertEqual(result.returncode, 2)
                 self.assertEqual(result.stdout, "")
                 self.assertEqual(result.stderr, "")
+
+    def test_malformed_classifier_records_fail_closed_before_accounting(self):
+        for scenario in (
+            "record-trailing-newline",
+            "record-trailing-tab",
+            "record-extra-field",
+        ):
+            with self.subTest(scenario=scenario):
+                result = self.run_harness(scenario)
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(result.stdout, "")
+                self.assertEqual(
+                    result.stderr,
+                    "Could not enable unattended control within 60 seconds\n",
+                )
+
+    def test_invalid_monotonic_clock_fails_closed_and_cleans_up(self):
+        for scenario in (
+            "invalid-clock",
+            "invalid-clock-loop",
+            "invalid-clock-post-call",
+        ):
+            with self.subTest(scenario=scenario):
+                result = self.run_harness(scenario)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("TEMPORARY_TREE_EMPTY=true", result.stdout)
+                self.assertEqual(
+                    result.stderr,
+                    "Could not enable unattended control within 60 seconds\n",
+                )
 
     def test_hostile_responses_never_reach_logs_or_artifacts(self):
         result = self.run_harness("hostile-failure")

@@ -1053,7 +1053,7 @@ report_assist_allow_diagnostics() {
     local response_bytes_max="$7" response_bytes_final="$8"
     local final_category="$9"
     shift 9
-    local final_cli_exit="$1" value
+    local final_cli_exit="$1" value category_total
 
     for value in \
         "$attempts" "$timeout_count" "$cli_nonzero_count" "$empty_count" \
@@ -1078,6 +1078,64 @@ report_assist_allow_diagnostics() {
         timeout|unavailable) ;;
         ''|*[!0-9]*) return 2 ;;
         *) [ "$final_cli_exit" -le 255 ] || return 2 ;;
+    esac
+    [ "$attempts" -ge 1 ] || return 2
+    for value in \
+        "$timeout_count" "$cli_nonzero_count" "$empty_count" \
+        "$invalid_utf8_count" "$invalid_json_count" "$not_object_count" \
+        "$success_missing_count" "$success_wrong_type_count" "$success_false_count" \
+        "$enabled_missing_count" "$enabled_wrong_type_count" \
+        "$enabled_false_count" "$enabled_true_count"
+    do
+        [ "$value" -le "$attempts" ] || return 2
+    done
+    category_total="$((
+        timeout_count + cli_nonzero_count + empty_count +
+        invalid_utf8_count + invalid_json_count + not_object_count +
+        success_missing_count + success_wrong_type_count + success_false_count +
+        enabled_missing_count + enabled_wrong_type_count +
+        enabled_false_count + enabled_true_count
+    ))"
+    [ "$category_total" -eq "$attempts" ] || return 2
+    [ "$response_bytes_min" -le "$response_bytes_final" ] || return 2
+    [ "$response_bytes_final" -le "$response_bytes_max" ] || return 2
+    case "$final_category" in
+        timeout)
+            [ "$timeout_count" -gt 0 ] && [ "$final_cli_exit" = timeout ] || return 2
+            ;;
+        cli-nonzero)
+            [ "$cli_nonzero_count" -gt 0 ] || return 2
+            case "$final_cli_exit" in
+                unavailable) ;;
+                *) [ "$final_cli_exit" -gt 0 ] || return 2 ;;
+            esac
+            ;;
+        empty)
+            [ "$empty_count" -gt 0 ] ;;
+        invalid-utf8)
+            [ "$invalid_utf8_count" -gt 0 ] ;;
+        invalid-json)
+            [ "$invalid_json_count" -gt 0 ] ;;
+        not-object)
+            [ "$not_object_count" -gt 0 ] ;;
+        success-missing)
+            [ "$success_missing_count" -gt 0 ] ;;
+        success-wrong-type)
+            [ "$success_wrong_type_count" -gt 0 ] ;;
+        success-false)
+            [ "$success_false_count" -gt 0 ] ;;
+        enabled-missing)
+            [ "$enabled_missing_count" -gt 0 ] ;;
+        enabled-wrong-type)
+            [ "$enabled_wrong_type_count" -gt 0 ] ;;
+        enabled-false)
+            [ "$enabled_false_count" -gt 0 ] ;;
+        enabled-true)
+            [ "$enabled_true_count" -gt 0 ] ;;
+    esac || return 2
+    case "$final_category" in
+        timeout|cli-nonzero) ;;
+        *) [ "$final_cli_exit" = 0 ] || return 2 ;;
     esac
 
     printf 'ASSIST_DIAGNOSTIC_ATTEMPTS=%s\n' "$attempts"
@@ -1148,10 +1206,10 @@ wait_for_cli() {
 }
 
 ensure_assist_allowed() (
-    local deadline now remaining attempt_timeout sleep_timeout record
-    local category response_bytes safe_exit extra_field category_total
+    local deadline now remaining attempt_timeout sleep_timeout record record_path record_lines
+    local category response_bytes safe_exit tabless category_total
     local execution_state execution_exit status_record
-    local assist_temp_dir="" response_path="" status_path=""
+    local assist_temp_dir="" response_path="" status_path="" record_path=""
     local attempts=0
     local timeout_count=0 cli_nonzero_count=0 empty_count=0
     local invalid_utf8_count=0 invalid_json_count=0 not_object_count=0
@@ -1169,6 +1227,9 @@ ensure_assist_allowed() (
         if [ -n "$status_path" ]; then
             /bin/rm -f -- "$status_path" "$status_path.tmp" || cleanup_status=1
         fi
+        if [ -n "$record_path" ]; then
+            /bin/rm -f -- "$record_path" || cleanup_status=1
+        fi
         if [ -n "$assist_temp_dir" ]; then
             /bin/rmdir "$assist_temp_dir" 2>/dev/null || cleanup_status=1
         fi
@@ -1183,14 +1244,29 @@ ensure_assist_allowed() (
     /bin/chmod 0700 "$assist_temp_dir" || return 1
     response_path="$assist_temp_dir/response"
     status_path="$assist_temp_dir/status"
+    record_path="$assist_temp_dir/record"
     : >"$response_path"
     : >"$status_path"
-    /bin/chmod 0600 "$response_path" "$status_path" || return 1
+    : >"$record_path"
+    /bin/chmod 0600 "$response_path" "$status_path" "$record_path" || return 1
 
-    now="$(uuremote_now_milliseconds)"
+    read_assist_now() {
+        now="$(uuremote_now_milliseconds)" || return 1
+        case "$now" in
+            0) ;;
+            [1-9]*)
+                case "$now" in
+                    *[!0-9]*) return 1 ;;
+                esac
+                ;;
+            *) return 1 ;;
+        esac
+    }
+
+    read_assist_now || return 1
     deadline="$((now + 60000))"
     while :; do
-        now="$(uuremote_now_milliseconds)"
+        read_assist_now || return 1
         remaining="$((deadline - now))"
         [ "$remaining" -gt 0 ] || break
         attempts="$((attempts + 1))"
@@ -1223,11 +1299,22 @@ ensure_assist_allowed() (
             *) return 1 ;;
         esac
 
-        record="$(classify_assist_allow_response \
-            "$response_path" "$execution_state" "$execution_exit")" || return 1
+        : >"$record_path"
+        classify_assist_allow_response \
+            "$response_path" "$execution_state" "$execution_exit" >"$record_path" || return 1
         : >"$response_path"
-        IFS=$'\t' read -r category response_bytes safe_exit extra_field <<<"$record"
-        [ -z "$extra_field" ] || return 1
+        record_lines="$(/usr/bin/wc -l <"$record_path" | /usr/bin/tr -d '[:space:]')"
+        [ "$record_lines" = 1 ] || return 1
+        record="$(/bin/cat "$record_path")" || return 1
+        : >"$record_path"
+        case "$record" in
+            *$'\r'*|*$'\n'*) return 1 ;;
+        esac
+        tabless="${record//$'\t'/}"
+        [ "$(( ${#record} - ${#tabless} ))" -eq 2 ] || return 1
+        IFS=$'\t' read -r category response_bytes safe_exit <<<"$record"
+        [ "$record" = "$(printf '%s\t%s\t%s' \
+            "$category" "$response_bytes" "$safe_exit")" ] || return 1
         case "$response_bytes" in
             ''|*[!0-9]*) return 1 ;;
         esac
@@ -1235,6 +1322,17 @@ ensure_assist_allowed() (
             timeout|unavailable) ;;
             ''|*[!0-9]*) return 1 ;;
             *) [ "$safe_exit" -le 255 ] || return 1 ;;
+        esac
+
+        case "$category" in
+            timeout) [ "$safe_exit" = timeout ] || return 1 ;;
+            cli-nonzero)
+                case "$safe_exit" in
+                    unavailable) ;;
+                    *) [ "$safe_exit" -gt 0 ] || return 1 ;;
+                esac
+                ;;
+            *) [ "$safe_exit" = 0 ] || return 1 ;;
         esac
 
         case "$category" in
@@ -1264,7 +1362,7 @@ ensure_assist_allowed() (
         final_category="$category"
         final_cli_exit="$safe_exit"
 
-        now="$(uuremote_now_milliseconds)"
+        read_assist_now || return 1
         remaining="$((deadline - now))"
         if [ "$category" = enabled-true ] && [ "$remaining" -gt 0 ]; then
             cleanup_assist_attempt || return 1
