@@ -1555,7 +1555,7 @@ self_test_cli_output_redaction() {
 
     CLI="$test_cli"
     debug_level=0
-    console_uid=501
+    unset console_uid
     run_in_gui() {
         local fixture_cli="$1"
         shift
