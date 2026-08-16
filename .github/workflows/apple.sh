@@ -788,7 +788,6 @@ capture_cli_diagnostics() (
             cli_state="empty"
         fi
     else
-        cli_status="$?"
         cli_state="error"
     fi
 
