@@ -1551,6 +1551,14 @@ self_test_diagnostic_redaction() {
     capture_cli_diagnostics direct | /usr/bin/tee -a "$diagnostic_log"
 }
 
+enable_assist_or_fail() {
+    if ! ensure_assist_allowed; then
+        echo "Could not enable unattended control within 60 seconds" >&2
+        return 1
+    fi
+    echo "Unattended control is enabled"
+}
+
 self_test_cli_output_redaction() {
     local test_cli="${UUREMOTE_CLI_OUTPUT_TEST_CLI:-}"
 
@@ -3124,12 +3132,7 @@ if ! wait_for_cli; then
     exit 1
 fi
 
-if ! ensure_assist_allowed; then
-    echo "Could not enable unattended control within 60 seconds" >&2
-    exit 1
-fi
-
-echo "Unattended control is enabled"
+enable_assist_or_fail || exit 1
 
 if [ ! -f /etc/kcpassword ]; then
     echo "Automatic-login password file /etc/kcpassword does not exist" >&2

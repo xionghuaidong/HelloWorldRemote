@@ -484,6 +484,11 @@ if [ "$mode" = "aggregate" ]; then
                 printf '{"success":true,"enabled":false,"deviceId":"device-id-fixture\\nFORGED_OUTPUT=true","customCode":"CustomCodeFixture"}' >"$output_path"
                 controlled_now=60000
                 ;;
+            outer-false:1|outer-raises:1)
+                : >"$output_path"
+                : >"$status_path"
+                return 125
+                ;;
             *) exit 2 ;;
         esac
     }
@@ -621,9 +626,14 @@ if [ "$mode" = "aggregate" ]; then
                 return 1
             }
             ;;
-        transient-success|debug0-failure) ;;
+        transient-success|debug0-failure|outer-false|outer-raises) ;;
         *) exit 2 ;;
     esac
+
+    if [ "$scenario" = outer-false ] || [ "$scenario" = outer-raises ]; then
+        enable_assist_or_fail
+        exit "$?"
+    fi
 
     if ensure_assist_allowed; then
         exit 0

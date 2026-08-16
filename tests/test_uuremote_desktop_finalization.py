@@ -387,6 +387,17 @@ class MacOSAssistAllowAggregationTests(unittest.TestCase):
             check=False,
         )
 
+    def test_outer_caller_keeps_cleanup_failure_generic_only(self):
+        for scenario in ("outer-false", "outer-raises"):
+            with self.subTest(scenario=scenario):
+                result = self.run_harness(scenario)
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(result.stdout, "")
+                self.assertEqual(
+                    result.stderr,
+                    "Could not enable unattended control within 60 seconds\n",
+                )
+
     def test_transient_failures_then_success_emit_only_success(self):
         result = self.run_harness("transient-success")
         self.assertEqual(result.returncode, 0, result.stderr)
