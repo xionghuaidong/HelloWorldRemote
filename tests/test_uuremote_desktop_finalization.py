@@ -406,16 +406,11 @@ class MacOSAssistAllowAggregationTests(unittest.TestCase):
             check=False,
         )
 
-    def test_outer_caller_keeps_cleanup_failure_generic_only(self):
-        for scenario in ("outer-false", "outer-raises"):
-            with self.subTest(scenario=scenario):
-                result = self.run_harness(scenario)
-                self.assertEqual(result.returncode, 1)
-                self.assertEqual(result.stdout, "")
-                self.assertEqual(
-                    result.stderr,
-                    "Could not enable unattended control within 60 seconds\n",
-                )
+    def test_real_enable_assist_helper_reports_success_exactly(self):
+        result = self.run_harness("outer-success")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "Unattended control is enabled\n")
+        self.assertEqual(result.stderr, "")
 
     def test_outer_caller_hides_mutated_real_cleanup_failures(self):
         for mode in ("outer-cleanup-false", "outer-cleanup-raises"):

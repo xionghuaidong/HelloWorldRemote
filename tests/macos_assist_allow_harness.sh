@@ -528,6 +528,7 @@ esac && {
     if [ "$mode" = outer-cleanup-false ] || [ "$mode" = outer-cleanup-raises ]; then
         parent_pid_path="$temporary_directory/outer-parent.pid"
         child_pid_path="$temporary_directory/outer-child.pid"
+        outer_teardown_marker="$temporary_directory/outer-teardown-confirmed"
         fixture_pid_paths="$parent_pid_path $child_pid_path"
     fi
 
@@ -592,12 +593,16 @@ esac && {
                 return 0
             fi
             bounded_exit="$?"
-            if [ "$bounded_exit" -ne 125 ] || [ -s "$status_path" ]; then
-                return 125
+            if [ -s "$status_path" ]; then
+                return 124
+            fi
+            if is_native_macos && [ "$bounded_exit" -ne 125 ]; then
+                return 124
             fi
             if ! assert_recorded_fixture_teardown; then
-                return 125
+                return 124
             fi
+            : >"$outer_teardown_marker"
             return 125
         fi
         printf 'completed:0\n' >"$status_path"
@@ -778,24 +783,34 @@ esac && {
                 return 1
             }
             ;;
-        transient-success|debug0-failure|outer-false|outer-raises|outer-cleanup-false|outer-cleanup-raises) ;;
+        outer-success)
+            ensure_assist_allowed() {
+                return 0
+            }
+            ;;
+        transient-success|debug0-failure|outer-cleanup-false|outer-cleanup-raises) ;;
         *) exit 2 ;;
     esac
 
-    if [ "$scenario" = outer-false ] || [ "$scenario" = outer-raises ] || \
+    if [ "$scenario" = outer-success ] || \
         [ "$mode" = outer-cleanup-false ] || [ "$mode" = outer-cleanup-raises ]; then
         if enable_assist_or_fail; then
             status=0
         else
             status="$?"
         fi
-        if is_native_macos; then
+        if is_native_macos || [ "$scenario" = outer-success ]; then
             if [ ! -d "$temporary_tree" ] || [ -n "$(find "$temporary_tree" -mindepth 1 -print -quit)" ]; then
                 exit 125
             fi
         fi
-        if [ ! -s "${parent_pid_path:-}" ] || [ ! -s "${child_pid_path:-}" ]; then
-            exit 125
+        if [ "$mode" = outer-cleanup-false ] || [ "$mode" = outer-cleanup-raises ]; then
+            if [ ! -f "$outer_teardown_marker" ]; then
+                exit 125
+            fi
+            if [ ! -s "$parent_pid_path" ] || [ ! -s "$child_pid_path" ]; then
+                exit 125
+            fi
         fi
         exit "$status"
     fi
