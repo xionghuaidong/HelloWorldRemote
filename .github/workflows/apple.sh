@@ -6,7 +6,7 @@ CLI="${UUREMOTE_CLI_PATH:-$APP/Contents/Helpers/uuyc-cli}"
 mode="${1:-configure}"
 KEY_REPEAT_VALUE=2
 INITIAL_KEY_REPEAT_VALUE=15
-ASSIST_ID_TIMEOUT_SECONDS=3
+ASSIST_ID_TIMEOUT_MILLISECONDS=3000
 
 validate_uuremote_custom_code() {
     local custom_code="${1:-}"
@@ -312,20 +312,22 @@ self_test_wait_connections() (
 
 run_bounded_uuremote_cli_to_file() {
     local output_path="$1"
-    shift
+    local timeout_milliseconds="$2"
+    shift 2
 
-    if [ "$#" -eq 0 ]; then
+    if ! [[ "$timeout_milliseconds" =~ ^[0-9]+$ ]] ||
+        [ "$timeout_milliseconds" -lt 1 ] || [ "$#" -eq 0 ]; then
         return 2
     fi
 
-    /usr/bin/python3 - "$output_path" "$ASSIST_ID_TIMEOUT_SECONDS" "$@" <<'PYTHON'
+    /usr/bin/python3 - "$output_path" "$timeout_milliseconds" "$@" <<'PYTHON'
 import os
 import signal
 import subprocess
 import sys
 
 output_path = sys.argv[1]
-timeout_seconds = int(sys.argv[2])
+timeout_seconds = int(sys.argv[2]) / 1000
 command = sys.argv[3:]
 
 try:
@@ -376,6 +378,7 @@ PYTHON
 }
 
 read_uuremote_device_id() (
+    local timeout_milliseconds="${1:-$ASSIST_ID_TIMEOUT_MILLISECONDS}"
     local device_id_temp_dir=""
     local output_path=""
 
@@ -396,7 +399,9 @@ read_uuremote_device_id() (
     : >"$output_path"
     /bin/chmod 0600 "$output_path"
 
-    if ! run_bounded_uuremote_cli_to_file "$output_path" "$CLI" assist id; then
+    if ! run_bounded_uuremote_cli_to_file \
+        "$output_path" "$timeout_milliseconds" "$CLI" assist id
+    then
         return 1
     fi
 
@@ -463,9 +468,10 @@ PYTHON
 
 emit_current_device_id() {
     local context="$1"
+    local timeout_milliseconds="${2:-$ASSIST_ID_TIMEOUT_MILLISECONDS}"
     local device_id
 
-    if ! device_id="$(read_uuremote_device_id)"; then
+    if ! device_id="$(read_uuremote_device_id "$timeout_milliseconds")"; then
         return 1
     fi
 
@@ -509,7 +515,9 @@ diagnose_uuremote_device_id() (
     : >"$output_path"
     /bin/chmod 0600 "$output_path"
 
-    if run_bounded_uuremote_cli_to_file "$output_path" "$CLI" assist id; then
+    if run_bounded_uuremote_cli_to_file \
+        "$output_path" "$ASSIST_ID_TIMEOUT_MILLISECONDS" "$CLI" assist id
+    then
         cli_status=0
     else
         cli_status="$?"
@@ -759,7 +767,7 @@ capture_cli_diagnostics() (
 
     if [ "$assist_execution" = "direct" ]; then
         if run_bounded_uuremote_cli_to_file \
-            "$assist_output_path" "$CLI" assist id
+            "$assist_output_path" "$ASSIST_ID_TIMEOUT_MILLISECONDS" "$CLI" assist id
         then
             cli_status=0
         else
@@ -768,6 +776,7 @@ capture_cli_diagnostics() (
     elif [ "$assist_execution" = "gui" ]; then
         if run_bounded_uuremote_cli_to_file \
             "$assist_output_path" \
+            "$ASSIST_ID_TIMEOUT_MILLISECONDS" \
             sudo launchctl asuser "$console_uid" \
             sudo -u "#$console_uid" \
             "$CLI" assist id
@@ -2021,6 +2030,87 @@ configure_host() {
     unset old_root_password old_root_keychain_password
     echo "macOS host bootstrap completed"
 }
+
+uuremote_now_milliseconds() {
+    /usr/bin/python3 -c 'import time; print(time.monotonic_ns() // 1000000)'
+}
+
+test_uuremote_application_running() {
+    /usr/bin/pgrep -x UURemote >/dev/null 2>&1
+}
+
+start_uuremote_application() {
+    "$APP/Contents/MacOS/UURemote" >/dev/null 2>&1 &
+}
+
+wait_uuremote_poll() {
+    /usr/bin/python3 - "$1" <<'PYTHON'
+import sys
+import time
+time.sleep(int(sys.argv[1]) / 1000)
+PYTHON
+}
+
+launch_and_wait_device() {
+    local timeout_seconds="${1:-60}"
+    local poll_milliseconds="${2:-500}"
+    local deadline now remaining timeout_for_attempt sleep_for_attempt
+    local attempts=0
+
+    if ! [[ "$timeout_seconds" =~ ^[0-9]+$ ]] ||
+        ! [[ "$poll_milliseconds" =~ ^[0-9]+$ ]] ||
+        [ "$timeout_seconds" -lt 1 ] || [ "$poll_milliseconds" -lt 1 ]; then
+        echo "UU Remote readiness timing values are invalid." >&2
+        return 2
+    fi
+    if [ ! -x "$APP/Contents/MacOS/UURemote" ] || [ ! -x "$CLI" ]; then
+        echo "UU Remote readiness paths are unavailable." >&2
+        return 1
+    fi
+    if ! test_uuremote_application_running; then
+        if ! start_uuremote_application; then
+            echo "UU Remote application launch failed." >&2
+            return 1
+        fi
+    fi
+
+    now="$(uuremote_now_milliseconds)"
+    deadline="$((now + timeout_seconds * 1000))"
+    while true; do
+        now="$(uuremote_now_milliseconds)"
+        remaining="$((deadline - now))"
+        if [ "$remaining" -lt 1 ]; then
+            break
+        fi
+        attempts="$((attempts + 1))"
+        timeout_for_attempt="$remaining"
+        if emit_current_device_id readiness "$timeout_for_attempt"; then
+            return 0
+        fi
+        now="$(uuremote_now_milliseconds)"
+        remaining="$((deadline - now))"
+        if [ "$remaining" -lt 1 ]; then
+            break
+        fi
+        sleep_for_attempt="$poll_milliseconds"
+        if [ "$remaining" -lt "$sleep_for_attempt" ]; then
+            sleep_for_attempt="$remaining"
+        fi
+        wait_uuremote_poll "$sleep_for_attempt"
+    done
+
+    echo "UU Remote device readiness timed out after $attempts attempts." >&2
+    return 1
+}
+
+if [ "$mode" = "launch-and-wait-device" ]; then
+    if [ "$#" -ne 1 ]; then
+        echo "Usage: apple.sh launch-and-wait-device" >&2
+        exit 2
+    fi
+    launch_and_wait_device 60 500
+    exit $?
+fi
 
 if [ "$mode" = "self-test-kcpassword" ]; then
     self_test_kcpassword

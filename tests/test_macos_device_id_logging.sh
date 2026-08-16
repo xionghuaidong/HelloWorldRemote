@@ -103,11 +103,14 @@ chmod 0700 "$fixture_cli"
 run_helper() {
     DEVICE_ID_FIXTURE_MODE="$1" \
     UUREMOTE_CLI_PATH="$fixture_cli" \
+    TMPDIR="$device_id_temp_root" \
         /bin/bash "$root/.github/workflows/apple.sh" "${@:2}"
 }
 
 diagnostic_temp_root="$temporary_directory/diagnostic-temp"
 mkdir -p "$diagnostic_temp_root"
+device_id_temp_root="$temporary_directory/device-id-temp"
+mkdir -p "$device_id_temp_root"
 
 run_diagnostic() {
     DEVICE_ID_FIXTURE_MODE="$1" \
@@ -138,6 +141,7 @@ assert_bounded_hanging_route() {
     DEVICE_ID_FIXTURE_MODE=hang \
     DEVICE_ID_FIXTURE_PID_PATH="$fixture_pid_path" \
     UUREMOTE_CLI_PATH="$fixture_cli" \
+    TMPDIR="$device_id_temp_root" \
         /usr/bin/python3 - "$root/.github/workflows/apple.sh" "$fixture_pid_path" "$expected_status" "$@" <<'PYTHON'
 import os
 import pathlib
@@ -335,5 +339,10 @@ for mode in empty multiline control leading-control trailing-control extra-newli
         exit 1
     fi
 done
+
+if find "$device_id_temp_root" -mindepth 1 -print -quit | grep -q .; then
+    echo "Device ID temporary files were not cleaned up" >&2
+    exit 1
+fi
 
 echo "macOS device ID logging contract passed"

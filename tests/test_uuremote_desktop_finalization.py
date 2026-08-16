@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_PATH = ROOT / ".github/workflows/macos.yml"
 SCRIPT_PATH = ROOT / ".github/workflows/apple.sh"
 DIAGNOSTIC_HARNESS_PATH = ROOT / "tests/test_macos_diagnostic_redaction.sh"
+MACOS_READINESS_HARNESS_PATH = ROOT / "tests/macos_readiness_harness.sh"
 BASH_AVAILABLE = Path("/bin/bash").exists()
 
 
@@ -175,6 +176,84 @@ class CustomCodeValidationTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         self.assertIn("diagnostic redaction self-test passed", result.stdout)
+
+
+@unittest.skipUnless(BASH_AVAILABLE, "requires /bin/bash")
+class MacOSReadinessBehaviorTests(unittest.TestCase):
+    def run_scenario(self, scenario: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["/bin/bash", str(MACOS_READINESS_HARNESS_PATH), scenario],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+    def test_absent_application_is_started_once_before_transient_success(self):
+        result = self.run_scenario("absent-transient-success")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            result.stdout.splitlines(),
+            [
+                "DEVICE_ID=device-id-fixture",
+                "DEVICE_ID_STATE=ready",
+                "ATTEMPTS=3",
+                "STARTS=1",
+                "SLEEPS=2",
+            ],
+        )
+
+    def test_existing_application_is_not_restarted(self):
+        result = self.run_scenario("existing-success")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("STARTS=0", result.stdout.splitlines())
+
+    def test_deadline_fails_closed_without_late_attempt_or_sleep(self):
+        result = self.run_scenario("deadline")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(
+            result.stderr.splitlines(),
+            [
+                "UU Remote device readiness timed out after 2 attempts.",
+                "ATTEMPTS=2 STARTS=0 SLEEPS=1 TIMEOUTS=1000,600",
+            ],
+        )
+
+    def test_configuration_and_launch_failures_do_not_poll(self):
+        cases = {
+            "invalid-timing": (
+                "UU Remote readiness timing values are invalid.",
+                "ATTEMPTS=0 STARTS=0 SLEEPS=0 TIMEOUTS=",
+            ),
+            "missing-paths": (
+                "UU Remote readiness paths are unavailable.",
+                "ATTEMPTS=0 STARTS=0 SLEEPS=0 TIMEOUTS=",
+            ),
+            "launch-failure": (
+                "UU Remote application launch failed.",
+                "ATTEMPTS=0 STARTS=1 SLEEPS=0 TIMEOUTS=",
+            ),
+        }
+        for scenario, expected in cases.items():
+            with self.subTest(scenario=scenario):
+                result = self.run_scenario(scenario)
+                self.assertEqual(result.returncode, 1 if scenario != "invalid-timing" else 2)
+                self.assertEqual(result.stdout, "")
+                self.assertEqual(result.stderr.splitlines(), list(expected))
+
+
+class MacOSReadinessSourceTests(unittest.TestCase):
+    def test_production_route_uses_fixed_windows_aligned_defaults(self):
+        script = text(SCRIPT_PATH)
+        route = shell_if_block(
+            script,
+            'if [ "$mode" = "launch-and-wait-device" ]; then',
+        )
+        self.assertIn('launch_and_wait_device 60 500', route)
+        self.assertIn('/usr/bin/pgrep -x UURemote', script)
+        self.assertIn('if [ "$#" -ne 1 ]; then', route)
+        self.assertIn('Usage: apple.sh launch-and-wait-device', route)
 
 
 @unittest.skipUnless(BASH_AVAILABLE, "requires /bin/bash")
