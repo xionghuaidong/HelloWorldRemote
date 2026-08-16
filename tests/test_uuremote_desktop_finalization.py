@@ -398,6 +398,23 @@ class MacOSAssistAllowAggregationTests(unittest.TestCase):
                     "Could not enable unattended control within 60 seconds\n",
                 )
 
+    def test_outer_caller_hides_mutated_real_cleanup_failures(self):
+        for mode in ("outer-cleanup-false", "outer-cleanup-raises"):
+            with self.subTest(mode=mode):
+                result = subprocess.run(
+                    ["/bin/bash", str(MACOS_ASSIST_ALLOW_HARNESS_PATH), mode, mode],
+                    cwd=ROOT,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(result.stdout, "")
+                self.assertEqual(
+                    result.stderr,
+                    "Could not enable unattended control within 60 seconds\n",
+                )
+
     def test_transient_failures_then_success_emit_only_success(self):
         result = self.run_harness("transient-success")
         self.assertEqual(result.returncode, 0, result.stderr)

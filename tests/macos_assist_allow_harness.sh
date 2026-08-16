@@ -82,7 +82,7 @@ trap cleanup_harness EXIT
 awk '/^if \[ "\$mode" = "self-test-kcpassword" \]; then$/ { exit } { print }' \
     "$source_script" >"$subject"
 case "$mode" in
-    fault-*)
+    fault-*|outer-cleanup-*)
         awk -v fault_mode="$mode" '
             /^def cleanup_owned_process\(\):$/ {
                 print "def cleanup_owned_process_real():"
@@ -91,7 +91,7 @@ case "$mode" in
             /^cleanup_in_progress = False$/ {
                 print "def cleanup_owned_process():"
                 print "    cleanup_owned_process_real()"
-                if (fault_mode == "fault-raises") {
+                if (fault_mode == "fault-raises" || fault_mode == "outer-cleanup-raises") {
                     print "    raise RuntimeError"
                 } else {
                     print "    return False"
@@ -377,7 +377,10 @@ esac && {
     exit 0
 }
 
-if [ "$mode" = "aggregate" ]; then
+case "$mode" in
+    aggregate|outer-cleanup-*) ;;
+    *) false ;;
+esac && {
     . "$subject"
 
     debug_level=0
@@ -389,6 +392,11 @@ if [ "$mode" = "aggregate" ]; then
     temporary_tree="$temporary_directory/assist-tree"
     mkdir -m 700 "$temporary_tree"
     TMPDIR="$temporary_tree"
+    if [ "$mode" = outer-cleanup-false ] || [ "$mode" = outer-cleanup-raises ]; then
+        parent_pid_path="$temporary_directory/outer-parent.pid"
+        child_pid_path="$temporary_directory/outer-child.pid"
+        fixture_pid_paths="$parent_pid_path $child_pid_path"
+    fi
 
     uuremote_now_milliseconds() {
         clock_calls="$(cat "$clock_count_path")"
@@ -443,6 +451,12 @@ if [ "$mode" = "aggregate" ]; then
         local timeout_milliseconds="$3"
         shift 3
         boundary_calls="$((boundary_calls + 1))"
+        if [ "$mode" = outer-cleanup-false ] || [ "$mode" = outer-cleanup-raises ]; then
+            run_bounded_uuremote_cli_to_file_with_status \
+                "$output_path" "$status_path" "$timeout_milliseconds" \
+                /bin/bash "$0" fixture-hang "$parent_pid_path" "$child_pid_path"
+            return "$?"
+        fi
         printf 'completed:0\n' >"$status_path"
         case "$scenario:$boundary_calls" in
             deadline-bounds:1)
@@ -483,11 +497,6 @@ if [ "$mode" = "aggregate" ]; then
             hostile-failure:1)
                 printf '{"success":true,"enabled":false,"deviceId":"device-id-fixture\\nFORGED_OUTPUT=true","customCode":"CustomCodeFixture"}' >"$output_path"
                 controlled_now=60000
-                ;;
-            outer-false:1|outer-raises:1)
-                : >"$output_path"
-                : >"$status_path"
-                return 125
                 ;;
             *) exit 2 ;;
         esac
@@ -626,11 +635,12 @@ if [ "$mode" = "aggregate" ]; then
                 return 1
             }
             ;;
-        transient-success|debug0-failure|outer-false|outer-raises) ;;
+        transient-success|debug0-failure|outer-false|outer-raises|outer-cleanup-false|outer-cleanup-raises) ;;
         *) exit 2 ;;
     esac
 
-    if [ "$scenario" = outer-false ] || [ "$scenario" = outer-raises ]; then
+    if [ "$scenario" = outer-false ] || [ "$scenario" = outer-raises ] || \
+        [ "$mode" = outer-cleanup-false ] || [ "$mode" = outer-cleanup-raises ]; then
         enable_assist_or_fail
         exit "$?"
     fi
@@ -651,7 +661,7 @@ if [ "$mode" = "aggregate" ]; then
     esac
     echo "Could not enable unattended control within 60 seconds" >&2
     exit "$status"
-fi
+}
 
 if [ "$mode" != "classify" ]; then
     exit 2
