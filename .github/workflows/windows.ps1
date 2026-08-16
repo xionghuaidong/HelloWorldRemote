@@ -605,7 +605,7 @@ function Invoke-ShutdownWaiter {
             $references += @(
                 'System.Windows.Forms.Primitives.dll',
                 'System.ComponentModel.Primitives.dll',
-                'System.Threading.Thread.dll',
+                (Resolve-Path -LiteralPath (Join-Path $PSHOME 'ref\System.Threading.Thread.dll')).Path,
                 (Resolve-Path -LiteralPath (Join-Path $PSHOME 'System.Private.Windows.Core.dll')).Path
             )
         }

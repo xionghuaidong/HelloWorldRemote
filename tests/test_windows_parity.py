@@ -100,13 +100,18 @@ def run_windows_helper(
     )
 
 
-def run_windows_script(script: str, environment: dict[str, str] | None = None):
-    if POWERSHELL is None:
+def run_windows_script(
+    script: str,
+    environment: dict[str, str] | None = None,
+    powershell: str | None = None,
+):
+    runtime = POWERSHELL if powershell is None else powershell
+    if runtime is None:
         raise RuntimeError("A PowerShell runtime is required to run the Windows helper tests.")
 
     return subprocess.run(
         [
-            POWERSHELL,
+            runtime,
             "-NoProfile",
             "-ExecutionPolicy",
             "Bypass",
@@ -377,6 +382,7 @@ Invoke-WindowsHelperRoute
             with self.subTest(runtime=runtime):
                 result = run_windows_helper("self-test-wait-connections", powershell=runtime)
                 self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stderr, "")
                 self.assertEqual(
                     result.stdout.splitlines(),
                     [
@@ -530,6 +536,57 @@ public static class WaiterFailureFixture {
 
 
 class WindowsWaitCompilationContractTests(unittest.TestCase):
+    @unittest.skipUnless(
+        platform.system() == "Windows" and PORTABLE_POWERSHELL_CORE.is_file(),
+        "requires Windows and the configured portable PowerShell Core runtime",
+    )
+    def test_core_watcher_compilation_uses_runtime_owned_required_assembly_paths(self):
+        helper = str(WINDOWS_HELPER).replace("'", "''")
+        result = run_windows_script(
+            rf"""
+. '{helper}'
+$script:WatcherReferences = $null
+function Add-Type {{
+    [CmdletBinding()]
+    param(
+        [string[]]$Path,
+        [string[]]$ReferencedAssemblies
+    )
+    $script:WatcherReferences = @($ReferencedAssemblies)
+    Microsoft.PowerShell.Utility\Add-Type @PSBoundParameters
+}}
+Invoke-ShutdownWaiter -Seconds 1 -InjectedEvent 'none'
+$script:WatcherReferences | ForEach-Object {{ Write-Output "WATCHER_REFERENCE=$_" }}
+""",
+            powershell=str(PORTABLE_POWERSHELL_CORE),
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, "")
+        references = [
+            line.removeprefix("WATCHER_REFERENCE=")
+            for line in result.stdout.splitlines()
+            if line.startswith("WATCHER_REFERENCE=")
+        ]
+        runtime_directory = PORTABLE_POWERSHELL_CORE.parent
+        expected_paths = {
+            "System.Threading.Thread.dll": (
+                runtime_directory / "ref" / "System.Threading.Thread.dll"
+            ),
+            "System.Private.Windows.Core.dll": (
+                runtime_directory / "System.Private.Windows.Core.dll"
+            ),
+        }
+        required_references = [
+            reference
+            for reference in references
+            if Path(reference).name in expected_paths
+        ]
+        self.assertCountEqual(
+            required_references,
+            [str(path) for path in expected_paths.values()],
+        )
+
     def test_core_watcher_compilation_adds_required_primitives_references(self):
         helper = text(WINDOWS_HELPER)
         start = helper.index("if ($null -eq ('UURemote.ShutdownWaiter' -as [type])) {")
