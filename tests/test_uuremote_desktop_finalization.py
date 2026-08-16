@@ -347,6 +347,12 @@ class MacOSAssistAllowProcessTests(unittest.TestCase):
         self.assertEqual(result.stderr, "")
         self.assertEqual(result.stdout, "STATUS=absent\n")
 
+    def test_cleanup_exception_after_real_timeout_cleanup_publishes_no_status(self):
+        result = self.run_harness("fault-raises", "timeout")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, "")
+        self.assertEqual(result.stdout, "STATUS=absent\n")
+
     def test_unconfirmed_completed_leader_cleanup_publishes_no_status(self):
         result = self.run_harness("fault-leader", "leader-fault")
         self.assertEqual(result.returncode, 0, result.stderr)

@@ -437,6 +437,7 @@ def cleanup_owned_process():
 
 cleanup_in_progress = False
 cleanup_signal_mask = None
+owned_cleanup_required = False
 
 def interrupt_handler(_signum, _frame):
     if cleanup_in_progress:
@@ -493,6 +494,7 @@ try:
     try:
         return_code = process.wait(timeout=timeout_seconds)
     except subprocess.TimeoutExpired:
+        owned_cleanup_required = True
         cleanup_in_progress = True
         block_handled_signals_for_cleanup()
         if not cleanup_owned_process():
@@ -506,6 +508,7 @@ try:
         except OSError:
             group_remains = True
         if group_remains is True:
+            owned_cleanup_required = True
             cleanup_in_progress = True
             block_handled_signals_for_cleanup()
             if cleanup_owned_process():
@@ -516,6 +519,7 @@ try:
             write_status(f"completed:{safe_return_code}")
             exit_code = safe_return_code
 except HandledSignal:
+    owned_cleanup_required = process is not None
     cleanup_in_progress = True
     block_handled_signals_for_cleanup()
     if process is not None:
@@ -525,7 +529,8 @@ except HandledSignal:
         write_status("unavailable")
     exit_code = 125
 except Exception:
-    write_status("unavailable")
+    if not (owned_cleanup_required and process is not None):
+        write_status("unavailable")
     exit_code = 125
 finally:
     for handled_signal, previous_handler in previous_handlers.items():

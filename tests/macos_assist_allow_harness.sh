@@ -83,7 +83,22 @@ awk '/^if \[ "\$mode" = "self-test-kcpassword" \]; then$/ { exit } { print }' \
     "$source_script" >"$subject"
 case "$mode" in
     fault-*)
-        sed '/^def cleanup_owned_process():$/a\    return False' "$subject" >"$subject.fault"
+        awk -v fault_mode="$mode" '
+            /^def cleanup_owned_process\(\):$/ {
+                print "def cleanup_owned_process_real():"
+                next
+            }
+            /^cleanup_in_progress = False$/ {
+                print "def cleanup_owned_process():"
+                print "    cleanup_owned_process_real()"
+                if (fault_mode == "fault-raises") {
+                    print "    raise RuntimeError"
+                } else {
+                    print "    return False"
+                }
+            }
+            { print }
+        ' "$subject" >"$subject.fault"
         mv "$subject.fault" "$subject"
         ;;
 esac
@@ -130,7 +145,7 @@ esac && {
                 echo "Hanging fixture unexpectedly succeeded" >&2
                 exit 1
             fi
-            if [ "$mode" = fault-timeout ]; then
+            if [ "$mode" = fault-timeout ] || [ "$mode" = fault-raises ]; then
                 if [ -s "$status_path" ]; then
                     echo "Unconfirmed cleanup wrote a status" >&2
                     exit 1
