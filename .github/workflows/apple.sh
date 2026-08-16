@@ -496,7 +496,6 @@ try:
         cleanup_in_progress = True
         block_handled_signals_for_cleanup()
         if not cleanup_owned_process():
-            write_status("unavailable")
             exit_code = 125
         else:
             write_status("timeout")
@@ -509,8 +508,8 @@ try:
         if group_remains is True:
             cleanup_in_progress = True
             block_handled_signals_for_cleanup()
-            cleanup_owned_process()
-            write_status("unavailable")
+            if cleanup_owned_process():
+                write_status("unavailable")
             exit_code = 125
         else:
             safe_return_code = return_code if 0 <= return_code <= 255 else 1
@@ -520,8 +519,10 @@ except HandledSignal:
     cleanup_in_progress = True
     block_handled_signals_for_cleanup()
     if process is not None:
-        cleanup_owned_process()
-    write_status("unavailable")
+        if cleanup_owned_process():
+            write_status("unavailable")
+    else:
+        write_status("unavailable")
     exit_code = 125
 except Exception:
     write_status("unavailable")
