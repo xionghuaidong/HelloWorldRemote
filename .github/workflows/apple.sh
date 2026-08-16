@@ -859,6 +859,100 @@ except (UnicodeDecodeError, json.JSONDecodeError, OSError, ValueError):
 PYTHON
 }
 
+classify_assist_allow_response() {
+    local output_path="$1"
+    local execution_state="$2"
+    local cli_exit="$3"
+    local response_bytes
+
+    response_bytes="$(/usr/bin/wc -c <"$output_path" | /usr/bin/tr -d '[:space:]')"
+    case "$response_bytes" in
+        ''|*[!0-9]*) return 2 ;;
+    esac
+
+    case "$execution_state" in
+        timeout)
+            printf 'timeout\t%s\ttimeout\n' "$response_bytes"
+            return 0
+            ;;
+        unavailable)
+            printf 'cli-nonzero\t%s\tunavailable\n' "$response_bytes"
+            return 0
+            ;;
+        completed)
+            ;;
+        *)
+            return 2
+            ;;
+    esac
+
+    case "$cli_exit" in
+        ''|*[!0-9]*) return 2 ;;
+    esac
+    if [ "$cli_exit" -gt 255 ]; then
+        return 2
+    fi
+    if [ "$cli_exit" -ne 0 ]; then
+        printf 'cli-nonzero\t%s\t%s\n' "$response_bytes" "$cli_exit"
+        return 0
+    fi
+
+    /usr/bin/python3 - "$output_path" "$response_bytes" <<'PYTHON'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+response_bytes = sys.argv[2]
+raw = path.read_bytes()
+
+def emit(category):
+    print(f"{category}\t{response_bytes}\t0")
+    raise SystemExit(0)
+
+def reject_duplicate_keys(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError
+        result[key] = value
+    return result
+
+def reject_nonstandard_constant(_value):
+    raise ValueError
+
+if not raw:
+    emit("empty")
+try:
+    decoded = raw.decode("utf-8")
+except UnicodeDecodeError:
+    emit("invalid-utf8")
+try:
+    payload = json.loads(
+        decoded,
+        object_pairs_hook=reject_duplicate_keys,
+        parse_constant=reject_nonstandard_constant,
+    )
+except (json.JSONDecodeError, ValueError):
+    emit("invalid-json")
+if not isinstance(payload, dict):
+    emit("not-object")
+if "success" not in payload:
+    emit("success-missing")
+if type(payload["success"]) is not bool:
+    emit("success-wrong-type")
+if payload["success"] is not True:
+    emit("success-false")
+if "enabled" not in payload:
+    emit("enabled-missing")
+if type(payload["enabled"]) is not bool:
+    emit("enabled-wrong-type")
+if payload["enabled"] is not True:
+    emit("enabled-false")
+emit("enabled-true")
+PYTHON
+}
+
 wait_for_uuremote_cli_true_field() (
     local field_name="$1"
     local state_token="$2"

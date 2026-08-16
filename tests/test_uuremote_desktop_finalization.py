@@ -11,6 +11,7 @@ WORKFLOW_PATH = ROOT / ".github/workflows/macos.yml"
 SCRIPT_PATH = ROOT / ".github/workflows/apple.sh"
 DIAGNOSTIC_HARNESS_PATH = ROOT / "tests/test_macos_diagnostic_redaction.sh"
 MACOS_READINESS_HARNESS_PATH = ROOT / "tests/macos_readiness_harness.sh"
+MACOS_ASSIST_ALLOW_HARNESS_PATH = ROOT / "tests/macos_assist_allow_harness.sh"
 BASH_AVAILABLE = Path("/bin/bash").exists()
 
 
@@ -196,6 +197,54 @@ class CustomCodeValidationTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         self.assertIn("diagnostic redaction self-test passed", result.stdout)
+
+
+@unittest.skipUnless(BASH_AVAILABLE, "requires /bin/bash")
+class MacOSAssistAllowClassifierTests(unittest.TestCase):
+    def run_scenario(self, scenario: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["/bin/bash", str(MACOS_ASSIST_ALLOW_HARNESS_PATH), "classify", scenario],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+    def test_every_response_shape_has_one_safe_category(self):
+        cases = {
+            "timeout": ("timeout", "timeout"),
+            "cli-nonzero": ("cli-nonzero", "17"),
+            "empty": ("empty", "0"),
+            "invalid-utf8": ("invalid-utf8", "0"),
+            "invalid-json": ("invalid-json", "0"),
+            "not-object": ("not-object", "0"),
+            "success-missing": ("success-missing", "0"),
+            "success-wrong-type": ("success-wrong-type", "0"),
+            "success-false": ("success-false", "0"),
+            "enabled-missing": ("enabled-missing", "0"),
+            "enabled-wrong-type": ("enabled-wrong-type", "0"),
+            "enabled-false": ("enabled-false", "0"),
+            "enabled-true": ("enabled-true", "0"),
+            "duplicate-key": ("invalid-json", "0"),
+            "nan": ("invalid-json", "0"),
+        }
+        for scenario, (category, safe_exit) in cases.items():
+            with self.subTest(scenario=scenario):
+                result = self.run_scenario(scenario)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                fields = result.stdout.strip().split("\t")
+                self.assertEqual(fields[0], category)
+                self.assertTrue(fields[1].isdigit())
+                self.assertEqual(fields[2], safe_exit)
+                self.assertEqual(len(fields), 3)
+
+    def test_classifier_never_emits_fixture_values(self):
+        result = self.run_scenario("hostile-enabled-false")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.split("\t", 1)[0], "enabled-false")
+        self.assertNotIn("CustomCodeFixture", result.stdout + result.stderr)
+        self.assertNotIn("device-id-fixture", result.stdout + result.stderr)
+        self.assertNotIn("FORGED_OUTPUT", result.stdout + result.stderr)
 
 
 @unittest.skipUnless(BASH_AVAILABLE, "requires /bin/bash")
