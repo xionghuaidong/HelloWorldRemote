@@ -379,7 +379,9 @@ PYTHON
 
 read_uuremote_device_id() (
     local timeout_milliseconds="${1:-$ASSIST_ID_TIMEOUT_MILLISECONDS}"
+    local absolute_deadline_milliseconds="${2:-}"
     local device_id_temp_dir=""
+    local now remaining
     local output_path=""
 
     cleanup_device_id_read() {
@@ -398,6 +400,17 @@ read_uuremote_device_id() (
     output_path="$device_id_temp_dir/stdout"
     : >"$output_path"
     /bin/chmod 0600 "$output_path"
+
+    if [ -n "$absolute_deadline_milliseconds" ]; then
+        now="$(uuremote_now_milliseconds)"
+        remaining="$((absolute_deadline_milliseconds - now))"
+        if [ "$remaining" -lt 1 ]; then
+            return 1
+        fi
+        if [ "$remaining" -lt "$timeout_milliseconds" ]; then
+            timeout_milliseconds="$remaining"
+        fi
+    fi
 
     if ! run_bounded_uuremote_cli_to_file \
         "$output_path" "$timeout_milliseconds" "$CLI" assist id
@@ -466,14 +479,9 @@ sys.stdout.write(value)
 PYTHON
 )
 
-emit_current_device_id() {
+emit_uuremote_device_id() {
     local context="$1"
-    local timeout_milliseconds="${2:-$ASSIST_ID_TIMEOUT_MILLISECONDS}"
-    local device_id
-
-    if ! device_id="$(read_uuremote_device_id "$timeout_milliseconds")"; then
-        return 1
-    fi
+    local device_id="$2"
 
     case "$context" in
         readiness)
@@ -489,6 +497,18 @@ emit_current_device_id() {
             ;;
     esac
     unset device_id
+}
+
+emit_current_device_id() {
+    local context="$1"
+    local timeout_milliseconds="${2:-$ASSIST_ID_TIMEOUT_MILLISECONDS}"
+    local device_id
+
+    if ! device_id="$(read_uuremote_device_id "$timeout_milliseconds")"; then
+        return 1
+    fi
+
+    emit_uuremote_device_id "$context" "$device_id"
 }
 
 diagnose_uuremote_device_id() (
@@ -2054,7 +2074,7 @@ PYTHON
 launch_and_wait_device() {
     local timeout_seconds="${1:-60}"
     local poll_milliseconds="${2:-500}"
-    local deadline now remaining timeout_for_attempt sleep_for_attempt
+    local deadline device_id now remaining timeout_for_attempt sleep_for_attempt
     local attempts=0
 
     if ! [[ "$timeout_seconds" =~ ^[0-9]+$ ]] ||
@@ -2084,7 +2104,17 @@ launch_and_wait_device() {
         fi
         attempts="$((attempts + 1))"
         timeout_for_attempt="$remaining"
-        if emit_current_device_id readiness "$timeout_for_attempt"; then
+        if device_id="$(
+            read_uuremote_device_id "$timeout_for_attempt" "$deadline"
+        )"; then
+            now="$(uuremote_now_milliseconds)"
+            remaining="$((deadline - now))"
+            if [ "$remaining" -lt 1 ]; then
+                unset device_id
+                break
+            fi
+            emit_uuremote_device_id readiness "$device_id"
+            unset device_id
             return 0
         fi
         now="$(uuremote_now_milliseconds)"

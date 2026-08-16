@@ -48,11 +48,26 @@ class CustomCodeWorkflowTests(unittest.TestCase):
         debug_gate = 'if [ "${UUREMOTE_DEBUG:-0}" != "0" ]; then'
         diagnostic = ".github/workflows/apple.sh diagnose-device-id || true"
         outer = shell_if_block(launch, outer_gate)
-        debug = shell_if_block(outer, debug_gate)
+        outer_lines = outer.splitlines()
+        else_index = next(
+            index
+            for index, line in enumerate(outer_lines)
+            if line.strip() == "else"
+        )
+        self.assertEqual(
+            outer_lines[else_index + 1].strip(),
+            'launch_status="$?"',
+        )
+        failure = "\n".join(outer_lines[else_index + 1 : -1])
+        debug = shell_if_block(failure, debug_gate)
 
-        self.assertEqual(outer.count(diagnostic), 1)
+        self.assertEqual(failure.count(diagnostic), 1)
         self.assertEqual(debug.count(diagnostic), 1)
-        self.assertIn('exit "$launch_status"', outer)
+        self.assertEqual(failure.count('exit "$launch_status"'), 1)
+        self.assertLess(
+            failure.index(debug) + len(debug),
+            failure.index('exit "$launch_status"'),
+        )
 
     def test_custom_code_is_required_masked_and_step_scoped(self):
         workflow = text(WORKFLOW_PATH)
@@ -89,17 +104,25 @@ class CustomCodeWorkflowTests(unittest.TestCase):
 
     def test_failed_delegation_runs_diagnostics_only_inside_the_debug_gate(self):
         launch = step_block(text(WORKFLOW_PATH), "Launch GameViewer")
-        outer = shell_if_block(
-            launch,
-            "if .github/workflows/apple.sh launch-and-wait-device",
-        )
-        debug = shell_if_block(
-            outer,
-            'if [ "${UUREMOTE_DEBUG:-0}" != "0" ]; then',
-        )
-        self.assertEqual(outer.count("apple.sh diagnose-device-id || true"), 1)
-        self.assertEqual(debug.count("apple.sh diagnose-device-id || true"), 1)
-        self.assertIn('exit "$launch_status"', outer)
+        self.assert_failed_diagnostic_contract(launch)
+
+    def test_failed_diagnostic_contract_rejects_command_before_status_capture(self):
+        invalid_launch = """
+            if .github/workflows/apple.sh launch-and-wait-device
+            then
+                :
+            else
+                echo "failure"
+                launch_status="$?"
+                if [ "${UUREMOTE_DEBUG:-0}" != "0" ]; then
+                    .github/workflows/apple.sh diagnose-device-id || true
+                fi
+                exit "$launch_status"
+            fi
+        """
+
+        with self.assertRaises(AssertionError):
+            self.assert_failed_diagnostic_contract(invalid_launch)
 
     def test_failed_diagnostic_contract_rejects_call_after_debug_gate(self):
         invalid_launch = """
@@ -214,6 +237,18 @@ class MacOSReadinessBehaviorTests(unittest.TestCase):
             [
                 "UU Remote device readiness timed out after 2 attempts.",
                 "ATTEMPTS=2 STARTS=0 SLEEPS=1 TIMEOUTS=1000,600",
+            ],
+        )
+
+    def test_late_success_is_not_emitted_after_the_absolute_deadline(self):
+        result = self.run_scenario("late-success")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(
+            result.stderr.splitlines(),
+            [
+                "UU Remote device readiness timed out after 1 attempts.",
+                "ATTEMPTS=1 STARTS=0 SLEEPS=0 TIMEOUTS=600",
             ],
         )
 
