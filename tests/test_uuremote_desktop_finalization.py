@@ -280,6 +280,23 @@ class MacOSAssistAllowProcessTests(unittest.TestCase):
         self.assertLess(elapsed, 5)
         self.assertEqual(result.stdout, "STATUS=timeout\nPROCESS_GROUP_RELEASED=true\n")
 
+    def test_term_exiting_group_leader_does_not_leave_a_descendant(self):
+        started = time.monotonic()
+        result = self.run_harness("process", "leader-exits")
+        elapsed = time.monotonic() - started
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertLess(elapsed, 5)
+        self.assertEqual(result.stdout, "STATUS=timeout\nPROCESS_GROUP_RELEASED=true\n")
+
+    def test_gui_wrapper_builds_the_expected_console_session_command(self):
+        result = self.run_harness("process", "gui-wrapper")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            result.stdout,
+            "STATUS=completed:0\n"
+            "GUI_COMMAND=sudo|launchctl|asuser|501|sudo|-u|#501|/bin/true\n",
+        )
+
 
 @unittest.skipUnless(BASH_AVAILABLE, "requires /bin/bash")
 class MacOSReadinessBehaviorTests(unittest.TestCase):

@@ -9,6 +9,13 @@ if [ "${1:-}" = "fixture-hang" ]; then
     while :; do sleep 1; done
 fi
 
+if [ "${1:-}" = "fixture-leader-exits" ]; then
+    printf '%s\n' "$$" >"${2:?}"
+    /bin/bash -c 'trap "" TERM; printf "%s\n" "$$" >"$1"; while :; do sleep 1; done' \
+        fixture-child "${3:?}" &
+    while :; do sleep 1; done
+fi
+
 umask 077
 
 root="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -66,8 +73,64 @@ if [ "$mode" = "process" ]; then
                     exit 1
                 fi
             done
+            parent_pid="$(cat "$parent_pid_path")"
+            if kill -0 -- "-$parent_pid" 2>/dev/null; then
+                echo "Process group was not released" >&2
+                exit 1
+            fi
             printf 'STATUS=%s\n' "$(cat "$status_path")"
             printf 'PROCESS_GROUP_RELEASED=true\n'
+            exit 0
+            ;;
+        leader-exits)
+            if run_bounded_uuremote_cli_to_file_with_status \
+                "$output_path" "$status_path" 3000 /bin/bash "$0" fixture-leader-exits \
+                "$parent_pid_path" "$child_pid_path"
+            then
+                echo "Terminating leader fixture unexpectedly succeeded" >&2
+                exit 1
+            fi
+            for pid_path in "$parent_pid_path" "$child_pid_path"; do
+                pid="$(cat "$pid_path")"
+                if kill -0 "$pid" 2>/dev/null; then
+                    echo "Process group was not released" >&2
+                    exit 1
+                fi
+            done
+            parent_pid="$(cat "$parent_pid_path")"
+            if kill -0 -- "-$parent_pid" 2>/dev/null; then
+                echo "Process group was not released" >&2
+                exit 1
+            fi
+            printf 'STATUS=%s\n' "$(cat "$status_path")"
+            printf 'PROCESS_GROUP_RELEASED=true\n'
+            exit 0
+            ;;
+        gui-wrapper)
+            sudo_stub=/bin/bash
+            launchctl_stub="$temporary_directory/launchctl"
+            command_capture="$temporary_directory/gui-command"
+            printf '#!/bin/bash\nprintf "%%s\\n" "$@" >"%s"\n' "$command_capture" >"$launchctl_stub"
+            chmod 0700 "$launchctl_stub"
+            sed \
+                -e "s#/usr/bin/sudo#$sudo_stub#g" \
+                -e "s#/bin/launchctl#$launchctl_stub#g" \
+                "$subject" >"$subject.gui"
+            . "$subject.gui"
+            console_uid=501
+            run_bounded_gui_cli_to_file \
+                "$output_path" "$status_path" 3000 /bin/true
+            gui_command="sudo|launchctl|$(
+                while IFS= read -r argument; do
+                    case "$argument" in
+                        "$sudo_stub"|*/bin/bash) printf 'sudo|' ;;
+                        */bin/true) printf '/bin/true|' ;;
+                        *) printf '%s|' "$argument" ;;
+                    esac
+                done <"$command_capture"
+            )"
+            printf 'STATUS=%s\n' "$(cat "$status_path")"
+            printf 'GUI_COMMAND=%s\n' "${gui_command%|}"
             exit 0
             ;;
         *) exit 2 ;;

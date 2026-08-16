@@ -328,6 +328,7 @@ import pathlib
 import signal
 import subprocess
 import sys
+import time
 
 output_path = sys.argv[1]
 status_path = pathlib.Path(sys.argv[2])
@@ -363,6 +364,7 @@ try:
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
+        process_group_id = process.pid
 except OSError:
     write_status("unavailable")
     raise SystemExit(125)
@@ -377,8 +379,18 @@ except subprocess.TimeoutExpired:
             else:
                 process.kill()
         else:
-            os.killpg(process.pid, signal_number)
+            os.killpg(process_group_id, signal_number)
 
+    def process_group_alive():
+        if os.name == "nt":
+            return None
+        try:
+            os.killpg(process_group_id, 0)
+        except ProcessLookupError:
+            return False
+        return True
+
+    cleanup_confirmed = False
     try:
         signal_process_group(signal.SIGTERM)
     except ProcessLookupError:
@@ -386,11 +398,44 @@ except subprocess.TimeoutExpired:
     try:
         process.wait(timeout=0.5)
     except subprocess.TimeoutExpired:
+        pass
+
+    try:
+        group_remains = process_group_alive()
+    except OSError:
+        group_remains = None
+
+    if group_remains is False:
+        cleanup_confirmed = process.poll() is not None
+    else:
         try:
             signal_process_group(signal.SIGKILL)
         except ProcessLookupError:
             pass
-        process.wait()
+        cleanup_deadline = time.monotonic() + 0.5
+        try:
+            process.wait(timeout=max(0, cleanup_deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            pass
+        else:
+            if group_remains is not None:
+                while time.monotonic() < cleanup_deadline:
+                    try:
+                        if not process_group_alive():
+                            cleanup_confirmed = True
+                            break
+                    except OSError:
+                        break
+                    time.sleep(0.01)
+                else:
+                    try:
+                        cleanup_confirmed = not process_group_alive()
+                    except OSError:
+                        pass
+
+    if not cleanup_confirmed:
+        write_status("unavailable")
+        raise SystemExit(125)
     write_status("timeout")
     raise SystemExit(124)
 
