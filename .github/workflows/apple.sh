@@ -334,6 +334,12 @@ try:
         os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
         0o600,
     )
+except OSError as error:
+    if os.environ.get("UUREMOTE_DIAGNOSTIC_TEST_CLI"):
+        print(f"BOUNDED_CLI_RESULT=output-open-error:{error.errno}", file=sys.stderr)
+    raise SystemExit(125)
+
+try:
     with os.fdopen(output_descriptor, "wb") as output:
         process = subprocess.Popen(
             command,
@@ -344,7 +350,7 @@ try:
         )
 except OSError as error:
     if os.environ.get("UUREMOTE_DIAGNOSTIC_TEST_CLI"):
-        print(f"BOUNDED_CLI_RESULT=launch-error:{error.errno}", file=sys.stderr)
+        print(f"BOUNDED_CLI_RESULT=process-launch-error:{error.errno}", file=sys.stderr)
     raise SystemExit(125)
 
 try:
