@@ -25,7 +25,7 @@
 - 不修改 Windows runtime，不削弱 TCC 或其他 operating-system control，不猜测其他 vendor command，也不降级为较弱的 readiness check。
 - 原始 response file 和 status file 保持 mode `0600`；分类后清空 response，并通过有界 fail-closed 清理策略尝试删除私有临时文件。
 - helper 使用有界 fail-closed 清理策略：`TERM`→`KILL`→回收/PGID 探测，`TERM` grace 最多 500 milliseconds，`KILL`/回收/PGID-probe grace 最多 500 milliseconds。清理最多只能在一次 CLI attempt 之外增加已记录的固定清理宽限；绝不无限等待。
-- 确认清理后才发布现有安全 status。未确认清理或异常不发布最终 status，并以 `125` 退出；controller 只输出现有通用失败，workflow/job 不继续。OS-level 残留可能仍无法确认；不得声称绝对清理。
+- 确认清理后才发布现有安全 status。未确认清理或异常不发布最终 status，并以 `125` 退出；controller 只输出现有通用失败，后续 normal 或 provisioning operation 不继续。只有现有 `always()` finalization/artifact-upload step 和 hosted-runner teardown 可以执行。原始 assist payload、secrets、device connection data 和新的 `ASSIST_DIAGNOSTIC_*` fields 绝不进入 artifact；这些 fields 只保留在当前 step 日志。现有 sanitized CLI diagnostics 可以由 `always()` artifact step 上传。OS-level 残留可能仍无法确认；不得声称绝对清理。
 - 当前 GitHub-hosted macOS runner 在 job 失败后的 teardown 属于外部遏制。如果将来采用 reused/self-hosted 执行，该 runner 必须被隔离，且在 operator 确认无残留前不得复用。
 - 诊断性 live run 后停止。证据未经 review，且必要时未修订设计前，不实施 root-cause fix。
 - 每个 implementation task 结束时进行独立 code-review gate。进入下一 task 前解决全部 Critical 和 Important findings。
@@ -326,28 +326,27 @@ python -m unittest tests.test_uuremote_desktop_finalization.MacOSAssistAllowProc
 
 - [ ] **Step 3：把现有 runner refactor 为 status-aware core 和 GUI wrapper**
 
-保留现有 Python subprocess implementation，但增加 safe status-path argument。每次 Python exit 前，用下列值之一 atomically replace status file：
+保留现有 Python subprocess implementation，但增加 safe status-path argument。safe-status publisher 无法发布时返回 `False`。launch 或其他无 owned process 的 failure 可以发布 `unavailable`；一旦需要 owned cleanup，只有确认清理的 branch 可以发布 `timeout` 或 `unavailable`，未确认 cleanup 或 cleanup exception 不发布最终 status，并以 `125` 退出。
 
 ```python
 def write_status(value):
-    temporary_status_path = status_path.with_name(status_path.name + ".tmp")
-    descriptor = os.open(
-        temporary_status_path,
-        os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
-        0o600,
-    )
-    with os.fdopen(descriptor, "w", encoding="ascii", newline="\n") as status:
-        status.write(value + "\n")
-    os.replace(temporary_status_path, status_path)
-
-# Launch OSError:
-write_status("unavailable")
-
-# Timeout after TERM/KILL and wait/reap:
-write_status("timeout")
-
-# Normal completion:
-write_status(f"completed:{return_code}")
+    try:
+        if str(status_path) == os.devnull:
+            with open(os.devnull, "w", encoding="ascii") as status:
+                status.write(value + "\n")
+            return True
+        temporary_status_path = status_path.with_name(status_path.name + ".tmp")
+        descriptor = os.open(
+            temporary_status_path,
+            os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+            0o600,
+        )
+        with os.fdopen(descriptor, "w", encoding="ascii", newline="\n") as status:
+            status.write(value + "\n")
+        os.replace(temporary_status_path, status_path)
+    except OSError:
+        return False
+    return True
 ```
 
 公开以下 Bash wrappers：
@@ -371,6 +370,7 @@ import pathlib
 import signal
 import subprocess
 import sys
+import time
 
 output_path = sys.argv[1]
 status_path = pathlib.Path(sys.argv[2])
@@ -378,50 +378,57 @@ timeout_seconds = int(sys.argv[3]) / 1000
 command = sys.argv[4:]
 
 def write_status(value):
-    if str(status_path) == os.devnull:
-        with open(os.devnull, "w", encoding="ascii") as status:
-            status.write(value + "\n")
-        return
-    temporary_status_path = status_path.with_name(status_path.name + ".tmp")
-    descriptor = os.open(
-        temporary_status_path,
-        os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
-        0o600,
-    )
-    with os.fdopen(descriptor, "w", encoding="ascii", newline="\n") as status:
-        status.write(value + "\n")
-    os.replace(temporary_status_path, status_path)
-
-try:
-    output_descriptor = os.open(
-        output_path,
-        os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
-        0o600,
-    )
-    with os.fdopen(output_descriptor, "wb") as output:
-        process = subprocess.Popen(
-            command,
-            stdin=subprocess.DEVNULL,
-            stdout=output,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
+    try:
+        if str(status_path) == os.devnull:
+            with open(os.devnull, "w", encoding="ascii") as status:
+                status.write(value + "\n")
+            return True
+        temporary_status_path = status_path.with_name(status_path.name + ".tmp")
+        descriptor = os.open(
+            temporary_status_path,
+            os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+            0o600,
         )
-except OSError:
-    write_status("unavailable")
-    raise SystemExit(125)
+        with os.fdopen(descriptor, "w", encoding="ascii", newline="\n") as status:
+            status.write(value + "\n")
+        os.replace(temporary_status_path, status_path)
+    except OSError:
+        return False
+    return True
 
-try:
-    return_code = process.wait(timeout=timeout_seconds)
-except subprocess.TimeoutExpired:
-    def signal_process_group(signal_number):
-        if os.name == "nt":
-            if signal_number == signal.SIGTERM:
-                process.terminate()
-            else:
-                process.kill()
+class HandledSignal(Exception):
+    pass
+
+process = None
+process_group_id = None
+previous_handlers = {}
+previous_signal_mask = None
+handled_signals = tuple(
+    getattr(signal, name)
+    for name in ("SIGINT", "SIGTERM", "SIGHUP")
+    if hasattr(signal, name)
+)
+
+def signal_process_group(signal_number):
+    if os.name == "nt":
+        if signal_number == signal.SIGTERM:
+            process.terminate()
         else:
-            os.killpg(process.pid, signal_number)
+            process.kill()
+    else:
+        os.killpg(process_group_id, signal_number)
 
+def process_group_alive():
+    if os.name == "nt":
+        return None
+    try:
+        os.killpg(process_group_id, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+def cleanup_owned_process():
+    cleanup_confirmed = False
     try:
         signal_process_group(signal.SIGTERM)
     except ProcessLookupError:
@@ -429,21 +436,149 @@ except subprocess.TimeoutExpired:
     try:
         process.wait(timeout=0.5)
     except subprocess.TimeoutExpired:
-        try:
-            signal_process_group(signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        cleanup_deadline = time.monotonic() + 0.5
-        try:
-            process.wait(timeout=max(0, cleanup_deadline - time.monotonic()))
-        except subprocess.TimeoutExpired:
-            raise SystemExit(125)
-    write_status("timeout")
-    raise SystemExit(124)
+        pass
 
-safe_return_code = return_code if 0 <= return_code <= 255 else 1
-write_status(f"completed:{safe_return_code}")
-raise SystemExit(safe_return_code)
+    try:
+        group_remains = process_group_alive()
+    except OSError:
+        group_remains = None
+
+    if group_remains is False:
+        return process.poll() is not None
+
+    try:
+        signal_process_group(signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    cleanup_deadline = time.monotonic() + 0.5
+    try:
+        process.wait(timeout=max(0, cleanup_deadline - time.monotonic()))
+    except subprocess.TimeoutExpired:
+        return False
+
+    if group_remains is None:
+        return False
+    while time.monotonic() < cleanup_deadline:
+        try:
+            if not process_group_alive():
+                cleanup_confirmed = True
+                break
+        except OSError:
+            break
+        time.sleep(0.01)
+    else:
+        try:
+            cleanup_confirmed = not process_group_alive()
+        except OSError:
+            pass
+    return cleanup_confirmed
+
+cleanup_in_progress = False
+cleanup_signal_mask = None
+owned_cleanup_required = False
+
+def interrupt_handler(_signum, _frame):
+    if cleanup_in_progress:
+        return
+    raise HandledSignal
+
+def block_handled_signals_for_cleanup():
+    global cleanup_signal_mask
+    if os.name != "nt" and hasattr(signal, "pthread_sigmask"):
+        cleanup_signal_mask = signal.pthread_sigmask(
+            signal.SIG_BLOCK,
+            handled_signals,
+        )
+
+exit_code = 125
+
+try:
+    if os.name != "nt" and hasattr(signal, "pthread_sigmask"):
+        previous_signal_mask = signal.pthread_sigmask(
+            signal.SIG_BLOCK,
+            handled_signals,
+        )
+    for handled_signal in handled_signals:
+        try:
+            previous_handlers[handled_signal] = signal.signal(
+                handled_signal,
+                interrupt_handler,
+            )
+        except ValueError:
+            pass
+    output_descriptor = os.open(
+        output_path,
+        os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+        0o600,
+    )
+    popen_options = {}
+    if previous_signal_mask is not None:
+        def restore_child_signal_mask():
+            signal.pthread_sigmask(signal.SIG_SETMASK, previous_signal_mask)
+        popen_options["preexec_fn"] = restore_child_signal_mask
+    with os.fdopen(output_descriptor, "wb") as output:
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=output,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            **popen_options,
+        )
+        process_group_id = process.pid
+    if previous_signal_mask is not None:
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous_signal_mask)
+        previous_signal_mask = None
+    try:
+        return_code = process.wait(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired:
+        owned_cleanup_required = True
+        cleanup_in_progress = True
+        block_handled_signals_for_cleanup()
+        if not cleanup_owned_process():
+            exit_code = 125
+        else:
+            write_status("timeout")
+            exit_code = 124
+    else:
+        try:
+            group_remains = process_group_alive()
+        except OSError:
+            group_remains = True
+        if group_remains is True:
+            owned_cleanup_required = True
+            cleanup_in_progress = True
+            block_handled_signals_for_cleanup()
+            if cleanup_owned_process():
+                write_status("unavailable")
+            exit_code = 125
+        else:
+            safe_return_code = return_code if 0 <= return_code <= 255 else 1
+            write_status(f"completed:{safe_return_code}")
+            exit_code = safe_return_code
+except HandledSignal:
+    owned_cleanup_required = process is not None
+    cleanup_in_progress = True
+    block_handled_signals_for_cleanup()
+    if process is not None:
+        if cleanup_owned_process():
+            write_status("unavailable")
+    else:
+        write_status("unavailable")
+    exit_code = 125
+except Exception:
+    if not (owned_cleanup_required and process is not None):
+        write_status("unavailable")
+    exit_code = 125
+finally:
+    for handled_signal, previous_handler in previous_handlers.items():
+        signal.signal(handled_signal, previous_handler)
+    if cleanup_signal_mask is not None:
+        signal.pthread_sigmask(signal.SIG_SETMASK, cleanup_signal_mask)
+    elif previous_signal_mask is not None:
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous_signal_mask)
+
+raise SystemExit(exit_code)
 PYTHON
 }
 
@@ -907,7 +1042,7 @@ git diff --check e30a65b..HEAD
 
 预期：当前可运行 tests PASS，只有明确的 platform skips；shell 与 JSON parsing 成功；diff check 无输出。
 
-单独运行 native macOS cleanup matrix。对于已确认的 timeout cleanup、leader 已完成但 descendant 仍存活，以及已处理 signal cleanup，要求仅在有界 `TERM`→`KILL`→回收/PGID 探测确认清理后发布现有安全 status。对于相应的 cleanup-injection false/raises case，要求 exit `125`、无最终 status、outer caller 只输出其现有通用错误，且 workflow/job 不继续。记录这证明的是有界 helper behavior，而不是 OS-level 残留绝对不存在。
+单独运行 native macOS cleanup matrix。对于已确认的 timeout cleanup、leader 已完成但 descendant 仍存活，以及已处理 signal cleanup，要求仅在有界 `TERM`→`KILL`→回收/PGID 探测确认清理后发布现有安全 status。对于相应的 cleanup-injection false/raises case，要求 exit `125`、无最终 status 和 outer caller 只输出其现有通用错误；后续 normal 或 provisioning operation 不继续，只有现有 `always()` finalization/artifact-upload step 和 hosted-runner teardown 可以执行。记录这证明的是有界 helper behavior，而不是 OS-level 残留绝对不存在。
 
 - [ ] **Step 2：运行 security、output 和 scope scans**
 

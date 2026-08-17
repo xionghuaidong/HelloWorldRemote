@@ -54,7 +54,7 @@ The fix gate requires the feature workflow to pass the permission step and all l
 
 This is the bounded fail-closed cleanup policy (Option 2). The helper performs `TERM`→`KILL`→reap/PGID probe. The documented cleanup grace is at most 500 milliseconds for `TERM`, followed by at most 500 milliseconds for `KILL`, reaping, and the PGID probe. Cleanup may add only the documented fixed cleanup grace beyond a CLI attempt; it never waits indefinitely.
 
-Only confirmed cleanup publishes the existing safe status. Unconfirmed cleanup or an exception publishes no final status and exits `125`. The controller emits only the existing generic failure, and the workflow/job does not continue. OS-level residue may remain unconfirmed; no absolute cleanup claim is made.
+Only confirmed cleanup publishes the existing safe status. Unconfirmed cleanup or an exception publishes no final status and exits `125`. The controller emits only the existing generic failure; no subsequent normal or provisioning operation continues. Only the existing `always()` finalization/artifact-upload steps and hosted-runner teardown may execute. Raw assist payload, secrets, device connection data, and the new `ASSIST_DIAGNOSTIC_*` fields never enter artifacts; those fields remain in the current-step log only. The existing sanitized CLI diagnostics may be uploaded by the `always()` artifact step. OS-level residue may remain unconfirmed; no absolute cleanup claim is made.
 
 ### 5.2 Strict response classifier
 
@@ -136,7 +136,7 @@ The implementation must add executable tests for:
 - debug `0` generic-only failure;
 - debug `1`, `2`, and `3` complete fixed summaries;
 - a real controlled hanging child, per-call timeout, total deadline, the bounded `TERM`→`KILL`→reap/PGID probe, and confirmed cleanup;
-- native-macOS matrix cases where cleanup is false or raises for timeout, a completed leader with a live descendant, and handled signals; each must produce exit `125`, no final status, the outer generic failure only, and no workflow continuation;
+- native-macOS matrix cases where cleanup is false or raises for timeout, a completed leader with a live descendant, and handled signals; each must produce exit `125`, no final status, and the outer generic failure only; no subsequent normal or provisioning operation may continue, while only the existing `always()` finalization/artifact-upload steps and hosted-runner teardown may execute;
 - late-success rejection;
 - response-file and temporary-directory cleanup;
 - hostile fixture markers and log-injection attempts producing no leakage;

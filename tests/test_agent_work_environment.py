@@ -1,3 +1,4 @@
+import ast
 from pathlib import Path
 import json
 import unittest
@@ -363,7 +364,9 @@ class AgentInstructionContractTests(unittest.TestCase):
             "`TERM`→`KILL`→reap/PGID probe",
             "confirmed cleanup publishes the existing safe status",
             "Unconfirmed cleanup or an exception publishes no final status and exits `125`",
-            "controller emits only the existing generic failure, and the workflow/job does not continue",
+            "no subsequent normal or provisioning operation continues",
+            "Only the existing `always()` finalization/artifact-upload steps and hosted-runner teardown may execute.",
+            "Raw assist payload, secrets, device connection data, and the new `ASSIST_DIAGNOSTIC_*` fields never enter artifacts; those fields remain in the current-step log only. The existing sanitized CLI diagnostics may be uploaded by the `always()` artifact step.",
             "Cleanup may add only the documented fixed cleanup grace beyond a CLI attempt; it never waits indefinitely.",
             "Current GitHub-hosted macOS runner teardown is external containment after job failure.",
             "the runner must be quarantined and not reused until an operator confirms no residue",
@@ -374,7 +377,9 @@ class AgentInstructionContractTests(unittest.TestCase):
             "`TERM`→`KILL`→回收/PGID 探测",
             "确认清理后才发布现有安全 status",
             "未确认清理或异常不发布最终 status，并以 `125` 退出",
-            "controller 只输出现有通用失败，workflow/job 不继续",
+            "后续 normal 或 provisioning operation 不继续",
+            "只有现有 `always()` finalization/artifact-upload step 和 hosted-runner teardown 可以执行。",
+            "原始 assist payload、secrets、device connection data 和新的 `ASSIST_DIAGNOSTIC_*` fields 绝不进入 artifact；这些 fields 只保留在当前 step 日志。现有 sanitized CLI diagnostics 可以由 `always()` artifact step 上传。",
             "清理最多只能在一次 CLI attempt 之外增加已记录的固定清理宽限；绝不无限等待。",
             "当前 GitHub-hosted macOS runner 在 job 失败后的 teardown 属于外部遏制。",
             "该 runner 必须被隔离，且在 operator 确认无残留前不得复用",
@@ -383,6 +388,8 @@ class AgentInstructionContractTests(unittest.TestCase):
         obsolete_requirements = (
             "It must not return while an owned child or descendant remains.",
             "owned child 或 descendant 仍存在时不得返回。",
+            "workflow/job does not continue",
+            "workflow/job 不继续",
         )
 
         for name in english_documents:
@@ -435,6 +442,107 @@ class AgentInstructionContractTests(unittest.TestCase):
         )
         with self.assertRaises(AssertionError):
             assert_continuation_guard(mutated_script)
+
+    def test_unattended_plan_runner_matches_the_bounded_fail_closed_source(self):
+        def extract_runner(source: str) -> str:
+            wrapper_start = source.index("run_bounded_uuremote_cli_to_file_with_status() {")
+            heredoc_start = source.index("<<'PYTHON'\n", wrapper_start)
+            python_start = heredoc_start + len("<<'PYTHON'\n")
+            python_end = source.index("\nPYTHON\n}", python_start)
+            return source[python_start:python_end]
+
+        def assert_runner_contract(plan_runner: str, production_runner: str) -> None:
+            plan_tree = ast.parse(plan_runner)
+            production_tree = ast.parse(production_runner)
+            self.assertEqual(
+                ast.dump(plan_tree, include_attributes=False),
+                ast.dump(production_tree, include_attributes=False),
+            )
+
+            imports = {
+                alias.name
+                for node in plan_tree.body
+                if isinstance(node, ast.Import)
+                for alias in node.names
+            }
+            self.assertIn("time", imports)
+
+            functions = {
+                node.name: node
+                for node in plan_tree.body
+                if isinstance(node, ast.FunctionDef)
+            }
+            self.assertIn("process_group_alive", functions)
+            self.assertIn("cleanup_owned_process", functions)
+            self.assertIn("restore_child_signal_mask", ast.dump(plan_tree))
+
+            half_second_constants = [
+                node.value
+                for node in ast.walk(plan_tree)
+                if isinstance(node, ast.Constant) and node.value == 0.5
+            ]
+            self.assertEqual(half_second_constants, [0.5, 0.5])
+
+            probe_dump = ast.dump(functions["process_group_alive"], include_attributes=False)
+            self.assertIn("Call(func=Attribute(value=Name(id='os'", probe_dump)
+            self.assertIn("attr='killpg'", probe_dump)
+            self.assertIn("Name(id='process_group_id'", probe_dump)
+            self.assertIn("Constant(value=0)", probe_dump)
+
+            cleanup_dump = ast.dump(functions["cleanup_owned_process"], include_attributes=False)
+            self.assertIn("attr='SIGTERM'", cleanup_dump)
+            self.assertIn("attr='SIGKILL'", cleanup_dump)
+            self.assertIn("Name(id='cleanup_deadline'", cleanup_dump)
+
+            generic_handler = next(
+                handler
+                for node in ast.walk(plan_tree)
+                if isinstance(node, ast.Try)
+                for handler in node.handlers
+                if isinstance(handler.type, ast.Name) and handler.type.id == "Exception"
+            )
+            self.assertIsInstance(generic_handler.body[0], ast.If)
+            guarded_publish = generic_handler.body[0]
+            self.assertIsInstance(guarded_publish.test, ast.UnaryOp)
+            self.assertIsInstance(guarded_publish.test.op, ast.Not)
+            self.assertEqual(
+                ast.dump(guarded_publish.test.operand, include_attributes=False),
+                "BoolOp(op=And(), values=[Name(id='owned_cleanup_required', ctx=Load()), Compare(left=Name(id='process', ctx=Load()), ops=[IsNot()], comparators=[Constant(value=None)])])",
+            )
+
+        production_runner = extract_runner(
+            text(ROOT / ".github/workflows/apple.sh")
+        )
+        for name in (
+            "docs/superpowers/plans/2026-08-16-macos-unattended-permission-diagnostics.md",
+            "docs/superpowers/plans/2026-08-16-macos-unattended-permission-diagnostics-zh_CN.md",
+        ):
+            plan_runner = extract_runner(text(ROOT / name))
+            with self.subTest(name=name):
+                assert_runner_contract(plan_runner, production_runner)
+                with self.assertRaises(AssertionError):
+                    assert_runner_contract(
+                        plan_runner.replace("timeout=0.5", "timeout=0.75", 1),
+                        production_runner,
+                    )
+                with self.assertRaises(AssertionError):
+                    assert_runner_contract(
+                        plan_runner.replace(
+                            "os.killpg(process_group_id, 0)",
+                            "return None",
+                            1,
+                        ),
+                        production_runner,
+                    )
+                with self.assertRaises(AssertionError):
+                    assert_runner_contract(
+                        plan_runner.replace(
+                            "except Exception:\n    if not (owned_cleanup_required and process is not None):",
+                            "except Exception:\n    write_status(\"unavailable\")\n    if not (owned_cleanup_required and process is not None):",
+                            1,
+                        ),
+                        production_runner,
+                    )
 
 
 class EntryPointContractTests(unittest.TestCase):

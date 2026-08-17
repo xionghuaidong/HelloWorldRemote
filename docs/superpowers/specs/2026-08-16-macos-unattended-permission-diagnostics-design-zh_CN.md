@@ -54,7 +54,7 @@ macOS feature workflow 现在可以通过原生 device-ID 测试和 GameViewer �
 
 这是有界 fail-closed 清理策略（Option 2）。helper 执行 `TERM`→`KILL`→回收/PGID 探测。已记录的 cleanup grace 最多为 `TERM` 后 500 milliseconds，随后最多为 `KILL`、回收和 PGID 探测的 500 milliseconds。清理最多只能在一次 CLI attempt 之外增加已记录的固定清理宽限；绝不无限等待。
 
-确认清理后才发布现有安全 status。未确认清理或异常不发布最终 status，并以 `125` 退出；controller 只输出现有通用失败，workflow/job 不继续。OS-level 残留可能仍无法确认；不得声称绝对清理。
+确认清理后才发布现有安全 status。未确认清理或异常不发布最终 status，并以 `125` 退出；controller 只输出现有通用失败，后续 normal 或 provisioning operation 不继续。只有现有 `always()` finalization/artifact-upload step 和 hosted-runner teardown 可以执行。原始 assist payload、secrets、device connection data 和新的 `ASSIST_DIAGNOSTIC_*` fields 绝不进入 artifact；这些 fields 只保留在当前 step 日志。现有 sanitized CLI diagnostics 可以由 `always()` artifact step 上传。OS-level 残留可能仍无法确认；不得声称绝对清理。
 
 ### 5.2 严格 response classifier
 
@@ -136,7 +136,7 @@ custom-code secret 仍保持 step-scoped，仅在之前的 custom-code step 中�
 - debug `0` 只产生通用失败；
 - debug `1`、`2`、`3` 产生完整固定汇总；
 - 真实受控 hanging child、单次 timeout、总 deadline、有界 `TERM`→`KILL`→回收/PGID 探测以及已确认清理；
-- 针对 timeout、leader 已完成但 descendant 仍存活及已处理 signal 的 cleanup 为 false 或 raises 的 native-macOS matrix case；每个 case 必须产生 exit `125`、无最终 status、仅 outer generic failure，且 workflow/job 不继续；
+- 针对 timeout、leader 已完成但 descendant 仍存活及已处理 signal 的 cleanup 为 false 或 raises 的 native-macOS matrix case；每个 case 必须产生 exit `125`、无最终 status 和仅 outer generic failure；后续 normal 或 provisioning operation 不得继续，只有现有 `always()` finalization/artifact-upload step 和 hosted-runner teardown 可以执行；
 - late-success rejection；
 - response file 和 temporary directory cleanup；
 - hostile fixture marker 和 log-injection attempt 不产生泄漏；
