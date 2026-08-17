@@ -552,13 +552,25 @@ class AgentInstructionContractTests(unittest.TestCase):
         def assert_assist_deadline_contract(helper: str) -> None:
             status_read = 'status_record="$(/bin/cat "$status_path" 2>/dev/null)" || return 1'
             child_clock = helper.index("read_assist_now || return 1", helper.index(status_read))
+            classification = helper.index("classify_assist_allow_response")
+            record_validation = helper.index(
+                '*) [ "$safe_exit" -le 255 ] || return 1 ;;',
+                classification,
+            )
+            after_record_clock = helper.index(
+                "read_assist_now || return 1", record_validation
+            )
             self.assertLess(helper.index(status_read), child_clock)
+            self.assertLess(child_clock, classification)
+            self.assertLess(classification, record_validation)
             self.assertIn('wait_uuremote_poll "$sleep_timeout" 2>/dev/null || return 1', helper)
 
             accounting = helper.index('final_cli_exit="$safe_exit"')
             cleanup = helper.index("cleanup_assist_attempt || return 1", accounting)
             acceptance_clock = helper.index("read_assist_now || return 1", cleanup)
             success_output = helper.index("printf 'ASSIST_STATE=enabled\\n'", acceptance_clock)
+            self.assertLess(record_validation, after_record_clock)
+            self.assertLess(after_record_clock, accounting)
             self.assertLess(accounting, cleanup)
             self.assertLess(cleanup, acceptance_clock)
             self.assertLess(acceptance_clock, success_output)
@@ -578,6 +590,19 @@ class AgentInstructionContractTests(unittest.TestCase):
                 assert_runner_ast_parity(plan_runner, production_runner)
                 assert_runner_semantic_contract(plan_runner)
                 assert_assist_deadline_contract(plan_helper)
+                with self.assertRaises(AssertionError):
+                    assert_assist_deadline_contract(
+                        plan_helper.replace(
+                            "read_assist_now || return 1\n"
+                            '        remaining=\"$((deadline - now))\"\n'
+                            '        if [ \"$remaining\" -le 0 ]; then\n'
+                            "            category=timeout\n"
+                            "            safe_exit=timeout\n"
+                            "        fi\n\n",
+                            "",
+                            1,
+                        )
+                    )
                 with self.assertRaises(AssertionError):
                     assert_runner_semantic_contract(
                         plan_runner.replace("timeout=0.5", "timeout=0.75", 1),

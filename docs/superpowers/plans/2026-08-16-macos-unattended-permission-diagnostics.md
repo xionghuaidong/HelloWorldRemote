@@ -974,6 +974,13 @@ ensure_assist_allowed() (
             *) [ "$safe_exit" -le 255 ] || return 1 ;;
         esac
 
+        read_assist_now || return 1
+        remaining="$((deadline - now))"
+        if [ "$remaining" -le 0 ]; then
+            category=timeout
+            safe_exit=timeout
+        fi
+
         case "$category" in
             timeout) timeout_count="$((timeout_count + 1))" ;;
             cli-nonzero) cli_nonzero_count="$((cli_nonzero_count + 1))" ;;
