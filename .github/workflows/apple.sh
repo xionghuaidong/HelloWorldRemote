@@ -439,11 +439,6 @@ def cleanup_owned_process():
         if remaining <= 0:
             break
         time.sleep(min(0.01, remaining))
-    else:
-        try:
-            cleanup_confirmed = not process_group_alive()
-        except OSError:
-            pass
     return cleanup_confirmed
 
 cleanup_in_progress = False

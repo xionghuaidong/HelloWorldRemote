@@ -345,6 +345,19 @@ class MacOSAssistAllowProcessTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, "STATUS=timeout\n")
 
+    def test_persistent_process_group_probe_error_stops_at_cleanup_deadline(self):
+        started = time.monotonic()
+        result = self.run_harness(
+            "probe-persistent-error", "persistent-probe-error"
+        )
+        elapsed = time.monotonic() - started
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertLess(elapsed, 2)
+        self.assertEqual(
+            result.stdout,
+            "EXIT=125\nSTATUS=absent\nPROBES=1\nLATE_PROBE=false\n",
+        )
+
     def test_term_exiting_group_leader_does_not_leave_a_descendant(self):
         started = time.monotonic()
         result = self.run_harness("process", "leader-exits")

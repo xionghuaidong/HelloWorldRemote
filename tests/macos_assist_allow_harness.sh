@@ -263,6 +263,43 @@ case "$mode" in
         ' "$subject" >"$subject.probe"
         mv "$subject.probe" "$subject"
         ;;
+    probe-persistent-error)
+        awk '
+            /^def process_group_alive\(\):$/ {
+                print "def process_group_alive_real():"
+                next
+            }
+            /^    cleanup_deadline = time\.monotonic\(\) \+ 0\.5$/ {
+                print "    cleanup_monotonic_values = iter((0.0, 0.5))"
+                print "    cleanup_real_monotonic = time.monotonic"
+                print "    def cleanup_monotonic():"
+                print "        value = next(cleanup_monotonic_values, 0.5)"
+                print "        if value == 0.5:"
+                print "            time.monotonic = cleanup_real_monotonic"
+                print "        return value"
+                print "    time.monotonic = cleanup_monotonic"
+                print
+            }
+            /^def cleanup_owned_process\(\):$/ {
+                print "process_group_probe_calls = 0"
+                print "if not hasattr(signal, \"SIGKILL\"):"
+                print "    signal.SIGKILL = signal.SIGTERM"
+                print ""
+                print "def process_group_alive():"
+                print "    global process_group_probe_calls"
+                print "    process_group_probe_calls += 1"
+                print "    pathlib.Path(os.environ[\"UUREMOTE_TEST_PROBE_COUNT_PATH\"]).write_text(str(process_group_probe_calls))"
+                print "    if process_group_probe_calls > 1:"
+                print "        pathlib.Path(os.environ[\"UUREMOTE_TEST_LATE_PROBE_MARKER\"]).touch()"
+                print "    raise OSError"
+                print ""
+                print
+                next
+            }
+            { print }
+        ' "$subject" >"$subject.probe"
+        mv "$subject.probe" "$subject"
+        ;;
 esac
 case "$mode" in
     fault-post-unmask|outer-post-unmask)
@@ -333,7 +370,7 @@ fi
 scenario="${2:?}"
 
 case "$mode" in
-    process|fault-*|block-*|probe-transient-error|pending-finalization-swapped) ;;
+    process|fault-*|block-*|probe-transient-error|probe-persistent-error|pending-finalization-swapped) ;;
     *) false ;;
 esac && {
     status_path="$temporary_directory/status"
@@ -341,6 +378,10 @@ esac && {
     parent_pid_path="$temporary_directory/parent.pid"
     child_pid_path="$temporary_directory/child.pid"
     fixture_pid_paths="$parent_pid_path $child_pid_path"
+    late_probe_marker="$temporary_directory/late-probe"
+    probe_count_path="$temporary_directory/probe-count"
+    export UUREMOTE_TEST_LATE_PROBE_MARKER="$late_probe_marker"
+    export UUREMOTE_TEST_PROBE_COUNT_PATH="$probe_count_path"
 
     . "$subject"
     case "$scenario" in
@@ -352,6 +393,30 @@ esac && {
                 exit 1
             fi
             printf 'STATUS=%s\n' "$(cat "$status_path")"
+            exit 0
+            ;;
+        persistent-probe-error)
+            if run_bounded_uuremote_cli_to_file_with_status \
+                "$output_path" "$status_path" 100 /bin/sleep 30
+            then
+                echo "Persistent probe fixture unexpectedly succeeded" >&2
+                exit 1
+            else
+                bounded_exit="$?"
+            fi
+            if [ "$bounded_exit" -ne 125 ] || [ -s "$status_path" ]; then
+                echo "Persistent probe error did not fail closed" >&2
+                exit 1
+            fi
+            if [ -e "$late_probe_marker" ]; then
+                echo "Process group was probed after the cleanup deadline" >&2
+                exit 1
+            fi
+            if [ "$(cat "$probe_count_path")" -ne 1 ]; then
+                echo "Unexpected process-group probe count" >&2
+                exit 1
+            fi
+            printf 'EXIT=125\nSTATUS=absent\nPROBES=1\nLATE_PROBE=false\n'
             exit 0
             ;;
         completed)
