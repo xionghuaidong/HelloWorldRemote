@@ -548,12 +548,22 @@ except Exception:
         write_status("unavailable")
     exit_code = 125
 finally:
-    for handled_signal, previous_handler in previous_handlers.items():
-        signal.signal(handled_signal, previous_handler)
+    cleanup_in_progress = True
     if cleanup_signal_mask is not None:
-        signal.pthread_sigmask(signal.SIG_SETMASK, cleanup_signal_mask)
+        try:
+            signal.pthread_sigmask(signal.SIG_SETMASK, cleanup_signal_mask)
+        except Exception:
+            pass
     elif previous_signal_mask is not None:
-        signal.pthread_sigmask(signal.SIG_SETMASK, previous_signal_mask)
+        try:
+            signal.pthread_sigmask(signal.SIG_SETMASK, previous_signal_mask)
+        except Exception:
+            pass
+    for handled_signal, previous_handler in previous_handlers.items():
+        try:
+            signal.signal(handled_signal, previous_handler)
+        except Exception:
+            pass
 
 raise SystemExit(exit_code)
 PYTHON

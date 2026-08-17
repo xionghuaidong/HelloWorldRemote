@@ -417,9 +417,10 @@ class AgentInstructionContractTests(unittest.TestCase):
         outer_end = script.index("self_test_cli_output_redaction()", outer_start)
         outer = script[outer_start:outer_end]
 
-        self.assertIn("if not cleanup_owned_process():\n            exit_code = 125", runner)
-        self.assertIn("if cleanup_owned_process():\n                write_status(\"unavailable\")", runner)
-        self.assertIn("if cleanup_owned_process():\n            write_status(\"unavailable\")", runner)
+        self.assertIn("process_group_id = process.pid\n        owned_cleanup_required = True", runner)
+        self.assertIn("cleanup_owned_process_no_throw", runner)
+        self.assertIn("release_owned_process_if_confirmed", runner)
+        self.assertIn("release_owned_process_if_confirmed(cleanup_owned_process_no_throw())", runner)
         self.assertIn("except Exception:", runner)
         self.assertIn("exit_code = 125", runner)
         self.assertIn("Could not enable unattended control within 60 seconds", outer)
@@ -503,12 +504,15 @@ class AgentInstructionContractTests(unittest.TestCase):
             )
             self.assertIsInstance(generic_handler.body[0], ast.If)
             guarded_publish = generic_handler.body[0]
-            self.assertIsInstance(guarded_publish.test, ast.UnaryOp)
-            self.assertIsInstance(guarded_publish.test.op, ast.Not)
+            self.assertIsInstance(guarded_publish.test, ast.BoolOp)
+            self.assertIsInstance(guarded_publish.test.op, ast.And)
             self.assertEqual(
-                ast.dump(guarded_publish.test.operand, include_attributes=False),
+                ast.dump(guarded_publish.test, include_attributes=False),
                 "BoolOp(op=And(), values=[Name(id='owned_cleanup_required', ctx=Load()), Compare(left=Name(id='process', ctx=Load()), ops=[IsNot()], comparators=[Constant(value=None)])])",
             )
+            owned_body = ast.dump(ast.Module(body=guarded_publish.body, type_ignores=[]), include_attributes=False)
+            self.assertIn("cleanup_owned_process_no_throw", owned_body)
+            self.assertNotIn("write_status", owned_body)
 
         production_runner = extract_runner(
             text(ROOT / ".github/workflows/apple.sh")
@@ -537,8 +541,26 @@ class AgentInstructionContractTests(unittest.TestCase):
                 with self.assertRaises(AssertionError):
                     assert_runner_contract(
                         plan_runner.replace(
-                            "except Exception:\n    if not (owned_cleanup_required and process is not None):",
-                            "except Exception:\n    write_status(\"unavailable\")\n    if not (owned_cleanup_required and process is not None):",
+                            "release_owned_process_if_confirmed(cleanup_owned_process_no_throw())",
+                            "write_status(\"unavailable\")",
+                            1,
+                        ),
+                        production_runner,
+                    )
+                with self.assertRaises(AssertionError):
+                    assert_runner_contract(
+                        plan_runner.replace(
+                            "process_group_id = process.pid\n        owned_cleanup_required = True",
+                            "process_group_id = process.pid",
+                            1,
+                        ),
+                        production_runner,
+                    )
+                with self.assertRaises(AssertionError):
+                    assert_runner_contract(
+                        plan_runner.replace(
+                            "release_owned_process_if_confirmed(cleanup_owned_process_no_throw())",
+                            "cleanup_owned_process_no_throw()",
                             1,
                         ),
                         production_runner,

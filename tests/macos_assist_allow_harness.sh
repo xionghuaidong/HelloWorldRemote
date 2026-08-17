@@ -196,11 +196,10 @@ esac
 case "$mode" in
     fault-post-unmask|outer-post-unmask)
         awk '
-            /^    if previous_signal_mask is not None:$/ {
-                restore_count++
-                if (restore_count == 2) {
-                    print "    raise RuntimeError"
-                }
+            /^        previous_signal_mask = None$/ {
+                print
+                print "    raise RuntimeError"
+                next
             }
             { print }
         ' "$subject" >"$subject.injected"
