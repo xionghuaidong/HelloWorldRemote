@@ -408,6 +408,75 @@ class AgentInstructionContractTests(unittest.TestCase):
                 for obsolete_requirement in obsolete_requirements:
                     self.assertNotIn(obsolete_requirement, contents)
 
+    def test_diagnostic_design_limits_temporary_tree_cleanup_claims(self):
+        contracts = (
+            (
+                "docs/superpowers/specs/2026-08-16-macos-unattended-permission-diagnostics-design.md",
+                "Private temporary files are truncated or removal is attempted immediately.",
+                "Confirmed paths remove private temporary files before return.",
+                "A cleanup failure makes no absence-of-residue claim.",
+                "Hosted-runner teardown is external containment, and a self-hosted runner is quarantined until an operator confirms no residue.",
+                "the complete temporary tree is removed before return",
+            ),
+            (
+                "docs/superpowers/specs/2026-08-16-macos-unattended-permission-diagnostics-design-zh_CN.md",
+                "立即清空私有临时文件或尝试将其删除。",
+                "确认的路径会在返回前删除私有临时文件。",
+                "清理失败时不得声称不存在残留。",
+                "hosted-runner teardown 属于外部遏制；self-hosted runner 必须被隔离，直至 operator 确认无残留。",
+                "返回前删除完整 temporary tree",
+            ),
+        )
+
+        for name, immediate, confirmed, no_claim, containment, obsolete in contracts:
+            with self.subTest(name=name):
+                contents = text(ROOT / name)
+
+                def assert_cleanup_claim_contract(candidate: str) -> None:
+                    for required in (immediate, confirmed, no_claim, containment):
+                        self.assertIn(required, candidate)
+                    self.assertNotIn(obsolete, candidate)
+
+                assert_cleanup_claim_contract(contents)
+                with self.assertRaises(AssertionError):
+                    assert_cleanup_claim_contract(contents.replace(no_claim, "", 1))
+
+    def test_unattended_plan_documents_atomic_late_success_timeout(self):
+        contracts = (
+            (
+                "docs/superpowers/plans/2026-08-16-macos-unattended-permission-diagnostics.md",
+                "ASSIST_DIAGNOSTIC_ATTEMPTS=1",
+                "ASSIST_DIAGNOSTIC_TIMEOUT_COUNT=1",
+                "ASSIST_DIAGNOSTIC_ENABLED_TRUE_COUNT=0",
+                "ASSIST_DIAGNOSTIC_FINAL_CATEGORY=timeout",
+                "ASSIST_DIAGNOSTIC_FINAL_CLI_EXIT=timeout",
+                "ASSIST_DIAGNOSTIC_ENABLED_TRUE_COUNT=1",
+            ),
+            (
+                "docs/superpowers/plans/2026-08-16-macos-unattended-permission-diagnostics-zh_CN.md",
+                "ASSIST_DIAGNOSTIC_ATTEMPTS=1",
+                "ASSIST_DIAGNOSTIC_TIMEOUT_COUNT=1",
+                "ASSIST_DIAGNOSTIC_ENABLED_TRUE_COUNT=0",
+                "ASSIST_DIAGNOSTIC_FINAL_CATEGORY=timeout",
+                "ASSIST_DIAGNOSTIC_FINAL_CLI_EXIT=timeout",
+                "ASSIST_DIAGNOSTIC_ENABLED_TRUE_COUNT=1",
+            ),
+        )
+        for name, *required, obsolete in contracts:
+            with self.subTest(name=name):
+                contents = text(ROOT / name)
+
+                def assert_atomic_late_success_contract(candidate: str) -> None:
+                    for field in required:
+                        self.assertIn(field, candidate)
+                    self.assertNotIn(obsolete, candidate)
+
+                assert_atomic_late_success_contract(contents)
+                with self.assertRaises(AssertionError):
+                    assert_atomic_late_success_contract(
+                        contents.replace(required[1], obsolete, 1)
+                    )
+
     def test_unattended_cleanup_source_fails_closed_without_a_status(self):
         script = text(ROOT / ".github/workflows/apple.sh")
         runner_start = script.index("def cleanup_owned_process():")

@@ -120,7 +120,7 @@ and exits with status `1`. With debug `0`, only the generic error is printed.
 
 ## 7. Security and Logging Contract
 
-Raw response data exists only in a private temporary file owned by the current attempt. The directory and file use restrictive permissions, the response is truncated immediately after classification, and the complete temporary tree is removed before return.
+Raw response data exists only in a private temporary file owned by the current attempt. The directory and file use restrictive permissions. Private temporary files are truncated or removal is attempted immediately. Confirmed paths remove private temporary files before return. A cleanup failure makes no absence-of-residue claim. Hosted-runner teardown is external containment, and a self-hosted runner is quarantined until an operator confirms no residue.
 
 The diagnostic log contains only predefined field names, validated integers, and predefined enums. Fixture values containing a custom code, device ID, newlines, control characters, Unicode separators, or forged workflow tokens must not appear in stdout, stderr, temporary leftovers, or artifacts.
 

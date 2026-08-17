@@ -753,7 +753,11 @@ def test_debug_levels_emit_complete_fixed_summary(self):
 def test_late_success_fails_and_temporary_tree_is_empty(self):
     result = self.run_harness("aggregate", "late-success")
     self.assertEqual(result.returncode, 1)
-    self.assertIn("ASSIST_DIAGNOSTIC_ENABLED_TRUE_COUNT=1", result.stderr)
+    self.assertIn("ASSIST_DIAGNOSTIC_ATTEMPTS=1", result.stderr)
+    self.assertIn("ASSIST_DIAGNOSTIC_TIMEOUT_COUNT=1", result.stderr)
+    self.assertIn("ASSIST_DIAGNOSTIC_ENABLED_TRUE_COUNT=0", result.stderr)
+    self.assertIn("ASSIST_DIAGNOSTIC_FINAL_CATEGORY=timeout", result.stderr)
+    self.assertIn("ASSIST_DIAGNOSTIC_FINAL_CLI_EXIT=timeout", result.stderr)
     self.assertIn("TEMPORARY_TREE_EMPTY=true", result.stdout)
 
 def test_hostile_responses_never_reach_logs_or_artifacts(self):

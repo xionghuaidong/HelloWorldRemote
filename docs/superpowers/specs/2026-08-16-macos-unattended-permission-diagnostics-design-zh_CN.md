@@ -120,7 +120,7 @@ Could not enable unattended control within 60 seconds
 
 ## 7. 安全与日志 contract
 
-原始 response data 只存在于当前 attempt 拥有的私有临时文件中。directory 和 file 使用限制性权限；分类后立即清空 response；返回前删除完整 temporary tree。
+原始 response data 只存在于当前 attempt 拥有的私有临时文件中。directory 和 file 使用限制性权限。立即清空私有临时文件或尝试将其删除。确认的路径会在返回前删除私有临时文件。清理失败时不得声称不存在残留。hosted-runner teardown 属于外部遏制；self-hosted runner 必须被隔离，直至 operator 确认无残留。
 
 诊断日志只包含预定义字段名、已验证整数和预定义 enum。包含 custom code、device ID、换行、控制字符、Unicode separator 或伪造 workflow token 的 fixture 值不得出现在 stdout、stderr、临时残留或 artifact 中。
 
