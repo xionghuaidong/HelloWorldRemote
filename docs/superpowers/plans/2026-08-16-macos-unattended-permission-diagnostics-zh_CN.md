@@ -23,7 +23,10 @@
 - 本诊断绝不打印或持久化原始 CLI stdout/stderr、custom code、密码、device ID 或其他远程设备连接数据。
 - 诊断只写入当前 workflow step 日志；不得加入任何 artifact。
 - 不修改 Windows runtime，不削弱 TCC 或其他 operating-system control，不猜测其他 vendor command，也不降级为较弱的 readiness check。
-- 原始 response file 和 status file 保持 mode `0600`；分类后清空 response；删除所有临时文件，并回收所有 owned child。
+- 原始 response file 和 status file 保持 mode `0600`；分类后清空 response，并通过有界 fail-closed 清理策略尝试删除私有临时文件。
+- helper 使用有界 fail-closed 清理策略：`TERM`→`KILL`→回收/PGID 探测，`TERM` grace 最多 500 milliseconds，`KILL`/回收/PGID-probe grace 最多 500 milliseconds。清理最多只能在一次 CLI attempt 之外增加已记录的固定清理宽限；绝不无限等待。
+- 确认清理后才发布现有安全 status。未确认清理或异常不发布最终 status，并以 `125` 退出；controller 只输出现有通用失败，workflow/job 不继续。OS-level 残留可能仍无法确认；不得声称绝对清理。
+- 当前 GitHub-hosted macOS runner 在 job 失败后的 teardown 属于外部遏制。如果将来采用 reused/self-hosted 执行，该 runner 必须被隔离，且在 operator 确认无残留前不得复用。
 - 诊断性 live run 后停止。证据未经 review，且必要时未修订设计前，不实施 root-cause fix。
 - 每个 implementation task 结束时进行独立 code-review gate。进入下一 task 前解决全部 Critical 和 Important findings。
 - 使用 Conventional Commits。
@@ -430,7 +433,11 @@ except subprocess.TimeoutExpired:
             signal_process_group(signal.SIGKILL)
         except ProcessLookupError:
             pass
-        process.wait()
+        cleanup_deadline = time.monotonic() + 0.5
+        try:
+            process.wait(timeout=max(0, cleanup_deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            raise SystemExit(125)
     write_status("timeout")
     raise SystemExit(124)
 
@@ -900,6 +907,8 @@ git diff --check e30a65b..HEAD
 
 预期：当前可运行 tests PASS，只有明确的 platform skips；shell 与 JSON parsing 成功；diff check 无输出。
 
+单独运行 native macOS cleanup matrix。对于已确认的 timeout cleanup、leader 已完成但 descendant 仍存活，以及已处理 signal cleanup，要求仅在有界 `TERM`→`KILL`→回收/PGID 探测确认清理后发布现有安全 status。对于相应的 cleanup-injection false/raises case，要求 exit `125`、无最终 status、outer caller 只输出其现有通用错误，且 workflow/job 不继续。记录这证明的是有界 helper behavior，而不是 OS-level 残留绝对不存在。
+
 - [ ] **Step 2：运行 security、output 和 scope scans**
 
 对变更的 runtime/test files 运行 fixed-string 和 pattern scans，查找真实 credential material、原始 vendor payload printing、assist diagnostics 中的 device-ID output、包含 `ASSIST_DIAGNOSTIC_` 的 artifact writes、unbounded `assist allow on` 以及 forbidden policy changes。确认 diff 只改变已批准的 helper、focused tests 和双语 design/plan files。
@@ -908,7 +917,7 @@ git diff --check e30a65b..HEAD
 
 - [ ] **Step 3：请求 whole-branch code review**
 
-请独立 reviewer 阅读 approved design、本 plan、完整 `e844ba9..HEAD` diff 和 verification report。reviewer 必须报告 Critical、Important、Minor findings；验证 tests 执行 production decisions；并明确说明 branch 是否可安全进行 diagnostic live run。
+请独立 reviewer 阅读 approved design、本 plan、完整 `e844ba9..HEAD` diff 和 verification report。reviewer 必须报告 Critical、Important、Minor findings；验证 tests 执行 production decisions；验证有界 fail-closed 清理策略和 native matrix；并明确说明 branch 是否可安全进行 diagnostic live run。
 
 使用 `superpowers:receiving-code-review`、TDD、新 Conventional Commit 和 Steps 1、2 的 fresh rerun 解决 Critical 与 Important findings。重复 review，直到没有 Critical 或 Important finding。
 

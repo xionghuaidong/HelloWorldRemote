@@ -349,6 +349,93 @@ class AgentInstructionContractTests(unittest.TestCase):
                 for obsolete_requirement in obsolete_requirements:
                     self.assertNotIn(obsolete_requirement, contents)
 
+    def test_unattended_cleanup_policy_is_bounded_fail_closed_in_both_languages(self):
+        english_documents = (
+            "docs/superpowers/specs/2026-08-16-macos-unattended-permission-diagnostics-design.md",
+            "docs/superpowers/plans/2026-08-16-macos-unattended-permission-diagnostics.md",
+        )
+        chinese_documents = (
+            "docs/superpowers/specs/2026-08-16-macos-unattended-permission-diagnostics-design-zh_CN.md",
+            "docs/superpowers/plans/2026-08-16-macos-unattended-permission-diagnostics-zh_CN.md",
+        )
+        english_requirements = (
+            "bounded fail-closed cleanup policy",
+            "`TERM`→`KILL`→reap/PGID probe",
+            "confirmed cleanup publishes the existing safe status",
+            "Unconfirmed cleanup or an exception publishes no final status and exits `125`",
+            "controller emits only the existing generic failure, and the workflow/job does not continue",
+            "Cleanup may add only the documented fixed cleanup grace beyond a CLI attempt; it never waits indefinitely.",
+            "Current GitHub-hosted macOS runner teardown is external containment after job failure.",
+            "the runner must be quarantined and not reused until an operator confirms no residue",
+            "OS-level residue may remain unconfirmed; no absolute cleanup claim is made.",
+        )
+        chinese_requirements = (
+            "有界 fail-closed 清理策略",
+            "`TERM`→`KILL`→回收/PGID 探测",
+            "确认清理后才发布现有安全 status",
+            "未确认清理或异常不发布最终 status，并以 `125` 退出",
+            "controller 只输出现有通用失败，workflow/job 不继续",
+            "清理最多只能在一次 CLI attempt 之外增加已记录的固定清理宽限；绝不无限等待。",
+            "当前 GitHub-hosted macOS runner 在 job 失败后的 teardown 属于外部遏制。",
+            "该 runner 必须被隔离，且在 operator 确认无残留前不得复用",
+            "OS-level 残留可能仍无法确认；不得声称绝对清理。",
+        )
+        obsolete_requirements = (
+            "It must not return while an owned child or descendant remains.",
+            "owned child 或 descendant 仍存在时不得返回。",
+        )
+
+        for name in english_documents:
+            contents = text(ROOT / name)
+            with self.subTest(name=name):
+                for requirement in english_requirements:
+                    self.assertIn(requirement, contents)
+                for obsolete_requirement in obsolete_requirements:
+                    self.assertNotIn(obsolete_requirement, contents)
+
+        for name in chinese_documents:
+            contents = text(ROOT / name)
+            with self.subTest(name=name):
+                for requirement in chinese_requirements:
+                    self.assertIn(requirement, contents)
+                for obsolete_requirement in obsolete_requirements:
+                    self.assertNotIn(obsolete_requirement, contents)
+
+    def test_unattended_cleanup_source_fails_closed_without_a_status(self):
+        script = text(ROOT / ".github/workflows/apple.sh")
+        runner_start = script.index("def cleanup_owned_process():")
+        runner_end = script.index("raise SystemExit(exit_code)", runner_start)
+        runner = script[runner_start:runner_end]
+        outer_start = script.index("enable_assist_or_fail()")
+        outer_end = script.index("self_test_cli_output_redaction()", outer_start)
+        outer = script[outer_start:outer_end]
+
+        self.assertIn("if not cleanup_owned_process():\n            exit_code = 125", runner)
+        self.assertIn("if cleanup_owned_process():\n                write_status(\"unavailable\")", runner)
+        self.assertIn("if cleanup_owned_process():\n            write_status(\"unavailable\")", runner)
+        self.assertIn("except Exception:", runner)
+        self.assertIn("exit_code = 125", runner)
+        self.assertIn("Could not enable unattended control within 60 seconds", outer)
+        self.assertIn("return 1", outer)
+
+        continuation_guard = "enable_assist_or_fail || exit 1"
+
+        def assert_continuation_guard(source: str) -> None:
+            self.assertIn(continuation_guard, source)
+            self.assertLess(
+                source.index(continuation_guard),
+                source.index('runner_password="$(decode_kcpassword /etc/kcpassword)"'),
+            )
+
+        assert_continuation_guard(script)
+        mutated_script = script.replace(
+            continuation_guard,
+            "enable_assist_or_fail",
+            1,
+        )
+        with self.assertRaises(AssertionError):
+            assert_continuation_guard(mutated_script)
+
 
 class EntryPointContractTests(unittest.TestCase):
     def test_readmes_have_navigation(self):

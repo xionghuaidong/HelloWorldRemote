@@ -23,7 +23,10 @@
 - Never print or persist raw CLI stdout/stderr, custom codes, passwords, device IDs, or other remote-device connection data in this diagnostic.
 - Write the diagnostic only to the current workflow step log; do not add it to any artifact.
 - Do not modify the Windows runtime, weaken TCC or other operating-system controls, guess another vendor command, or fall back to a weaker readiness check.
-- Keep raw response files and status files mode `0600`, truncate the response after classification, remove all temporary files, and reap all owned children.
+- Keep raw response files and status files mode `0600`, truncate the response after classification, and attempt private temporary-file removal through the bounded fail-closed cleanup policy.
+- The helper uses the bounded fail-closed cleanup policy: `TERM`→`KILL`→reap/PGID probe, with at most 500 milliseconds of `TERM` grace and at most 500 milliseconds of `KILL`/reap/PGID-probe grace. Cleanup may add only the documented fixed cleanup grace beyond a CLI attempt; it never waits indefinitely.
+- Only confirmed cleanup publishes the existing safe status. Unconfirmed cleanup or an exception publishes no final status and exits `125`; the controller emits only the existing generic failure, and the workflow/job does not continue. OS-level residue may remain unconfirmed; no absolute cleanup claim is made.
+- Current GitHub-hosted macOS runner teardown is external containment after job failure. If reused/self-hosted execution is ever adopted, the runner must be quarantined and not reused until an operator confirms no residue.
 - Stop after the diagnostic live run. Do not implement a root-cause fix until the evidence is reviewed and the design is amended when required.
 - End each implementation task with an independent code-review gate. Resolve all Critical and Important findings before the next task.
 - Use Conventional Commits.
@@ -430,7 +433,11 @@ except subprocess.TimeoutExpired:
             signal_process_group(signal.SIGKILL)
         except ProcessLookupError:
             pass
-        process.wait()
+        cleanup_deadline = time.monotonic() + 0.5
+        try:
+            process.wait(timeout=max(0, cleanup_deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            raise SystemExit(125)
     write_status("timeout")
     raise SystemExit(124)
 
@@ -900,6 +907,8 @@ git diff --check e30a65b..HEAD
 
 Expected: currently runnable tests PASS with only explicit platform skips; shell and JSON parsing succeed; diff check has no output.
 
+Run the native macOS cleanup matrix separately. For confirmed timeout cleanup, a completed leader with a live descendant, and handled-signal cleanup, require the existing safe status only after the bounded `TERM`→`KILL`→reap/PGID probe confirms cleanup. For the matching false/raises cleanup-injection cases, require exit `125`, no final status, the outer caller's existing generic error only, and no workflow/job continuation. Record that this proves bounded helper behavior, not absolute absence of OS-level residue.
+
 - [ ] **Step 2: Run security, output, and scope scans**
 
 Run fixed-string and pattern scans over the changed runtime/test files for real credential material, raw vendor payload printing, device-ID output inside assist diagnostics, artifact writes containing `ASSIST_DIAGNOSTIC_`, unbounded `assist allow on`, and forbidden policy changes. Confirm the diff changes only approved helper, focused tests, and bilingual design/plan files.
@@ -908,7 +917,7 @@ Record exact commands and outputs in the ignored report. Any ambiguous match mus
 
 - [ ] **Step 3: Request whole-branch code review**
 
-Ask an independent reviewer to read the approved design, this plan, the complete `e844ba9..HEAD` diff, and the verification report. The reviewer must report Critical, Important, and Minor findings; validate that the tests execute production decisions; and explicitly state whether the branch is safe for a diagnostic live run.
+Ask an independent reviewer to read the approved design, this plan, the complete `e844ba9..HEAD` diff, and the verification report. The reviewer must report Critical, Important, and Minor findings; validate that the tests execute production decisions; verify the bounded fail-closed cleanup policy and native matrix; and explicitly state whether the branch is safe for a diagnostic live run.
 
 Resolve Critical and Important findings with `superpowers:receiving-code-review`, TDD, a new Conventional Commit, and a fresh rerun of Steps 1 and 2. Repeat review until no Critical or Important findings remain.
 

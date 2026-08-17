@@ -52,7 +52,9 @@ macOS feature workflow 现在可以通过原生 device-ID 测试和 GameViewer �
 
 `run_bounded_gui_cli_to_file` 在图形 console user 的 launchd session 中执行已安装 CLI。它拥有 child process 和 process group，将 stdout 重定向到 caller 提供的 mode-`0600` 文件，丢弃 stderr，并接受由剩余总 deadline 推导的 timeout。
 
-发生 timeout 时，它先发送 `TERM`，等待固定的短 grace period，必要时发送 `KILL`，并等待回收 child。owned child 或 descendant 仍存在时不得返回。
+这是有界 fail-closed 清理策略（Option 2）。helper 执行 `TERM`→`KILL`→回收/PGID 探测。已记录的 cleanup grace 最多为 `TERM` 后 500 milliseconds，随后最多为 `KILL`、回收和 PGID 探测的 500 milliseconds。清理最多只能在一次 CLI attempt 之外增加已记录的固定清理宽限；绝不无限等待。
+
+确认清理后才发布现有安全 status。未确认清理或异常不发布最终 status，并以 `125` 退出；controller 只输出现有通用失败，workflow/job 不继续。OS-level 残留可能仍无法确认；不得声称绝对清理。
 
 ### 5.2 严格 response classifier
 
@@ -106,7 +108,7 @@ debug 为 `0` 时不运行 reporter，新的诊断数据也不会写入 artifact
 - child 完成后、解析后以及接受 `enabled-true` 前立即重新检查 deadline。
 - 拒绝只在 deadline 后才可用的结果。
 - launch failure、temp-file failure、parser failure、cleanup failure、signal interruption 或 accumulator invariant 无效均按 fail-closed 处理。
-- 在成功、失败、timeout 和已处理 signal 时清理所有临时文件并回收全部 owned process。
+- 每个适用路径执行有界清理策略，并在可确认时删除私有临时文件。清理确认失败时，不得声称所有 operating-system 残留均已消失。
 
 仅 debug 启用的汇总之后，现有 caller 仍打印：
 
@@ -133,7 +135,8 @@ custom-code secret 仍保持 step-scoped，仅在之前的 custom-code step 中�
 - transient failure 后成功，且只输出 `ASSIST_STATE=enabled`；
 - debug `0` 只产生通用失败；
 - debug `1`、`2`、`3` 产生完整固定汇总；
-- 真实受控 hanging child、单次 timeout、总 deadline、termination、reaping 和无 process residue；
+- 真实受控 hanging child、单次 timeout、总 deadline、有界 `TERM`→`KILL`→回收/PGID 探测以及已确认清理；
+- 针对 timeout、leader 已完成但 descendant 仍存活及已处理 signal 的 cleanup 为 false 或 raises 的 native-macOS matrix case；每个 case 必须产生 exit `125`、无最终 status、仅 outer generic failure，且 workflow/job 不继续；
 - late-success rejection；
 - response file 和 temporary directory cleanup；
 - hostile fixture marker 和 log-injection attempt 不产生泄漏；
@@ -148,6 +151,8 @@ custom-code secret 仍保持 step-scoped，仅在之前的 custom-code step 中�
 诊断 run 用于建立 root-cause category。然后必须先增加 root-cause-specific failing test，再实施最小行为修复。只有后续 feature run 通过权限步骤和其后所有 workflow steps，才能完成本任务。
 
 branch 完成前，运行相关 macOS 与 Windows contract suites、双语文档验证、JSON validation、secret 与 forbidden-output scans、`git diff --check e30a65b..HEAD` 以及独立 code review。集成到 `main` 仍是单独的 finishing decision。
+
+当前 GitHub-hosted macOS runner 在 job 失败后的 teardown 属于外部遏制。如果将来采用 reused/self-hosted 执行，该 runner 必须被隔离，且在 operator 确认无残留前不得复用。
 
 ## 10. 范围
 

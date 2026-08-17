@@ -52,7 +52,9 @@ The fix gate requires the feature workflow to pass the permission step and all l
 
 `run_bounded_gui_cli_to_file` executes the installed CLI in the graphical console user's launchd session. It owns the child process and process group, redirects stdout to a caller-provided mode-`0600` file, discards stderr, and accepts a timeout derived from the remaining overall deadline.
 
-On timeout it sends `TERM`, waits for a fixed short grace period, sends `KILL` if necessary, and waits to reap the child. It must not return while an owned child or descendant remains.
+This is the bounded fail-closed cleanup policy (Option 2). The helper performs `TERM`→`KILL`→reap/PGID probe. The documented cleanup grace is at most 500 milliseconds for `TERM`, followed by at most 500 milliseconds for `KILL`, reaping, and the PGID probe. Cleanup may add only the documented fixed cleanup grace beyond a CLI attempt; it never waits indefinitely.
+
+Only confirmed cleanup publishes the existing safe status. Unconfirmed cleanup or an exception publishes no final status and exits `125`. The controller emits only the existing generic failure, and the workflow/job does not continue. OS-level residue may remain unconfirmed; no absolute cleanup claim is made.
 
 ### 5.2 Strict response classifier
 
@@ -106,7 +108,7 @@ The reporter does not run when debug is `0`, and no new diagnostic data is writt
 - Recheck the deadline after child completion, after parsing, and immediately before accepting `enabled-true`.
 - Reject a result that becomes available only after the deadline.
 - Treat launch failure, temp-file failure, parser failure, cleanup failure, signal interruption, or an invalid accumulator invariant as fail-closed.
-- Remove all temporary files and reap all owned processes on success, failure, timeout, and handled signals.
+- On each applicable path, perform the bounded cleanup policy and remove private temporary files when that removal can be confirmed. Do not claim that all operating-system residue is absent when cleanup confirmation fails.
 
 After a debug-only summary, the existing caller still prints:
 
@@ -133,7 +135,8 @@ The implementation must add executable tests for:
 - transient failures followed by success, with only `ASSIST_STATE=enabled` emitted;
 - debug `0` generic-only failure;
 - debug `1`, `2`, and `3` complete fixed summaries;
-- a real controlled hanging child, per-call timeout, total deadline, termination, reaping, and no process residue;
+- a real controlled hanging child, per-call timeout, total deadline, the bounded `TERM`→`KILL`→reap/PGID probe, and confirmed cleanup;
+- native-macOS matrix cases where cleanup is false or raises for timeout, a completed leader with a live descendant, and handled signals; each must produce exit `125`, no final status, the outer generic failure only, and no workflow continuation;
 - late-success rejection;
 - response-file and temporary-directory cleanup;
 - hostile fixture markers and log-injection attempts producing no leakage;
@@ -148,6 +151,8 @@ After local verification and independent review, request explicit authorization 
 The diagnostic run establishes the root-cause category. A root-cause-specific failing test must then precede the smallest behavior fix. Completion requires a later feature run to pass the permission step and all subsequent workflow steps.
 
 Before branch completion, run the relevant macOS and Windows contract suites, bilingual documentation validation, JSON validation, secret and forbidden-output scans, `git diff --check e30a65b..HEAD`, and independent code review. Integration into `main` remains a separate finishing decision.
+
+Current GitHub-hosted macOS runner teardown is external containment after job failure. If reused/self-hosted execution is ever adopted, the runner must be quarantined and not reused until an operator confirms no residue.
 
 ## 10. Scope
 
