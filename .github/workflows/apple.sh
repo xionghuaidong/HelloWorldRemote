@@ -395,6 +395,8 @@ def cleanup_owned_process():
         signal_process_group(signal.SIGTERM)
     except ProcessLookupError:
         pass
+    except OSError:
+        pass
     try:
         process.wait(timeout=0.5)
     except subprocess.TimeoutExpired:
@@ -412,22 +414,31 @@ def cleanup_owned_process():
         signal_process_group(signal.SIGKILL)
     except ProcessLookupError:
         pass
+    except OSError:
+        pass
     cleanup_deadline = time.monotonic() + 0.5
     try:
         process.wait(timeout=max(0, cleanup_deadline - time.monotonic()))
     except subprocess.TimeoutExpired:
         return False
+    except OSError:
+        try:
+            if process.poll() is None:
+                return False
+        except OSError:
+            return False
 
-    if group_remains is None:
-        return False
     while time.monotonic() < cleanup_deadline:
         try:
             if not process_group_alive():
                 cleanup_confirmed = True
                 break
         except OSError:
+            pass
+        remaining = cleanup_deadline - time.monotonic()
+        if remaining <= 0:
             break
-        time.sleep(0.01)
+        time.sleep(min(0.01, remaining))
     else:
         try:
             cleanup_confirmed = not process_group_alive()

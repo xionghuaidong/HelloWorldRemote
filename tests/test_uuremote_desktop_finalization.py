@@ -1,4 +1,5 @@
 from pathlib import Path
+import ast
 import os
 import plistlib
 import subprocess
@@ -337,6 +338,13 @@ class MacOSAssistAllowProcessTests(unittest.TestCase):
         self.assertLess(elapsed, 5)
         self.assertEqual(result.stdout, "STATUS=timeout\nPROCESS_GROUP_RELEASED=true\n")
 
+    def test_transient_process_group_probe_error_is_retried_before_confirmation(self):
+        result = self.run_harness(
+            "probe-transient-error", "transient-probe-error"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "STATUS=timeout\n")
+
     def test_term_exiting_group_leader_does_not_leave_a_descendant(self):
         started = time.monotonic()
         result = self.run_harness("process", "leader-exits")
@@ -468,11 +476,46 @@ class MacOSAssistAllowProcessTests(unittest.TestCase):
         self.assertLess(parent_unmask, first_wait)
 
     def test_runner_post_ownership_exception_cleans_without_status(self):
+        def assert_generic_handler_contract(runner: str) -> None:
+            wrapper_start = runner.index(
+                "run_bounded_uuremote_cli_to_file_with_status() {"
+            )
+            heredoc_start = runner.index("<<'PYTHON'\n", wrapper_start)
+            python_start = heredoc_start + len("<<'PYTHON'\n")
+            python_end = runner.index("\nPYTHON\n}", python_start)
+            tree = ast.parse(runner[python_start:python_end])
+            runner_try = next(node for node in tree.body if isinstance(node, ast.Try))
+            generic_handler = next(
+                handler
+                for handler in runner_try.handlers
+                if isinstance(handler.type, ast.Name)
+                and handler.type.id == "Exception"
+            )
+            exception_body = ast.dump(
+                ast.Module(body=generic_handler.body, type_ignores=[]),
+                include_attributes=False,
+            )
+            self.assertIn("cleanup_owned_process_after_signal_block", exception_body)
+            self.assertNotIn("write_status", exception_body)
+
         runner = text(SCRIPT_PATH)
-        exception = runner.index("except Exception:\n")
-        exception_body = runner[exception:runner.index("finally:\n", exception)]
-        self.assertIn("cleanup_owned_process_after_signal_block()", exception_body)
-        self.assertNotIn("write_status", exception_body)
+        assert_generic_handler_contract(runner)
+        mutation_target = (
+            "except Exception:\n"
+            "    cleanup_in_progress = True\n"
+            "    cleanup_owned_process_after_signal_block()"
+        )
+        mutated = runner.replace(
+            mutation_target,
+            "except Exception:\n"
+            "    write_status(\"unavailable\")\n"
+            "    cleanup_in_progress = True\n"
+            "    cleanup_owned_process_after_signal_block()",
+            1,
+        )
+        self.assertNotEqual(mutated, runner)
+        with self.assertRaises(AssertionError):
+            assert_generic_handler_contract(mutated)
 
     def test_post_popen_exceptions_fail_closed_without_a_status(self):
         for mode in ("fault-post-unmask", "fault-first-wait"):

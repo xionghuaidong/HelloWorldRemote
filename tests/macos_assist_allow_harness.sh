@@ -73,31 +73,45 @@ record_fixture_group_when_known() {
 }
 
 assert_recorded_fixture_teardown() {
-    local pid pid_path group
+    local pid pid_path group wait_attempt released
 
     if ! is_native_macos; then
         # Windows owns only the direct child; native macOS proves group teardown.
         return 0
     fi
-    for pid_path in $fixture_pid_paths; do
-        [ -s "$pid_path" ] || return 1
-        pid="$(cat "$pid_path")"
-        case "$pid" in
-            ''|*[!0-9]*) return 1 ;;
-        esac
-        if /bin/kill -0 "$pid" 2>/dev/null; then
-            return 1
-        fi
-    done
     [ -n "$fixture_groups" ] || return 1
-    for group in $fixture_groups; do
-        case "$group" in
-            ''|*[!0-9]*) return 1 ;;
-        esac
-        if /bin/kill -0 -- "-$group" 2>/dev/null; then
-            return 1
+    wait_attempt=0
+    while [ "$wait_attempt" -lt 40 ]; do
+        released=1
+        for pid_path in $fixture_pid_paths; do
+            [ -s "$pid_path" ] || return 1
+            pid="$(cat "$pid_path")"
+            case "$pid" in
+                ''|*[!0-9]*) return 1 ;;
+            esac
+            if /bin/kill -0 "$pid" 2>/dev/null; then
+                released=0
+            fi
+        done
+        for group in $fixture_groups; do
+            case "$group" in
+                ''|*[!0-9]*) return 1 ;;
+            esac
+            if /bin/kill -0 -- "-$group" 2>/dev/null; then
+                released=0
+            fi
+        done
+        [ "$released" -eq 0 ] || return 0
+        wait_attempt="$((wait_attempt + 1))"
+        sleep 0.05
+    done
+    for pid_path in $fixture_pid_paths; do
+        if [ -s "$pid_path" ]; then
+            pid="$(cat "$pid_path")"
+            /bin/ps -o pid=,ppid=,pgid=,state= -p "$pid" >&2 || true
         fi
     done
+    return 1
 }
 
 run_recorded_bounded_fixture() {
@@ -224,6 +238,33 @@ case "$mode" in
         ;;
 esac
 case "$mode" in
+    probe-transient-error)
+        awk '
+            /^def process_group_alive\(\):$/ {
+                print "def process_group_alive_real():"
+                next
+            }
+            /^def cleanup_owned_process\(\):$/ {
+                print "process_group_probe_calls = 0"
+                print "if not hasattr(signal, \"SIGKILL\"):"
+                print "    signal.SIGKILL = signal.SIGTERM"
+                print ""
+                print "def process_group_alive():"
+                print "    global process_group_probe_calls"
+                print "    process_group_probe_calls += 1"
+                print "    if process_group_probe_calls == 1:"
+                print "        raise OSError"
+                print "    return False"
+                print ""
+                print
+                next
+            }
+            { print }
+        ' "$subject" >"$subject.probe"
+        mv "$subject.probe" "$subject"
+        ;;
+esac
+case "$mode" in
     fault-post-unmask|outer-post-unmask)
         awk '
             /^        previous_signal_mask = None$/ {
@@ -292,7 +333,7 @@ fi
 scenario="${2:?}"
 
 case "$mode" in
-    process|fault-*|block-*|pending-finalization-swapped) ;;
+    process|fault-*|block-*|probe-transient-error|pending-finalization-swapped) ;;
     *) false ;;
 esac && {
     status_path="$temporary_directory/status"
@@ -303,6 +344,16 @@ esac && {
 
     . "$subject"
     case "$scenario" in
+        transient-probe-error)
+            if run_bounded_uuremote_cli_to_file_with_status \
+                "$output_path" "$status_path" 100 /bin/sleep 30
+            then
+                echo "Transient probe fixture unexpectedly succeeded" >&2
+                exit 1
+            fi
+            printf 'STATUS=%s\n' "$(cat "$status_path")"
+            exit 0
+            ;;
         completed)
             run_bounded_uuremote_cli_to_file_with_status \
                 "$output_path" "$status_path" 3000 /bin/true
@@ -436,7 +487,8 @@ esac && {
             gui_command="sudo|launchctl|$(
                 while IFS= read -r argument; do
                     case "$argument" in
-                        "$sudo_stub"|*/bin/bash) printf 'sudo|' ;;
+                        "$sudo_stub") printf 'sudo|' ;;
+                        */bin/bash) printf 'sudo|' ;;
                         */bin/true) printf '/bin/true|' ;;
                         *) printf '%s|' "$argument" ;;
                     esac
@@ -805,8 +857,9 @@ esac && {
                 /bin/bash "$0" fixture-hang "$parent_pid_path" "$child_pid_path"
             then
                 return 0
+            else
+                bounded_exit="$?"
             fi
-            bounded_exit="$?"
             if [ -s "$status_path" ]; then
                 return 124
             fi
@@ -882,9 +935,18 @@ esac && {
     }
 
     case "$scenario" in
-        deadline-bounds|debug1-failure|hostile-failure|late-success|deadline-after-child|expired-no-status|deadline-after-record|deadline-before-enabled|invalid-clock|invalid-clock-loop|invalid-clock-post-call|clock-status-start|clock-status-loop|clock-status-post-call) debug_level=1 ;;
+        deadline-bounds|debug1-failure|hostile-failure|late-success|expired-no-status|deadline-after-record|deadline-before-enabled|invalid-clock|invalid-clock-loop|invalid-clock-post-call|clock-status-start|clock-status-loop|clock-status-post-call) debug_level=1 ;;
         debug2-failure) debug_level=2 ;;
         debug3-failure) debug_level=3 ;;
+        deadline-after-child)
+            debug_level=1
+            eval "$(declare -f classify_assist_allow_response | \
+                /usr/bin/sed '1s/classify_assist_allow_response/classify_assist_allow_response_real/')"
+            classify_assist_allow_response() {
+                [ "$2" = timeout ] || return 1
+                classify_assist_allow_response_real "$@"
+            }
+            ;;
         internal-invalid-record)
             debug_level=1
             eval "$(declare -f classify_assist_allow_response | \

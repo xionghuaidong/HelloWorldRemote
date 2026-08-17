@@ -150,7 +150,6 @@ else
     mutation_status="$?"
 fi
 mutation_pid=""
-/bin/kill -TERM "$mutation_watchdog_pid" 2>/dev/null || true
 wait "$mutation_watchdog_pid" 2>/dev/null || true
 mutation_watchdog_pid=""
 
