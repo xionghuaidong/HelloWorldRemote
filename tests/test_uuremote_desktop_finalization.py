@@ -269,6 +269,45 @@ class MacOSAssistAllowClassifierTests(unittest.TestCase):
         self.assertNotIn("FORGED_OUTPUT", result.stdout + result.stderr)
 
 
+class MacOSAssistAllowSignalFinalizationSourceTests(unittest.TestCase):
+    @staticmethod
+    def assert_guarded_handler_precedes_only_after_mask_restore(runner: str) -> None:
+        finalization_start = runner.index("finally:\n")
+        finalization_end = runner.index("\nraise SystemExit(exit_code)", finalization_start)
+        finalization = runner[finalization_start:finalization_end]
+        cleanup_guard = finalization.index("cleanup_in_progress = True")
+        mask_restore = finalization.index("if cleanup_signal_mask is not None:")
+        handler_restore = finalization.index(
+            "for handled_signal, previous_handler in previous_handlers.items():"
+        )
+        if not cleanup_guard < mask_restore < handler_restore:
+            raise AssertionError("runner restores a prior handler before unmasking")
+
+    def test_runner_keeps_guarded_handlers_until_after_signal_mask_restoration(self):
+        runner = text(SCRIPT_PATH)
+        self.assert_guarded_handler_precedes_only_after_mask_restore(runner)
+
+        finalization_start = runner.index("finally:\n")
+        finalization_end = runner.index("\nraise SystemExit(exit_code)", finalization_start)
+        finalization = runner[finalization_start:finalization_end]
+        mask_start = finalization.index("    if cleanup_signal_mask is not None:")
+        handler_start = finalization.index(
+            "    for handled_signal, previous_handler in previous_handlers.items():"
+        )
+        swapped_finalization = (
+            finalization[:mask_start]
+            + finalization[handler_start:]
+            + finalization[mask_start:handler_start]
+        )
+        swapped_runner = (
+            runner[:finalization_start]
+            + swapped_finalization
+            + runner[finalization_end:]
+        )
+        with self.assertRaises(AssertionError):
+            self.assert_guarded_handler_precedes_only_after_mask_restore(swapped_runner)
+
+
 @unittest.skipUnless(BASH_AVAILABLE, "requires /bin/bash")
 class MacOSAssistAllowProcessTests(unittest.TestCase):
     def run_harness(self, mode: str, scenario: str) -> subprocess.CompletedProcess[str]:
@@ -342,6 +381,38 @@ class MacOSAssistAllowProcessTests(unittest.TestCase):
             result.stdout,
             "STATUS=unavailable\nPROCESS_GROUP_RELEASED=true\n",
         )
+
+    @unittest.skipUnless(
+        NATIVE_MACOS_BASH_AVAILABLE,
+        "requires native macOS pending-signal finalization",
+    )
+    def test_pending_second_handled_signal_is_guarded_through_finalization(self):
+        for scenario in (
+            "pending-signal-int",
+            "pending-signal-term",
+            "pending-signal-hup",
+        ):
+            with self.subTest(scenario=scenario):
+                started = time.monotonic()
+                result = self.run_harness("process", scenario)
+                elapsed = time.monotonic() - started
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertLess(elapsed, 5)
+                self.assertEqual(result.stderr, "")
+                self.assertEqual(
+                    result.stdout,
+                    "EXIT=125\nSTATUS=unavailable\nPROCESS_GROUP_RELEASED=true\n",
+                )
+                self.assertNotIn("Traceback", result.stdout + result.stderr)
+                self.assertNotIn("pending-cleanup-started", result.stdout + result.stderr)
+
+    @unittest.skipUnless(
+        NATIVE_MACOS_BASH_AVAILABLE,
+        "requires native macOS pending-signal finalization",
+    )
+    def test_pending_signal_finalization_rejects_swapped_handler_restore_order(self):
+        result = self.run_harness("pending-finalization-swapped", "pending-signal-term")
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_timeout_cleanup_false_and_raises_fail_closed(self):
         for mode in ("fault-timeout", "fault-raises"):

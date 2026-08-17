@@ -23,6 +23,13 @@ if [ "${1:-}" = "fixture-term-observed" ]; then
     while :; do sleep 1; done
 fi
 
+if [ "${1:-}" = "fixture-pending-signal" ]; then
+    printf '%s\n' "$$" >"${2:?}"
+    cleanup_started_path="${3:?}"
+    trap 'printf "pending-cleanup-started\n" >"$cleanup_started_path"; sleep 0.2; exit 0' TERM
+    while :; do sleep 1; done
+fi
+
 if [ "${1:-}" = "fixture-leader-completes" ]; then
     printf '%s\n' "$$" >"${2:?}"
     /bin/bash -c 'trap "" TERM; printf "%s\n" "$$" >"$1"; while :; do sleep 1; done' \
@@ -215,6 +222,41 @@ case "$mode" in
         mv "$subject.injected" "$subject"
         ;;
 esac
+case "$mode" in
+    pending-finalization-swapped)
+        awk '
+            /^finally:$/ {
+                in_finalization = 1
+                print
+                next
+            }
+            in_finalization && /^    if cleanup_signal_mask is not None:$/ {
+                collecting_mask = 1
+            }
+            in_finalization && /^    for handled_signal, previous_handler in previous_handlers.items\(\):$/ {
+                collecting_mask = 0
+                collecting_handlers = 1
+            }
+            in_finalization && /^raise SystemExit\(exit_code\)$/ {
+                printf "%s%s", handler_block, mask_block
+                in_finalization = 0
+                collecting_handlers = 0
+                print
+                next
+            }
+            in_finalization && collecting_mask {
+                mask_block = mask_block $0 "\n"
+                next
+            }
+            in_finalization && collecting_handlers {
+                handler_block = handler_block $0 "\n"
+                next
+            }
+            { print }
+        ' "$subject" >"$subject.swapped"
+        mv "$subject.swapped" "$subject"
+        ;;
+esac
 if [ ! -x /usr/bin/python3 ]; then
     python_command="$(command -v python3 || command -v python)"
     python_wrapper="$temporary_directory/python3"
@@ -227,7 +269,7 @@ fi
 scenario="${2:?}"
 
 case "$mode" in
-    process|fault-*) ;;
+    process|fault-*|pending-finalization-swapped) ;;
     *) false ;;
 esac && {
     status_path="$temporary_directory/status"
@@ -463,6 +505,77 @@ esac && {
                 printf 'STATUS=unavailable\n'
                 printf 'PROCESS_GROUP_RELEASED=true\n'
             fi
+            exit 0
+            ;;
+        pending-signal-int|pending-signal-term|pending-signal-hup)
+            if ! is_native_macos; then
+                echo "Pending-signal finalization requires native macOS" >&2
+                exit 2
+            fi
+            runner_status_path="$temporary_directory/runner-status"
+            cleanup_started_path="$temporary_directory/pending-cleanup-started"
+            fixture_pid_paths="$parent_pid_path"
+            (
+                . "$subject"
+                run_bounded_uuremote_cli_to_file_with_status \
+                    "$output_path" "$runner_status_path" 30000 /bin/bash "$0" fixture-pending-signal \
+                    "$parent_pid_path" "$cleanup_started_path"
+            ) &
+            runner_shell_pid="$!"
+            fixture_pids="$runner_shell_pid"
+            runner_python_pid=""
+            signal_wait_attempt=0
+            while [ "$signal_wait_attempt" -lt 80 ]; do
+                if [ -s "$parent_pid_path" ] && record_fixture_group_when_known; then
+                    runner_python_pid="$(/usr/bin/pgrep -P "$runner_shell_pid" 2>/dev/null || true)"
+                    case "$runner_python_pid" in
+                        ''|*[!0-9]*) runner_python_pid="" ;;
+                    esac
+                    if [ -n "$runner_python_pid" ]; then
+                        break
+                    fi
+                fi
+                signal_wait_attempt="$((signal_wait_attempt + 1))"
+                sleep 0.05
+            done
+            if [ -z "$runner_python_pid" ]; then
+                echo "Exact Python runner PID was unavailable" >&2
+                exit 1
+            fi
+            /bin/kill -TERM "$runner_python_pid"
+            cleanup_wait_attempt=0
+            while [ "$cleanup_wait_attempt" -lt 40 ] && [ ! -s "$cleanup_started_path" ]; do
+                cleanup_wait_attempt="$((cleanup_wait_attempt + 1))"
+                sleep 0.01
+            done
+            if [ ! -s "$cleanup_started_path" ]; then
+                echo "Pending-signal cleanup marker was unavailable" >&2
+                exit 1
+            fi
+            case "$scenario" in
+                pending-signal-int) signal_name=INT ;;
+                pending-signal-term) signal_name=TERM ;;
+                pending-signal-hup) signal_name=HUP ;;
+            esac
+            /bin/kill -"$signal_name" "$runner_python_pid"
+            if wait "$runner_shell_pid"; then
+                runner_exit=0
+            else
+                runner_exit="$?"
+            fi
+            if [ "$runner_exit" -ne 125 ]; then
+                echo "Pending signal changed runner finalization" >&2
+                exit 1
+            fi
+            if [ ! -s "$runner_status_path" ] || [ "$(cat "$runner_status_path")" != unavailable ]; then
+                echo "Pending signal produced an unsafe status" >&2
+                exit 1
+            fi
+            if ! assert_recorded_fixture_teardown; then
+                echo "Pending signal left a recorded process" >&2
+                exit 1
+            fi
+            printf 'EXIT=125\nSTATUS=unavailable\nPROCESS_GROUP_RELEASED=true\n'
             exit 0
             ;;
         term-observed)
