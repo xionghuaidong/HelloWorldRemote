@@ -528,14 +528,33 @@ class MacOSAssistAllowProcessTests(unittest.TestCase):
 
 @unittest.skipUnless(BASH_AVAILABLE, "requires /bin/bash")
 class MacOSAssistAllowAggregationTests(unittest.TestCase):
-    def run_harness(self, scenario: str) -> subprocess.CompletedProcess[str]:
+    def run_harness(
+        self, scenario: str, extra_environment: dict[str, str] | None = None
+    ) -> subprocess.CompletedProcess[str]:
+        environment = os.environ.copy()
+        if extra_environment:
+            environment.update(extra_environment)
         return subprocess.run(
             ["/bin/bash", str(MACOS_ASSIST_ALLOW_HARNESS_PATH), "aggregate", scenario],
             cwd=ROOT,
             text=True,
             capture_output=True,
             check=False,
+            env=environment,
         )
+
+    def assert_timeout_checkpoint_contract(
+        self, result: subprocess.CompletedProcess[str]
+    ) -> None:
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "TEMPORARY_TREE_EMPTY=true\n")
+        self.assertIn("ASSIST_DIAGNOSTIC_ATTEMPTS=1", result.stderr)
+        self.assertIn("ASSIST_DIAGNOSTIC_TIMEOUT_COUNT=1", result.stderr)
+        self.assertIn("ASSIST_DIAGNOSTIC_ENABLED_TRUE_COUNT=0", result.stderr)
+        self.assertIn("ASSIST_DIAGNOSTIC_FINAL_CATEGORY=timeout", result.stderr)
+        self.assertIn("ASSIST_DIAGNOSTIC_FINAL_CLI_EXIT=timeout", result.stderr)
+        self.assertNotIn("device-id-fixture", result.stdout + result.stderr)
+        self.assertNotIn("CustomCodeFixture", result.stdout + result.stderr)
 
     def test_real_enable_assist_helper_reports_success_exactly(self):
         result = self.run_harness("outer-success")
@@ -642,6 +661,83 @@ class MacOSAssistAllowAggregationTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("ASSIST_DIAGNOSTIC_ENABLED_TRUE_COUNT=1", result.stderr)
         self.assertIn("TEMPORARY_TREE_EMPTY=true", result.stdout)
+
+    def test_deadline_checkpoints_sanitize_expired_attempts_as_timeout(self):
+        for scenario in (
+            "deadline-after-child",
+            "deadline-after-record",
+            "deadline-before-enabled",
+        ):
+            with self.subTest(scenario=scenario):
+                result = self.run_harness(scenario)
+                self.assert_timeout_checkpoint_contract(result)
+
+    def test_deadline_checkpoint_mutations_break_the_timeout_contract(self):
+        source = text(SCRIPT_PATH)
+        mutations = (
+            (
+                "deadline-after-child",
+                'if [ "$remaining" -le 0 ]; then\n'
+                "            execution_state=timeout\n"
+                "            execution_exit=timeout",
+                "if false; then\n"
+                "            execution_state=timeout\n"
+                "            execution_exit=timeout",
+            ),
+            (
+                "deadline-after-record",
+                'read_assist_now || return 1\n'
+                '        remaining="$((deadline - now))"\n'
+                '        if [ "$remaining" -le 0 ]; then\n'
+                "            category=timeout\n"
+                "            safe_exit=timeout\n"
+                "        fi\n\n"
+                '        if [ "$category" = enabled-true ]; then',
+                'read_assist_now || return 1\n'
+                '        remaining="$((deadline - now))"\n'
+                "        if false; then\n"
+                "            category=timeout\n"
+                "            safe_exit=timeout\n"
+                "        fi\n\n"
+                '        if [ "$category" = enabled-true ]; then',
+            ),
+            (
+                "deadline-before-enabled",
+                'if [ "$category" = enabled-true ]; then\n'
+                "            read_assist_now || return 1\n"
+                '            remaining="$((deadline - now))"',
+                "if false; then\n"
+                "            read_assist_now || return 1\n"
+                '            remaining="$((deadline - now))"',
+            ),
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            for scenario, old, new in mutations:
+                with self.subTest(scenario=scenario):
+                    mutated = source.replace(old, new, 1)
+                    self.assertNotEqual(mutated, source)
+                    subject = Path(temporary_directory) / f"{scenario}.sh"
+                    subject.write_text(mutated, encoding="utf-8")
+                    result = self.run_harness(
+                        scenario,
+                        {"MACOS_ASSIST_ALLOW_SUBJECT_SOURCE": str(subject)},
+                    )
+                    with self.assertRaises(AssertionError):
+                        self.assert_timeout_checkpoint_contract(result)
+
+    def test_poll_failure_stops_after_one_attempt_without_leaking_stderr(self):
+        result = self.run_harness("poll-failure")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(
+            result.stdout,
+            "TEMPORARY_TREE_EMPTY=true\nBOUNDARY_CALLS=1\n",
+        )
+        self.assertEqual(
+            result.stderr,
+            "Could not enable unattended control within 60 seconds\n",
+        )
+        self.assertNotIn("FORGED_POLL_STDERR", result.stdout + result.stderr)
+        self.assertNotIn("device-id-fixture", result.stdout + result.stderr)
 
     def test_per_call_timeout_and_poll_are_bounded_by_remaining_deadline(self):
         result = self.run_harness("deadline-bounds")

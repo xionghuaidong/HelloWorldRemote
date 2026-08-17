@@ -713,6 +713,8 @@ esac && {
     clock_count_path="$temporary_directory/clock-count"
     printf '0\n' >"$clock_count_path"
     boundary_calls=0
+    boundary_count_path="$temporary_directory/boundary-count"
+    printf '0\n' >"$boundary_count_path"
     temporary_tree="$temporary_directory/assist-tree"
     mkdir -m 700 "$temporary_tree"
     TMPDIR="$temporary_tree"
@@ -760,11 +762,24 @@ esac && {
                     return 7
                 fi
                 ;;
+            deadline-after-child)
+                if [ "$clock_calls" -le 2 ]; then printf '0\n'; else printf '60000\n'; fi
+                ;;
+            deadline-after-record)
+                if [ "$clock_calls" -le 2 ]; then printf '0\n'; elif [ "$clock_calls" -eq 3 ]; then printf '100\n'; else printf '60000\n'; fi
+                ;;
+            deadline-before-enabled)
+                if [ "$clock_calls" -le 2 ]; then printf '0\n'; elif [ "$clock_calls" -eq 3 ]; then printf '100\n'; elif [ "$clock_calls" -eq 4 ]; then printf '200\n'; else printf '60000\n'; fi
+                ;;
             *) printf '%s\n' "$controlled_now" ;;
         esac
     }
 
     wait_uuremote_poll() {
+        if [ "$scenario" = "poll-failure" ]; then
+            echo 'FORGED_POLL_STDERR=device-id-fixture CustomCodeFixture' >&2
+            return 7
+        fi
         if [ "$scenario" = "deadline-bounds" ] && [ "$1" -ne 500 ]; then
             echo "Polling interval exceeded the remaining deadline" >&2
             exit 1
@@ -778,6 +793,7 @@ esac && {
         local timeout_milliseconds="$3"
         shift 3
         boundary_calls="$((boundary_calls + 1))"
+        printf '%s\n' "$boundary_calls" >"$boundary_count_path"
         if [ "$mode" = outer-cleanup-false ] || [ "$mode" = outer-cleanup-raises ] || \
             [ "$mode" = outer-post-unmask ] || [ "$mode" = outer-first-wait ] || \
             [ "$mode" = outer-block-false ] || [ "$mode" = outer-block-raises ]; then
@@ -821,6 +837,19 @@ esac && {
                 printf '{"success":true,"enabled":false}' >"$output_path"; controlled_now=60000 ;;
             late-success:1)
                 printf '{"success":true,"enabled":true}' >"$output_path"; controlled_now=60000 ;;
+            deadline-after-child:1)
+                printf 'completed:invalid\n' >"$status_path"
+                printf '{"success":true,"enabled":true,"deviceId":"device-id-fixture","customCode":"CustomCodeFixture"}' >"$output_path"
+                ;;
+            deadline-after-record:1)
+                printf '{"success":true,"enabled":false}' >"$output_path"
+                ;;
+            deadline-before-enabled:1)
+                printf '{"success":true,"enabled":true}' >"$output_path"
+                ;;
+            poll-failure:1)
+                printf '{"success":true,"enabled":false}' >"$output_path"
+                ;;
             internal-invalid-record:1)
                 printf '{"success":true,"enabled":true}' >"$output_path"; controlled_now=100 ;;
             record-trailing-newline:1|record-trailing-tab:1|record-extra-field:1)
@@ -846,7 +875,7 @@ esac && {
     }
 
     case "$scenario" in
-        deadline-bounds|debug1-failure|hostile-failure|late-success|invalid-clock|invalid-clock-loop|invalid-clock-post-call|clock-status-start|clock-status-loop|clock-status-post-call) debug_level=1 ;;
+        deadline-bounds|debug1-failure|hostile-failure|late-success|deadline-after-child|deadline-after-record|deadline-before-enabled|invalid-clock|invalid-clock-loop|invalid-clock-post-call|clock-status-start|clock-status-loop|clock-status-post-call) debug_level=1 ;;
         debug2-failure) debug_level=2 ;;
         debug3-failure) debug_level=3 ;;
         internal-invalid-record)
@@ -983,7 +1012,7 @@ esac && {
                 return 0
             }
             ;;
-        transient-success|debug0-failure|outer-cleanup-false|outer-cleanup-raises|outer-post-unmask|outer-first-wait|outer-block-false|outer-block-raises) ;;
+        transient-success|debug0-failure|poll-failure|outer-cleanup-false|outer-cleanup-raises|outer-post-unmask|outer-first-wait|outer-block-false|outer-block-raises) ;;
         *) exit 2 ;;
     esac
 
@@ -1026,8 +1055,11 @@ esac && {
         exit 1
     fi
     case "$scenario" in
-        late-success|invalid-clock|invalid-clock-loop|invalid-clock-post-call|clock-status-start|clock-status-loop|clock-status-post-call|fault-mktemp|fault-chmod|fault-truncate|fault-status-write|fault-cleanup)
+        late-success|deadline-after-child|deadline-after-record|deadline-before-enabled|poll-failure|invalid-clock|invalid-clock-loop|invalid-clock-post-call|clock-status-start|clock-status-loop|clock-status-post-call|fault-mktemp|fault-chmod|fault-truncate|fault-status-write|fault-cleanup)
         printf 'TEMPORARY_TREE_EMPTY=true\n'
+        if [ "$scenario" = poll-failure ]; then
+            printf 'BOUNDARY_CALLS=%s\n' "$(cat "$boundary_count_path")"
+        fi
             ;;
     esac
     echo "Could not enable unattended control within 60 seconds" >&2

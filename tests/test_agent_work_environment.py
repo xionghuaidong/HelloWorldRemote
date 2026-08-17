@@ -453,7 +453,7 @@ class AgentInstructionContractTests(unittest.TestCase):
             python_end = source.index("\nPYTHON\n}", python_start)
             return source[python_start:python_end]
 
-        def assert_runner_contract(plan_runner: str, production_runner: str) -> None:
+        def assert_runner_ast_parity(plan_runner: str, production_runner: str) -> None:
             plan_tree = ast.parse(plan_runner)
             production_tree = ast.parse(production_runner)
             self.assertEqual(
@@ -461,6 +461,8 @@ class AgentInstructionContractTests(unittest.TestCase):
                 ast.dump(production_tree, include_attributes=False),
             )
 
+        def assert_runner_semantic_contract(plan_runner: str) -> None:
+            plan_tree = ast.parse(plan_runner)
             imports = {
                 alias.name
                 for node in plan_tree.body
@@ -526,6 +528,18 @@ class AgentInstructionContractTests(unittest.TestCase):
             self.assertIn("cleanup_owned_process_no_throw", cleanup_gate_dump)
             self.assertIn("release_owned_process_if_confirmed", cleanup_gate_dump)
             self.assertIn("signal_blocked", cleanup_gate_dump)
+            self.assertIn(
+                "Return(value=BoolOp(op=And(), values=[Name(id='signal_blocked'",
+                cleanup_gate_dump,
+            )
+            self.assertIn(
+                "process_group_id = process.pid\n        owned_cleanup_required = True",
+                plan_runner,
+            )
+            self.assertIn(
+                "signal_blocked = block_handled_signals_for_cleanup() is True",
+                plan_runner,
+            )
 
         production_runner = extract_runner(
             text(ROOT / ".github/workflows/apple.sh")
@@ -536,47 +550,43 @@ class AgentInstructionContractTests(unittest.TestCase):
         ):
             plan_runner = extract_runner(text(ROOT / name))
             with self.subTest(name=name):
-                assert_runner_contract(plan_runner, production_runner)
+                assert_runner_ast_parity(plan_runner, production_runner)
+                assert_runner_semantic_contract(plan_runner)
                 with self.assertRaises(AssertionError):
-                    assert_runner_contract(
+                    assert_runner_semantic_contract(
                         plan_runner.replace("timeout=0.5", "timeout=0.75", 1),
-                        production_runner,
                     )
                 with self.assertRaises(AssertionError):
-                    assert_runner_contract(
+                    assert_runner_semantic_contract(
                         plan_runner.replace(
                             "os.killpg(process_group_id, 0)",
                             "return None",
                             1,
                         ),
-                        production_runner,
                     )
                 with self.assertRaises(AssertionError):
-                    assert_runner_contract(
+                    assert_runner_semantic_contract(
                         plan_runner.replace(
                             "return signal_blocked and cleanup_confirmed",
                             "return cleanup_confirmed",
                             1,
                         ),
-                        production_runner,
                     )
                 with self.assertRaises(AssertionError):
-                    assert_runner_contract(
+                    assert_runner_semantic_contract(
                         plan_runner.replace(
                             "process_group_id = process.pid\n        owned_cleanup_required = True",
                             "process_group_id = process.pid",
                             1,
                         ),
-                        production_runner,
                     )
                 with self.assertRaises(AssertionError):
-                    assert_runner_contract(
+                    assert_runner_semantic_contract(
                         plan_runner.replace(
                             "signal_blocked = block_handled_signals_for_cleanup() is True",
                             "signal_blocked = True",
                             1,
                         ),
-                        production_runner,
                     )
 
 

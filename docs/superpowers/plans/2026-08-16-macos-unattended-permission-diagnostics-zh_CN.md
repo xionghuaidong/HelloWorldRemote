@@ -34,6 +34,14 @@
 
 ---
 
+## Review follow-up：deadline checkpoints 和 poll failure
+
+每次 bounded child 返回后，在读取其 status 前读取并验证 monotonic clock。如果 absolute deadline 已过期，将这一次 attempt 分类为 `timeout`/`timeout`，且不信任 child status 或 payload；classifier 只能在清空私有文件前保留安全的 byte count。随后在 classifier-record framing 以及 category/exit validation 后再次读取 clock，并在接受 `enabled-true` 前立即再读一次。任何 checkpoint 的 expiry 都把该 attempt 的 category 和 safe exit 替换为 `timeout`，恰好 accounting 一次，并在不接受 late success 的情况下结束窗口。`wait_uuremote_poll` 的 stderr 必须重定向到 `/dev/null`；非零 poll result 通过现有 outer generic failure fail-closed，且不得 hot-loop。
+
+测试使用三个独立受控的 clock crossing（child 后、record validation 后和 enabled acceptance 前）、移除每个 checkpoint 的 isolated mutation，以及 hostile poll-failure fixture。runner-plan AST parity test 与 semantic-contract mutation 分开，因此每个 semantic mutation 都由 semantic assertion 评估，而不是只因 parity 失败。
+
+---
+
 ### Task 1：增加严格的安全 response classifier
 
 **文件：**

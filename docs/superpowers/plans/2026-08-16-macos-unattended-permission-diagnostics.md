@@ -33,6 +33,28 @@
 
 ---
 
+## Review follow-up: deadline checkpoints and poll failure
+
+After every bounded child returns, read and validate the monotonic clock before
+reading its status. If the absolute deadline has expired, classify that one
+attempt as `timeout`/`timeout` without trusting the child status or payload;
+the classifier may retain only the safe byte count before private-file
+truncation. Read the clock again after classifier-record framing and
+category/exit validation, and once more immediately before accepting
+`enabled-true`. An expiry at any checkpoint replaces that attempt's category
+with `timeout` and safe exit with `timeout`, accounts for it exactly once, and
+stops the window without a late success. `wait_uuremote_poll` must have stderr
+redirected to `/dev/null`; a nonzero poll result fails closed through the
+existing outer generic failure and cannot hot-loop.
+
+Tests use three independently controlled clock crossings (after child, after
+record validation, and before enabled acceptance), isolated mutations removing
+each checkpoint, and a hostile poll-failure fixture. The runner-plan AST parity
+test is separate from semantic-contract mutations, so each semantic mutation
+is evaluated by the semantic assertions rather than failing only parity.
+
+---
+
 ### Task 1: Add the strict safe response classifier
 
 **Files:**
