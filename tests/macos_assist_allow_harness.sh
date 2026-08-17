@@ -201,6 +201,29 @@ case "$mode" in
         ;;
 esac
 case "$mode" in
+    block-false|block-raises|block-false-post-fault|block-raises-post-fault|outer-block-false|outer-block-raises)
+        awk -v fault_mode="$mode" '
+            /^def block_handled_signals_for_cleanup\(\):$/ {
+                print
+                if (fault_mode == "block-raises" || fault_mode == "block-raises-post-fault" || fault_mode == "outer-block-raises") {
+                    print "    raise RuntimeError"
+                } else {
+                    print "    return False"
+                }
+                skipping = 1
+                next
+            }
+            skipping && /^$/ {
+                skipping = 0
+                print
+                next
+            }
+            !skipping { print }
+        ' "$subject" >"$subject.fault"
+        mv "$subject.fault" "$subject"
+        ;;
+esac
+case "$mode" in
     fault-post-unmask|outer-post-unmask)
         awk '
             /^        previous_signal_mask = None$/ {
@@ -212,7 +235,7 @@ case "$mode" in
         ' "$subject" >"$subject.injected"
         mv "$subject.injected" "$subject"
         ;;
-    fault-first-wait|outer-first-wait)
+    fault-first-wait|outer-first-wait|block-false-post-fault|block-raises-post-fault)
         awk '
             /^        return_code = process\.wait\(timeout=timeout_seconds\)$/ {
                 print "        raise RuntimeError"
@@ -269,7 +292,7 @@ fi
 scenario="${2:?}"
 
 case "$mode" in
-    process|fault-*|pending-finalization-swapped) ;;
+    process|fault-*|block-*|pending-finalization-swapped) ;;
     *) false ;;
 esac && {
     status_path="$temporary_directory/status"
@@ -293,7 +316,8 @@ esac && {
             fi
             ;;
         timeout)
-            if [ "$mode" = fault-timeout ] || [ "$mode" = fault-raises ]; then
+            if [ "$mode" = fault-timeout ] || [ "$mode" = fault-raises ] || \
+                [ "$mode" = block-false ] || [ "$mode" = block-raises ]; then
                 run_boundary=run_recorded_bounded_fixture
             else
                 run_boundary=run_bounded_uuremote_cli_to_file_with_status
@@ -307,7 +331,8 @@ esac && {
             else
                 bounded_exit="$?"
             fi
-            if [ "$mode" = fault-timeout ] || [ "$mode" = fault-raises ]; then
+            if [ "$mode" = fault-timeout ] || [ "$mode" = fault-raises ] || \
+                [ "$mode" = block-false ] || [ "$mode" = block-raises ]; then
                 if [ "$bounded_exit" -ne 125 ]; then
                     echo "Unconfirmed cleanup did not fail closed" >&2
                     exit 1
@@ -343,7 +368,8 @@ esac && {
             exit 0
             ;;
         post-ownership-fault)
-            if [ "$mode" != fault-post-unmask ] && [ "$mode" != fault-first-wait ]; then
+            if [ "$mode" != fault-post-unmask ] && [ "$mode" != fault-first-wait ] && \
+                [ "$mode" != block-false-post-fault ] && [ "$mode" != block-raises-post-fault ]; then
                 exit 2
             fi
             if run_recorded_bounded_fixture \
@@ -471,7 +497,8 @@ esac && {
                 echo "Interrupted runner did not fail closed" >&2
                 exit 1
             fi
-            if [ "$mode" = fault-signal ] || [ "$mode" = fault-signal-raises ]; then
+            if [ "$mode" = fault-signal ] || [ "$mode" = fault-signal-raises ] || \
+                [ "$mode" = block-false ] || [ "$mode" = block-raises ]; then
                 if [ -s "$runner_status_path" ]; then
                     echo "Unconfirmed cleanup wrote a status" >&2
                     exit 1
@@ -480,7 +507,8 @@ esac && {
                 echo "Interrupted runner status was not unavailable" >&2
                 exit 1
             fi
-            if [ "$mode" = fault-signal ] || [ "$mode" = fault-signal-raises ]; then
+            if [ "$mode" = fault-signal ] || [ "$mode" = fault-signal-raises ] || \
+                [ "$mode" = block-false ] || [ "$mode" = block-raises ]; then
                 if ! assert_recorded_fixture_teardown; then
                     echo "Unconfirmed signal cleanup left a recorded process" >&2
                     exit 1
@@ -630,7 +658,8 @@ esac && {
             exit 0
             ;;
         leader-fault)
-            if [ "$mode" != fault-leader ] && [ "$mode" != fault-leader-raises ]; then
+            if [ "$mode" != fault-leader ] && [ "$mode" != fault-leader-raises ] && \
+                [ "$mode" != block-false ] && [ "$mode" != block-raises ]; then
                 exit 2
             fi
             if run_recorded_bounded_fixture \
@@ -673,7 +702,7 @@ esac && {
 }
 
 case "$mode" in
-    aggregate|outer-cleanup-*|outer-post-unmask|outer-first-wait) ;;
+    aggregate|outer-cleanup-*|outer-post-unmask|outer-first-wait|outer-block-false|outer-block-raises) ;;
     *) false ;;
 esac && {
     . "$subject"
@@ -688,7 +717,8 @@ esac && {
     mkdir -m 700 "$temporary_tree"
     TMPDIR="$temporary_tree"
     if [ "$mode" = outer-cleanup-false ] || [ "$mode" = outer-cleanup-raises ] || \
-        [ "$mode" = outer-post-unmask ] || [ "$mode" = outer-first-wait ]; then
+        [ "$mode" = outer-post-unmask ] || [ "$mode" = outer-first-wait ] || \
+        [ "$mode" = outer-block-false ] || [ "$mode" = outer-block-raises ]; then
         parent_pid_path="$temporary_directory/outer-parent.pid"
         child_pid_path="$temporary_directory/outer-child.pid"
         outer_teardown_marker="$temporary_directory/outer-teardown-confirmed"
@@ -749,7 +779,8 @@ esac && {
         shift 3
         boundary_calls="$((boundary_calls + 1))"
         if [ "$mode" = outer-cleanup-false ] || [ "$mode" = outer-cleanup-raises ] || \
-            [ "$mode" = outer-post-unmask ] || [ "$mode" = outer-first-wait ]; then
+            [ "$mode" = outer-post-unmask ] || [ "$mode" = outer-first-wait ] || \
+            [ "$mode" = outer-block-false ] || [ "$mode" = outer-block-raises ]; then
             if run_recorded_bounded_fixture \
                 "$output_path" "$status_path" "$timeout_milliseconds" \
                 /bin/bash "$0" fixture-hang "$parent_pid_path" "$child_pid_path"
@@ -952,13 +983,14 @@ esac && {
                 return 0
             }
             ;;
-        transient-success|debug0-failure|outer-cleanup-false|outer-cleanup-raises|outer-post-unmask|outer-first-wait) ;;
+        transient-success|debug0-failure|outer-cleanup-false|outer-cleanup-raises|outer-post-unmask|outer-first-wait|outer-block-false|outer-block-raises) ;;
         *) exit 2 ;;
     esac
 
     if [ "$scenario" = outer-success ] || \
         [ "$mode" = outer-cleanup-false ] || [ "$mode" = outer-cleanup-raises ] || \
-        [ "$mode" = outer-post-unmask ] || [ "$mode" = outer-first-wait ]; then
+        [ "$mode" = outer-post-unmask ] || [ "$mode" = outer-first-wait ] || \
+        [ "$mode" = outer-block-false ] || [ "$mode" = outer-block-raises ]; then
         if enable_assist_or_fail; then
             status=0
         else
@@ -970,7 +1002,8 @@ esac && {
             fi
         fi
         if [ "$mode" = outer-cleanup-false ] || [ "$mode" = outer-cleanup-raises ] || \
-            [ "$mode" = outer-post-unmask ] || [ "$mode" = outer-first-wait ]; then
+            [ "$mode" = outer-post-unmask ] || [ "$mode" = outer-first-wait ] || \
+            [ "$mode" = outer-block-false ] || [ "$mode" = outer-block-raises ]; then
             if is_native_macos; then
                 if [ ! -f "$outer_teardown_marker" ]; then
                     exit 125

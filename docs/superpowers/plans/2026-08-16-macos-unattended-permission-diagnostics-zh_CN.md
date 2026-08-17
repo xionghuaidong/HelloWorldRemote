@@ -25,7 +25,8 @@
 - 不修改 Windows runtime，不削弱 TCC 或其他 operating-system control，不猜测其他 vendor command，也不降级为较弱的 readiness check。
 - 原始 response file 和 status file 保持 mode `0600`；分类后清空 response，并通过有界 fail-closed 清理策略尝试删除私有临时文件。
 - helper 使用有界 fail-closed 清理策略：`TERM`→`KILL`→回收/PGID 探测，`TERM` grace 最多 500 milliseconds，`KILL`/回收/PGID-probe grace 最多 500 milliseconds。清理最多只能在一次 CLI attempt 之外增加已记录的固定清理宽限；绝不无限等待。
-- 确认清理后才发布现有安全 status。未确认清理或异常不发布最终 status，并以 `125` 退出；controller 只输出现有通用失败，后续 normal 或 provisioning operation 不继续。只有现有 `always()` finalization/artifact-upload step 和 hosted-runner teardown 可以执行。原始 assist payload、secrets、device connection data 和新的 `ASSIST_DIAGNOSTIC_*` fields 绝不进入 artifact；这些 fields 只保留在当前 step 日志。现有 sanitized CLI diagnostics 可以由 `always()` artifact step 上传。OS-level 残留可能仍无法确认；不得声称绝对清理。
+- 仅已确认的 cleanup 以及已确认的 handled-signal blocking 才能发布现有安全的 `timeout` 或 `unavailable` status。signal-block setup 返回 Boolean；callers 将 false value 或注入的 exception 防御性地按 false 处理，同时仍调用 no-throw owned-process cleanup。broad post-owned exception 始终不发布 status。任何未确认 prerequisite 或 cleanup exception 均以 `125` 退出；controller 只输出现有通用失败，后续 normal 或 provisioning operation 不继续。只有现有 `always()` finalization/artifact-upload step 和 hosted-runner teardown 可以执行。原始 assist payload、secrets、device connection data 和新的 `ASSIST_DIAGNOSTIC_*` fields 绝不进入 artifact；这些 fields 只保留在当前 step 日志。现有 sanitized CLI diagnostics 可以由 `always()` artifact step 上传。OS-level 残留可能仍无法确认；不得声称绝对清理。
+- 确认清理后才发布现有安全 status。未确认清理或异常不发布最终 status，并以 `125` 退出。
 - 当前 GitHub-hosted macOS runner 在 job 失败后的 teardown 属于外部遏制。如果将来采用 reused/self-hosted 执行，该 runner 必须被隔离，且在 operator 确认无残留前不得复用。
 - 诊断性 live run 后停止。证据未经 review，且必要时未修订设计前，不实施 root-cause fix。
 - 每个 implementation task 结束时进行独立 code-review gate。进入下一 task 前解决全部 Critical 和 Important findings。
@@ -496,11 +497,25 @@ def interrupt_handler(_signum, _frame):
 
 def block_handled_signals_for_cleanup():
     global cleanup_signal_mask
-    if os.name != "nt" and hasattr(signal, "pthread_sigmask"):
-        cleanup_signal_mask = signal.pthread_sigmask(
-            signal.SIG_BLOCK,
-            handled_signals,
-        )
+    try:
+        if os.name != "nt" and hasattr(signal, "pthread_sigmask"):
+            cleanup_signal_mask = signal.pthread_sigmask(
+                signal.SIG_BLOCK,
+                handled_signals,
+            )
+    except Exception:
+        return False
+    return True
+
+def cleanup_owned_process_after_signal_block():
+    try:
+        signal_blocked = block_handled_signals_for_cleanup() is True
+    except Exception:
+        signal_blocked = False
+    cleanup_confirmed = release_owned_process_if_confirmed(
+        cleanup_owned_process_no_throw(),
+    )
+    return signal_blocked and cleanup_confirmed
 
 exit_code = 125
 
@@ -546,12 +561,11 @@ try:
         return_code = process.wait(timeout=timeout_seconds)
     except subprocess.TimeoutExpired:
         cleanup_in_progress = True
-        block_handled_signals_for_cleanup()
-        if not release_owned_process_if_confirmed(cleanup_owned_process_no_throw()):
-            exit_code = 125
-        else:
+        if cleanup_owned_process_after_signal_block():
             write_status("timeout")
             exit_code = 124
+        else:
+            exit_code = 125
     else:
         try:
             group_remains = process_group_alive()
@@ -559,8 +573,7 @@ try:
             group_remains = True
         if group_remains is True:
             cleanup_in_progress = True
-            block_handled_signals_for_cleanup()
-            if release_owned_process_if_confirmed(cleanup_owned_process_no_throw()):
+            if cleanup_owned_process_after_signal_block():
                 write_status("unavailable")
             exit_code = 125
         else:
@@ -570,20 +583,12 @@ try:
             exit_code = safe_return_code
 except HandledSignal:
     cleanup_in_progress = True
-    block_handled_signals_for_cleanup()
-    if process is not None:
-        if release_owned_process_if_confirmed(cleanup_owned_process_no_throw()):
-            write_status("unavailable")
-    else:
+    if cleanup_owned_process_after_signal_block():
         write_status("unavailable")
     exit_code = 125
 except Exception:
-    if owned_cleanup_required and process is not None:
-        cleanup_in_progress = True
-        block_handled_signals_for_cleanup()
-        release_owned_process_if_confirmed(cleanup_owned_process_no_throw())
-    else:
-        write_status("unavailable")
+    cleanup_in_progress = True
+    cleanup_owned_process_after_signal_block()
     exit_code = 125
 finally:
     cleanup_in_progress = True

@@ -420,7 +420,8 @@ class AgentInstructionContractTests(unittest.TestCase):
         self.assertIn("process_group_id = process.pid\n        owned_cleanup_required = True", runner)
         self.assertIn("cleanup_owned_process_no_throw", runner)
         self.assertIn("release_owned_process_if_confirmed", runner)
-        self.assertIn("release_owned_process_if_confirmed(cleanup_owned_process_no_throw())", runner)
+        self.assertIn("cleanup_owned_process_after_signal_block", runner)
+        self.assertIn("cleanup_confirmed = release_owned_process_if_confirmed(", runner)
         self.assertIn("except Exception:", runner)
         self.assertIn("exit_code = 125", runner)
         self.assertIn("Could not enable unattended control within 60 seconds", outer)
@@ -475,6 +476,8 @@ class AgentInstructionContractTests(unittest.TestCase):
             }
             self.assertIn("process_group_alive", functions)
             self.assertIn("cleanup_owned_process", functions)
+            self.assertIn("block_handled_signals_for_cleanup", functions)
+            self.assertIn("cleanup_owned_process_after_signal_block", functions)
             self.assertIn("restore_child_signal_mask", ast.dump(plan_tree))
 
             half_second_constants = [
@@ -502,17 +505,27 @@ class AgentInstructionContractTests(unittest.TestCase):
                 for handler in node.handlers
                 if isinstance(handler.type, ast.Name) and handler.type.id == "Exception"
             )
-            self.assertIsInstance(generic_handler.body[0], ast.If)
-            guarded_publish = generic_handler.body[0]
-            self.assertIsInstance(guarded_publish.test, ast.BoolOp)
-            self.assertIsInstance(guarded_publish.test.op, ast.And)
-            self.assertEqual(
-                ast.dump(guarded_publish.test, include_attributes=False),
-                "BoolOp(op=And(), values=[Name(id='owned_cleanup_required', ctx=Load()), Compare(left=Name(id='process', ctx=Load()), ops=[IsNot()], comparators=[Constant(value=None)])])",
+            generic_body = ast.dump(
+                ast.Module(body=generic_handler.body, type_ignores=[]),
+                include_attributes=False,
             )
-            owned_body = ast.dump(ast.Module(body=guarded_publish.body, type_ignores=[]), include_attributes=False)
-            self.assertIn("cleanup_owned_process_no_throw", owned_body)
-            self.assertNotIn("write_status", owned_body)
+            self.assertIn("cleanup_owned_process_after_signal_block", generic_body)
+            self.assertNotIn("write_status", generic_body)
+
+            signal_blocker_dump = ast.dump(
+                functions["block_handled_signals_for_cleanup"],
+                include_attributes=False,
+            )
+            self.assertIn("Return(value=Constant(value=False))", signal_blocker_dump)
+            self.assertIn("Return(value=Constant(value=True))", signal_blocker_dump)
+
+            cleanup_gate_dump = ast.dump(
+                functions["cleanup_owned_process_after_signal_block"],
+                include_attributes=False,
+            )
+            self.assertIn("cleanup_owned_process_no_throw", cleanup_gate_dump)
+            self.assertIn("release_owned_process_if_confirmed", cleanup_gate_dump)
+            self.assertIn("signal_blocked", cleanup_gate_dump)
 
         production_runner = extract_runner(
             text(ROOT / ".github/workflows/apple.sh")
@@ -541,8 +554,8 @@ class AgentInstructionContractTests(unittest.TestCase):
                 with self.assertRaises(AssertionError):
                     assert_runner_contract(
                         plan_runner.replace(
-                            "release_owned_process_if_confirmed(cleanup_owned_process_no_throw())",
-                            "write_status(\"unavailable\")",
+                            "return signal_blocked and cleanup_confirmed",
+                            "return cleanup_confirmed",
                             1,
                         ),
                         production_runner,
@@ -559,8 +572,8 @@ class AgentInstructionContractTests(unittest.TestCase):
                 with self.assertRaises(AssertionError):
                     assert_runner_contract(
                         plan_runner.replace(
-                            "release_owned_process_if_confirmed(cleanup_owned_process_no_throw())",
-                            "cleanup_owned_process_no_throw()",
+                            "signal_blocked = block_handled_signals_for_cleanup() is True",
+                            "signal_blocked = True",
                             1,
                         ),
                         production_runner,

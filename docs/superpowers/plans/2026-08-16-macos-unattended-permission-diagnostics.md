@@ -25,7 +25,7 @@
 - Do not modify the Windows runtime, weaken TCC or other operating-system controls, guess another vendor command, or fall back to a weaker readiness check.
 - Keep raw response files and status files mode `0600`, truncate the response after classification, and attempt private temporary-file removal through the bounded fail-closed cleanup policy.
 - The helper uses the bounded fail-closed cleanup policy: `TERM`→`KILL`→reap/PGID probe, with at most 500 milliseconds of `TERM` grace and at most 500 milliseconds of `KILL`/reap/PGID-probe grace. Cleanup may add only the documented fixed cleanup grace beyond a CLI attempt; it never waits indefinitely.
-- Only confirmed cleanup publishes the existing safe status. Unconfirmed cleanup or an exception publishes no final status and exits `125`; the controller emits only the existing generic failure, and no subsequent normal or provisioning operation continues. Only the existing `always()` finalization/artifact-upload steps and hosted-runner teardown may execute. Raw assist payload, secrets, device connection data, and the new `ASSIST_DIAGNOSTIC_*` fields never enter artifacts; those fields remain in the current-step log only. The existing sanitized CLI diagnostics may be uploaded by the `always()` artifact step. OS-level residue may remain unconfirmed; no absolute cleanup claim is made.
+- Only confirmed cleanup publishes the existing safe status. Publishing `timeout` or `unavailable` also requires confirmed handled-signal blocking. Signal-block setup returns a Boolean and callers defensively treat a false value or injected exception as false, while still invoking no-throw owned-process cleanup. A broad post-owned exception always publishes no status. Unconfirmed cleanup or an exception publishes no final status and exits `125`; any unconfirmed prerequisite also exits `125`. The controller emits only the existing generic failure, and no subsequent normal or provisioning operation continues. Only the existing `always()` finalization/artifact-upload steps and hosted-runner teardown may execute. Raw assist payload, secrets, device connection data, and the new `ASSIST_DIAGNOSTIC_*` fields never enter artifacts; those fields remain in the current-step log only. The existing sanitized CLI diagnostics may be uploaded by the `always()` artifact step. OS-level residue may remain unconfirmed; no absolute cleanup claim is made.
 - Current GitHub-hosted macOS runner teardown is external containment after job failure. If reused/self-hosted execution is ever adopted, the runner must be quarantined and not reused until an operator confirms no residue.
 - Stop after the diagnostic live run. Do not implement a root-cause fix until the evidence is reviewed and the design is amended when required.
 - End each implementation task with an independent code-review gate. Resolve all Critical and Important findings before the next task.
@@ -496,11 +496,25 @@ def interrupt_handler(_signum, _frame):
 
 def block_handled_signals_for_cleanup():
     global cleanup_signal_mask
-    if os.name != "nt" and hasattr(signal, "pthread_sigmask"):
-        cleanup_signal_mask = signal.pthread_sigmask(
-            signal.SIG_BLOCK,
-            handled_signals,
-        )
+    try:
+        if os.name != "nt" and hasattr(signal, "pthread_sigmask"):
+            cleanup_signal_mask = signal.pthread_sigmask(
+                signal.SIG_BLOCK,
+                handled_signals,
+            )
+    except Exception:
+        return False
+    return True
+
+def cleanup_owned_process_after_signal_block():
+    try:
+        signal_blocked = block_handled_signals_for_cleanup() is True
+    except Exception:
+        signal_blocked = False
+    cleanup_confirmed = release_owned_process_if_confirmed(
+        cleanup_owned_process_no_throw(),
+    )
+    return signal_blocked and cleanup_confirmed
 
 exit_code = 125
 
@@ -546,12 +560,11 @@ try:
         return_code = process.wait(timeout=timeout_seconds)
     except subprocess.TimeoutExpired:
         cleanup_in_progress = True
-        block_handled_signals_for_cleanup()
-        if not release_owned_process_if_confirmed(cleanup_owned_process_no_throw()):
-            exit_code = 125
-        else:
+        if cleanup_owned_process_after_signal_block():
             write_status("timeout")
             exit_code = 124
+        else:
+            exit_code = 125
     else:
         try:
             group_remains = process_group_alive()
@@ -559,8 +572,7 @@ try:
             group_remains = True
         if group_remains is True:
             cleanup_in_progress = True
-            block_handled_signals_for_cleanup()
-            if release_owned_process_if_confirmed(cleanup_owned_process_no_throw()):
+            if cleanup_owned_process_after_signal_block():
                 write_status("unavailable")
             exit_code = 125
         else:
@@ -570,20 +582,12 @@ try:
             exit_code = safe_return_code
 except HandledSignal:
     cleanup_in_progress = True
-    block_handled_signals_for_cleanup()
-    if process is not None:
-        if release_owned_process_if_confirmed(cleanup_owned_process_no_throw()):
-            write_status("unavailable")
-    else:
+    if cleanup_owned_process_after_signal_block():
         write_status("unavailable")
     exit_code = 125
 except Exception:
-    if owned_cleanup_required and process is not None:
-        cleanup_in_progress = True
-        block_handled_signals_for_cleanup()
-        release_owned_process_if_confirmed(cleanup_owned_process_no_throw())
-    else:
-        write_status("unavailable")
+    cleanup_in_progress = True
+    cleanup_owned_process_after_signal_block()
     exit_code = 125
 finally:
     cleanup_in_progress = True
