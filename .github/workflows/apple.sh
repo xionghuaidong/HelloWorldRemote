@@ -1431,32 +1431,32 @@ ensure_assist_allowed() (
             "$response_path" "$status_path" "$attempt_timeout" \
             "$CLI" assist allow on >/dev/null 2>/dev/null || true
 
+        status_record="$(/bin/cat "$status_path" 2>/dev/null)" || return 1
+        case "$status_record" in
+            timeout)
+                execution_state=timeout
+                execution_exit=unavailable
+                ;;
+            unavailable)
+                execution_state=unavailable
+                execution_exit=unavailable
+                ;;
+            completed:*)
+                execution_state=completed
+                execution_exit="${status_record#completed:}"
+                case "$execution_exit" in
+                    ''|*[!0-9]*) return 1 ;;
+                esac
+                [ "$execution_exit" -le 255 ] || return 1
+                ;;
+            *) return 1 ;;
+        esac
+
         read_assist_now || return 1
         remaining="$((deadline - now))"
         if [ "$remaining" -le 0 ]; then
             execution_state=timeout
             execution_exit=timeout
-        else
-            status_record="$(/bin/cat "$status_path" 2>/dev/null)" || return 1
-            case "$status_record" in
-                timeout)
-                    execution_state=timeout
-                    execution_exit=unavailable
-                    ;;
-                unavailable)
-                    execution_state=unavailable
-                    execution_exit=unavailable
-                    ;;
-                completed:*)
-                    execution_state=completed
-                    execution_exit="${status_record#completed:}"
-                    case "$execution_exit" in
-                        ''|*[!0-9]*) return 1 ;;
-                    esac
-                    [ "$execution_exit" -le 255 ] || return 1
-                    ;;
-                *) return 1 ;;
-            esac
         fi
 
         uuremote_assist_truncate_file "$record_path" 2>/dev/null || return 1
@@ -1507,15 +1507,6 @@ ensure_assist_allowed() (
             safe_exit=timeout
         fi
 
-        if [ "$category" = enabled-true ]; then
-            read_assist_now || return 1
-            remaining="$((deadline - now))"
-            if [ "$remaining" -le 0 ]; then
-                category=timeout
-                safe_exit=timeout
-            fi
-        fi
-
         case "$category" in
             timeout) timeout_count="$((timeout_count + 1))" ;;
             cli-nonzero) cli_nonzero_count="$((cli_nonzero_count + 1))" ;;
@@ -1543,11 +1534,21 @@ ensure_assist_allowed() (
         final_category="$category"
         final_cli_exit="$safe_exit"
 
-        if [ "$category" = enabled-true ] && [ "$remaining" -gt 0 ]; then
+        if [ "$category" = enabled-true ]; then
             cleanup_assist_attempt || return 1
-            trap - EXIT HUP INT TERM
-            printf 'ASSIST_STATE=enabled\n'
-            return 0
+            read_assist_now || return 1
+            remaining="$((deadline - now))"
+            if [ "$remaining" -gt 0 ]; then
+                trap - EXIT HUP INT TERM
+                printf 'ASSIST_STATE=enabled\n'
+                return 0
+            fi
+            enabled_true_count="$((enabled_true_count - 1))"
+            timeout_count="$((timeout_count + 1))"
+            category=timeout
+            safe_exit=timeout
+            final_category=timeout
+            final_cli_exit=timeout
         fi
         [ "$remaining" -gt 0 ] || break
         sleep_timeout=500

@@ -35,15 +35,17 @@
 
 ## Review follow-up: deadline checkpoints and poll failure
 
-After every bounded child returns, read and validate the monotonic clock before
-reading its status. If the absolute deadline has expired, classify that one
-attempt as `timeout`/`timeout` without trusting the child status or payload;
-the classifier may retain only the safe byte count before private-file
-truncation. Read the clock again after classifier-record framing and
-category/exit validation, and once more immediately before accepting
-`enabled-true`. An expiry at any checkpoint replaces that attempt's category
-with `timeout` and safe exit with `timeout`, accounts for it exactly once, and
-stops the window without a late success. `wait_uuremote_poll` must have stderr
+After every bounded child returns, first require a readable, grammar-valid safe
+status. An absent or invalid status fails closed through the caller's generic
+error even if the deadline has expired. After that validation, read the
+monotonic clock. If the absolute deadline has expired, classify that one
+attempt as `timeout`/`timeout` without trusting the child payload; the
+classifier may retain only the safe byte count before private-file truncation.
+Read the clock again after classifier-record framing and category/exit
+validation, and again after accounting and cleanup immediately before emitting
+`ASSIST_STATE=enabled`. An expiry at any checkpoint replaces that attempt's
+category with `timeout` and safe exit with `timeout`, accounts for it exactly
+once, and stops the window without a late success. `wait_uuremote_poll` must have stderr
 redirected to `/dev/null`; a nonzero poll result fails closed through the
 existing outer generic failure and cannot hot-loop.
 
@@ -904,10 +906,19 @@ ensure_assist_allowed() (
     : >"$status_path"
     /bin/chmod 0600 "$response_path" "$status_path" || return 1
 
-    now="$(uuremote_now_milliseconds)"
+    read_assist_now() {
+        now="$(uuremote_now_milliseconds)" || return 1
+        case "$now" in
+            0) ;;
+            [1-9]* ) case "$now" in *[!0-9]*) return 1 ;; esac ;;
+            *) return 1 ;;
+        esac
+    }
+
+    read_assist_now || return 1
     deadline="$((now + 60000))"
     while :; do
-        now="$(uuremote_now_milliseconds)"
+        read_assist_now || return 1
         remaining="$((deadline - now))"
         [ "$remaining" -gt 0 ] || break
         attempts="$((attempts + 1))"
@@ -917,9 +928,9 @@ ensure_assist_allowed() (
         : >"$status_path"
         run_bounded_gui_cli_to_file \
             "$response_path" "$status_path" "$attempt_timeout" \
-            "$CLI" assist allow on || true
+            "$CLI" assist allow on >/dev/null 2>/dev/null || true
 
-        status_record="$(/bin/cat "$status_path")" || return 1
+        status_record="$(/bin/cat "$status_path" 2>/dev/null)" || return 1
         case "$status_record" in
             timeout)
                 execution_state=timeout
@@ -941,6 +952,13 @@ ensure_assist_allowed() (
                 return 1
                 ;;
         esac
+
+        read_assist_now || return 1
+        remaining="$((deadline - now))"
+        if [ "$remaining" -le 0 ]; then
+            execution_state=timeout
+            execution_exit=timeout
+        fi
 
         record="$(classify_assist_allow_response \
             "$response_path" "$execution_state" "$execution_exit")" || return 1
@@ -983,18 +1001,26 @@ ensure_assist_allowed() (
         final_category="$category"
         final_cli_exit="$safe_exit"
 
-        now="$(uuremote_now_milliseconds)"
-        remaining="$((deadline - now))"
-        if [ "$category" = enabled-true ] && [ "$remaining" -gt 0 ]; then
+        if [ "$category" = enabled-true ]; then
             cleanup_assist_attempt || return 1
-            trap - EXIT
-            printf 'ASSIST_STATE=enabled\n'
-            return 0
+            read_assist_now || return 1
+            remaining="$((deadline - now))"
+            if [ "$remaining" -gt 0 ]; then
+                trap - EXIT HUP INT TERM
+                printf 'ASSIST_STATE=enabled\n'
+                return 0
+            fi
+            enabled_true_count="$((enabled_true_count - 1))"
+            timeout_count="$((timeout_count + 1))"
+            category=timeout
+            safe_exit=timeout
+            final_category=timeout
+            final_cli_exit=timeout
         fi
         [ "$remaining" -gt 0 ] || break
         sleep_timeout=500
         [ "$remaining" -ge "$sleep_timeout" ] || sleep_timeout="$remaining"
-        wait_uuremote_poll "$sleep_timeout"
+        wait_uuremote_poll "$sleep_timeout" 2>/dev/null || return 1
     done
 
     [ "$attempts" -gt 0 ] || return 1

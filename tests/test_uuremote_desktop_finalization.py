@@ -672,6 +672,21 @@ class MacOSAssistAllowAggregationTests(unittest.TestCase):
                 result = self.run_harness(scenario)
                 self.assert_timeout_checkpoint_contract(result)
 
+    def test_expired_child_without_a_safe_status_is_generic_only(self):
+        result = self.run_harness("expired-no-status")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(
+            result.stderr,
+            "Could not enable unattended control within 60 seconds\n",
+        )
+        for marker in (
+            "ASSIST_DIAGNOSTIC_",
+            "device-id-fixture",
+            "CustomCodeFixture",
+        ):
+            self.assertNotIn(marker, result.stdout + result.stderr)
+
     def test_deadline_checkpoint_mutations_break_the_timeout_contract(self):
         source = text(SCRIPT_PATH)
         mutations = (
@@ -703,12 +718,12 @@ class MacOSAssistAllowAggregationTests(unittest.TestCase):
             ),
             (
                 "deadline-before-enabled",
-                'if [ "$category" = enabled-true ]; then\n'
-                "            read_assist_now || return 1\n"
-                '            remaining="$((deadline - now))"',
-                "if false; then\n"
-                "            read_assist_now || return 1\n"
-                '            remaining="$((deadline - now))"',
+                'if [ "$remaining" -gt 0 ]; then\n'
+                "                trap - EXIT HUP INT TERM\n"
+                "                printf 'ASSIST_STATE=enabled\\n'",
+                "if true; then\n"
+                "                trap - EXIT HUP INT TERM\n"
+                "                printf 'ASSIST_STATE=enabled\\n'",
             ),
         )
         with tempfile.TemporaryDirectory() as temporary_directory:

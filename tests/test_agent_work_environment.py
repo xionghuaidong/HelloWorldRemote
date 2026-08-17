@@ -541,17 +541,43 @@ class AgentInstructionContractTests(unittest.TestCase):
                 plan_runner,
             )
 
-        production_runner = extract_runner(
-            text(ROOT / ".github/workflows/apple.sh")
-        )
+        def extract_assist_helper(source: str) -> str:
+            start = source.index("ensure_assist_allowed() (")
+            try:
+                end = source.index("\n)\n\n", start) + 3
+            except ValueError:
+                end = source.index("\n)\n```", start) + 3
+            return source[start:end]
+
+        def assert_assist_deadline_contract(helper: str) -> None:
+            status_read = 'status_record="$(/bin/cat "$status_path" 2>/dev/null)" || return 1'
+            child_clock = helper.index("read_assist_now || return 1", helper.index(status_read))
+            self.assertLess(helper.index(status_read), child_clock)
+            self.assertIn('wait_uuremote_poll "$sleep_timeout" 2>/dev/null || return 1', helper)
+
+            accounting = helper.index('final_cli_exit="$safe_exit"')
+            cleanup = helper.index("cleanup_assist_attempt || return 1", accounting)
+            acceptance_clock = helper.index("read_assist_now || return 1", cleanup)
+            success_output = helper.index("printf 'ASSIST_STATE=enabled\\n'", acceptance_clock)
+            self.assertLess(accounting, cleanup)
+            self.assertLess(cleanup, acceptance_clock)
+            self.assertLess(acceptance_clock, success_output)
+            self.assertIn('enabled_true_count="$((enabled_true_count - 1))"', helper)
+            self.assertIn('timeout_count="$((timeout_count + 1))"', helper)
+
+        production_source = text(ROOT / ".github/workflows/apple.sh")
+        production_runner = extract_runner(production_source)
+        assert_assist_deadline_contract(extract_assist_helper(production_source))
         for name in (
             "docs/superpowers/plans/2026-08-16-macos-unattended-permission-diagnostics.md",
             "docs/superpowers/plans/2026-08-16-macos-unattended-permission-diagnostics-zh_CN.md",
         ):
             plan_runner = extract_runner(text(ROOT / name))
+            plan_helper = extract_assist_helper(text(ROOT / name))
             with self.subTest(name=name):
                 assert_runner_ast_parity(plan_runner, production_runner)
                 assert_runner_semantic_contract(plan_runner)
+                assert_assist_deadline_contract(plan_helper)
                 with self.assertRaises(AssertionError):
                     assert_runner_semantic_contract(
                         plan_runner.replace("timeout=0.5", "timeout=0.75", 1),

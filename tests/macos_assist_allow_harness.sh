@@ -765,6 +765,9 @@ esac && {
             deadline-after-child)
                 if [ "$clock_calls" -le 2 ]; then printf '0\n'; else printf '60000\n'; fi
                 ;;
+            expired-no-status)
+                if [ "$clock_calls" -le 2 ]; then printf '0\n'; else printf '60000\n'; fi
+                ;;
             deadline-after-record)
                 if [ "$clock_calls" -le 2 ]; then printf '0\n'; elif [ "$clock_calls" -eq 3 ]; then printf '100\n'; else printf '60000\n'; fi
                 ;;
@@ -838,8 +841,12 @@ esac && {
             late-success:1)
                 printf '{"success":true,"enabled":true}' >"$output_path"; controlled_now=60000 ;;
             deadline-after-child:1)
-                printf 'completed:invalid\n' >"$status_path"
                 printf '{"success":true,"enabled":true,"deviceId":"device-id-fixture","customCode":"CustomCodeFixture"}' >"$output_path"
+                ;;
+            expired-no-status:1)
+                /bin/rm -f -- "$status_path"
+                printf '{"success":true,"enabled":true,"deviceId":"device-id-fixture","customCode":"CustomCodeFixture"}' >"$output_path"
+                return 125
                 ;;
             deadline-after-record:1)
                 printf '{"success":true,"enabled":false}' >"$output_path"
@@ -875,7 +882,7 @@ esac && {
     }
 
     case "$scenario" in
-        deadline-bounds|debug1-failure|hostile-failure|late-success|deadline-after-child|deadline-after-record|deadline-before-enabled|invalid-clock|invalid-clock-loop|invalid-clock-post-call|clock-status-start|clock-status-loop|clock-status-post-call) debug_level=1 ;;
+        deadline-bounds|debug1-failure|hostile-failure|late-success|deadline-after-child|expired-no-status|deadline-after-record|deadline-before-enabled|invalid-clock|invalid-clock-loop|invalid-clock-post-call|clock-status-start|clock-status-loop|clock-status-post-call) debug_level=1 ;;
         debug2-failure) debug_level=2 ;;
         debug3-failure) debug_level=3 ;;
         internal-invalid-record)
@@ -1052,6 +1059,9 @@ esac && {
     fi
     if [ ! -d "$temporary_tree" ] || [ -n "$(find "$temporary_tree" -mindepth 1 -print -quit)" ]; then
         echo "Temporary tree was not empty" >&2
+        exit 1
+    fi
+    if [ "$scenario" = expired-no-status ] && [ "$(cat "$boundary_count_path")" -ne 1 ]; then
         exit 1
     fi
     case "$scenario" in

@@ -36,7 +36,7 @@
 
 ## Review follow-up：deadline checkpoints 和 poll failure
 
-每次 bounded child 返回后，在读取其 status 前读取并验证 monotonic clock。如果 absolute deadline 已过期，将这一次 attempt 分类为 `timeout`/`timeout`，且不信任 child status 或 payload；classifier 只能在清空私有文件前保留安全的 byte count。随后在 classifier-record framing 以及 category/exit validation 后再次读取 clock，并在接受 `enabled-true` 前立即再读一次。任何 checkpoint 的 expiry 都把该 attempt 的 category 和 safe exit 替换为 `timeout`，恰好 accounting 一次，并在不接受 late success 的情况下结束窗口。`wait_uuremote_poll` 的 stderr 必须重定向到 `/dev/null`；非零 poll result 通过现有 outer generic failure fail-closed，且不得 hot-loop。
+每次 bounded child 返回后，必须先取得可读且符合 grammar 的安全 status。即使 absolute deadline 已过期，缺失或无效 status 也通过 caller 的 generic error fail-closed。完成该 validation 后再读取 monotonic clock。如果 deadline 已过期，将这一次 attempt 分类为 `timeout`/`timeout`，且不信任 child payload；classifier 只能在清空私有文件前保留安全的 byte count。随后在 classifier-record framing 以及 category/exit validation 后再次读取 clock，并在 accounting 和 cleanup 后、输出 `ASSIST_STATE=enabled` 前立即再读一次。任何 checkpoint 的 expiry 都把该 attempt 的 category 和 safe exit 替换为 `timeout`，恰好 accounting 一次，并在不接受 late success 的情况下结束窗口。`wait_uuremote_poll` 的 stderr 必须重定向到 `/dev/null`；非零 poll result 通过现有 outer generic failure fail-closed，且不得 hot-loop。
 
 测试使用三个独立受控的 clock crossing（child 后、record validation 后和 enabled acceptance 前）、移除每个 checkpoint 的 isolated mutation，以及 hostile poll-failure fixture。runner-plan AST parity test 与 semantic-contract mutation 分开，因此每个 semantic mutation 都由 semantic assertion 评估，而不是只因 parity 失败。
 
@@ -891,10 +891,19 @@ ensure_assist_allowed() (
     : >"$status_path"
     /bin/chmod 0600 "$response_path" "$status_path" || return 1
 
-    now="$(uuremote_now_milliseconds)"
+    read_assist_now() {
+        now="$(uuremote_now_milliseconds)" || return 1
+        case "$now" in
+            0) ;;
+            [1-9]* ) case "$now" in *[!0-9]*) return 1 ;; esac ;;
+            *) return 1 ;;
+        esac
+    }
+
+    read_assist_now || return 1
     deadline="$((now + 60000))"
     while :; do
-        now="$(uuremote_now_milliseconds)"
+        read_assist_now || return 1
         remaining="$((deadline - now))"
         [ "$remaining" -gt 0 ] || break
         attempts="$((attempts + 1))"
@@ -904,9 +913,9 @@ ensure_assist_allowed() (
         : >"$status_path"
         run_bounded_gui_cli_to_file \
             "$response_path" "$status_path" "$attempt_timeout" \
-            "$CLI" assist allow on || true
+            "$CLI" assist allow on >/dev/null 2>/dev/null || true
 
-        status_record="$(/bin/cat "$status_path")" || return 1
+        status_record="$(/bin/cat "$status_path" 2>/dev/null)" || return 1
         case "$status_record" in
             timeout)
                 execution_state=timeout
@@ -928,6 +937,13 @@ ensure_assist_allowed() (
                 return 1
                 ;;
         esac
+
+        read_assist_now || return 1
+        remaining="$((deadline - now))"
+        if [ "$remaining" -le 0 ]; then
+            execution_state=timeout
+            execution_exit=timeout
+        fi
 
         record="$(classify_assist_allow_response \
             "$response_path" "$execution_state" "$execution_exit")" || return 1
@@ -970,18 +986,26 @@ ensure_assist_allowed() (
         final_category="$category"
         final_cli_exit="$safe_exit"
 
-        now="$(uuremote_now_milliseconds)"
-        remaining="$((deadline - now))"
-        if [ "$category" = enabled-true ] && [ "$remaining" -gt 0 ]; then
+        if [ "$category" = enabled-true ]; then
             cleanup_assist_attempt || return 1
-            trap - EXIT
-            printf 'ASSIST_STATE=enabled\n'
-            return 0
+            read_assist_now || return 1
+            remaining="$((deadline - now))"
+            if [ "$remaining" -gt 0 ]; then
+                trap - EXIT HUP INT TERM
+                printf 'ASSIST_STATE=enabled\n'
+                return 0
+            fi
+            enabled_true_count="$((enabled_true_count - 1))"
+            timeout_count="$((timeout_count + 1))"
+            category=timeout
+            safe_exit=timeout
+            final_category=timeout
+            final_cli_exit=timeout
         fi
         [ "$remaining" -gt 0 ] || break
         sleep_timeout=500
         [ "$remaining" -ge "$sleep_timeout" ] || sleep_timeout="$remaining"
-        wait_uuremote_poll "$sleep_timeout"
+        wait_uuremote_poll "$sleep_timeout" 2>/dev/null || return 1
     done
 
     [ "$attempts" -gt 0 ] || return 1
