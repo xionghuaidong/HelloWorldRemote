@@ -3,17 +3,19 @@ set -euo pipefail
 
 if [ "${1:-}" = "fixture-hang" ]; then
     printf '%s\n' "$$" >"${2:?}"
-    /bin/bash -c 'trap "" TERM; printf "%s\n" "$$" >"$1"; while :; do sleep 1; done' \
+    /bin/bash -c 'trap "" TERM; printf "%s\n" "$$" >"$1"; exec /bin/sleep 30' \
         fixture-child "${3:?}" &
+    child_pid="$!"
     trap '' TERM
-    while :; do sleep 1; done
+    wait "$child_pid"
 fi
 
 if [ "${1:-}" = "fixture-leader-exits" ]; then
     printf '%s\n' "$$" >"${2:?}"
-    /bin/bash -c 'trap "" TERM; printf "%s\n" "$$" >"$1"; while :; do sleep 1; done' \
+    /bin/bash -c 'trap "" TERM; printf "%s\n" "$$" >"$1"; exec /bin/sleep 30' \
         fixture-child "${3:?}" &
-    while :; do sleep 1; done
+    child_pid="$!"
+    wait "$child_pid"
 fi
 
 if [ "${1:-}" = "fixture-term-observed" ]; then
@@ -32,7 +34,7 @@ fi
 
 if [ "${1:-}" = "fixture-leader-completes" ]; then
     printf '%s\n' "$$" >"${2:?}"
-    /bin/bash -c 'trap "" TERM; printf "%s\n" "$$" >"$1"; while :; do sleep 1; done' \
+    /bin/bash -c 'trap "" TERM; printf "%s\n" "$$" >"$1"; exec /bin/sleep 30' \
         fixture-child "${3:?}" &
     while [ ! -s "${3:?}" ]; do sleep 0.01; done
     exit 0
@@ -191,6 +193,41 @@ cleanup_harness() {
 }
 trap cleanup_harness EXIT
 
+emit_completed_failure_diagnostic() {
+    local diagnostic_path="${UUREMOTE_TEST_COMPLETED_DIAGNOSTIC_PATH:-}"
+    local field value numeric_value
+
+    [ -s "$diagnostic_path" ] || return 0
+    [ "$(/usr/bin/wc -l <"$diagnostic_path" | /usr/bin/tr -d '[:space:]')" = 5 ] || return 1
+    for field in \
+        INITIAL_PROBE_KIND= FINAL_PROBE_KIND= WAIT_RETURN_CODE= PROBE_COUNT= ELAPSED_BUCKET=
+    do
+        value="$(/usr/bin/sed -n "s/^${field}//p" "$diagnostic_path")"
+        case "$field" in
+            INITIAL_PROBE_KIND=|FINAL_PROBE_KIND=)
+                case "$value" in absent|alive|unknown|error|unavailable) ;; *) return 1 ;; esac
+                ;;
+            WAIT_RETURN_CODE=)
+                case "$value" in
+                    unavailable) ;;
+                    -*|[0-9]*)
+                        numeric_value="${value#-}"
+                        case "$numeric_value" in ''|*[!0-9]*) return 1 ;; esac
+                        ;;
+                    *) return 1 ;;
+                esac
+                ;;
+            PROBE_COUNT=)
+                case "$value" in ''|*[!0-9]*) return 1 ;; esac
+                ;;
+            ELAPSED_BUCKET=)
+                case "$value" in fast|bounded|extended) ;; *) return 1 ;; esac
+                ;;
+        esac
+        printf '%s%s\n' "$field" "$value" >&2
+    done
+}
+
 awk '/^if \[ "\$mode" = "self-test-kcpassword" \]; then$/ { exit } { print }' \
     "$source_script" >"$subject"
 case "$mode" in
@@ -270,15 +307,18 @@ case "$mode" in
                 next
             }
             /^    cleanup_deadline = time\.monotonic\(\) \+ 0\.5$/ {
-                print "    cleanup_monotonic_values = iter((0.0, 0.5))"
-                print "    cleanup_real_monotonic = time.monotonic"
-                print "    def cleanup_monotonic():"
-                print "        value = next(cleanup_monotonic_values, 0.5)"
-                print "        if value == 0.5:"
-                print "            time.monotonic = cleanup_real_monotonic"
-                print "        return value"
-                print "    time.monotonic = cleanup_monotonic"
                 print
+                print "    globals()[\"UUREMOTE_TEST_CLEANUP_DEADLINE\"] = cleanup_deadline"
+                next
+            }
+            /^            if not process_group_alive\(\):$/ {
+                print "            globals()[\"UUREMOTE_TEST_PROBE_IN_RETRY\"] = True"
+                print "            try:"
+                print "                group_absent = not process_group_alive()"
+                print "            finally:"
+                print "                globals()[\"UUREMOTE_TEST_PROBE_IN_RETRY\"] = False"
+                print "            if group_absent:"
+                next
             }
             /^def cleanup_owned_process\(\):$/ {
                 print "process_group_probe_calls = 0"
@@ -289,7 +329,11 @@ case "$mode" in
                 print "    global process_group_probe_calls"
                 print "    process_group_probe_calls += 1"
                 print "    pathlib.Path(os.environ[\"UUREMOTE_TEST_PROBE_COUNT_PATH\"]).write_text(str(process_group_probe_calls))"
-                print "    if process_group_probe_calls > 1:"
+                print "    cleanup_deadline = globals().get(\"UUREMOTE_TEST_CLEANUP_DEADLINE\")"
+                print "    if cleanup_deadline is not None and ("
+                print "        not globals().get(\"UUREMOTE_TEST_PROBE_IN_RETRY\", False)"
+                print "        or time.monotonic() >= cleanup_deadline"
+                print "    ):"
                 print "        pathlib.Path(os.environ[\"UUREMOTE_TEST_LATE_PROBE_MARKER\"]).touch()"
                 print "    raise OSError"
                 print ""
@@ -299,6 +343,86 @@ case "$mode" in
             { print }
         ' "$subject" >"$subject.probe"
         mv "$subject.probe" "$subject"
+        ;;
+    process-completed-diagnostic|process-completed-diagnostic-failure)
+        awk '
+            /^def process_group_alive\(\):$/ {
+                print "def process_group_alive_real():"
+                next
+            }
+            /^def cleanup_owned_process\(\):$/ {
+                print "process_group_probe_kinds = []"
+                print ""
+                print "def process_group_alive():"
+                print "    try:"
+                print "        group_alive = process_group_alive_real()"
+                print "    except OSError:"
+                print "        process_group_probe_kinds.append(\"error\")"
+                print "        raise"
+                print "    if group_alive is True:"
+                print "        process_group_probe_kinds.append(\"alive\")"
+                print "    elif group_alive is False:"
+                print "        process_group_probe_kinds.append(\"absent\")"
+                print "    else:"
+                print "        process_group_probe_kinds.append(\"unknown\")"
+                print "    return group_alive"
+                print ""
+                print
+                next
+            }
+            /^exit_code = 125$/ {
+                print
+                print "observed_wait_return_code = \"unavailable\""
+                print "diagnostic_started_at = time.monotonic()"
+                next
+            }
+            /^        return_code = process\.wait\(timeout=timeout_seconds\)$/ {
+                print
+                print "        observed_wait_return_code = str(return_code)"
+                next
+            }
+            /^raise SystemExit\(exit_code\)$/ {
+                print "diagnostic_elapsed = time.monotonic() - diagnostic_started_at"
+                print "if diagnostic_elapsed < 0.05:"
+                print "    diagnostic_elapsed_bucket = \"fast\""
+                print "elif diagnostic_elapsed < 0.5:"
+                print "    diagnostic_elapsed_bucket = \"bounded\""
+                print "else:"
+                print "    diagnostic_elapsed_bucket = \"extended\""
+                print "diagnostic_initial_probe = process_group_probe_kinds[0] if process_group_probe_kinds else \"unavailable\""
+                print "diagnostic_final_probe = process_group_probe_kinds[-1] if process_group_probe_kinds else \"unavailable\""
+                print "pathlib.Path(os.environ[\"UUREMOTE_TEST_COMPLETED_DIAGNOSTIC_PATH\"]).write_text("
+                print "    f\"INITIAL_PROBE_KIND={diagnostic_initial_probe}\\n\""
+                print "    f\"FINAL_PROBE_KIND={diagnostic_final_probe}\\n\""
+                print "    f\"WAIT_RETURN_CODE={observed_wait_return_code}\\n\""
+                print "    f\"PROBE_COUNT={len(process_group_probe_kinds)}\\n\""
+                print "    f\"ELAPSED_BUCKET={diagnostic_elapsed_bucket}\\n\","
+                print "    encoding=\"ascii\","
+                print ")"
+                print
+            }
+            { print }
+        ' "$subject" >"$subject.diagnostic"
+        mv "$subject.diagnostic" "$subject"
+        ;;
+esac
+case "$mode" in
+    process-completed-diagnostic-failure)
+        awk '
+            /^def process_group_alive_real\(\):$/ {
+                print "def process_group_alive_original():"
+                next
+            }
+            /^def cleanup_owned_process\(\):$/ {
+                print "def process_group_alive_real():"
+                print "    return True"
+                print ""
+                print
+                next
+            }
+            { print }
+        ' "$subject" >"$subject.diagnostic-failure"
+        mv "$subject.diagnostic-failure" "$subject"
         ;;
 esac
 case "$mode" in
@@ -370,7 +494,7 @@ fi
 scenario="${2:?}"
 
 case "$mode" in
-    process|fault-*|block-*|probe-transient-error|probe-persistent-error|pending-finalization-swapped) ;;
+    process|process-completed-diagnostic|process-completed-diagnostic-failure|fault-*|block-*|probe-transient-error|probe-persistent-error|pending-finalization-swapped) ;;
     *) false ;;
 esac && {
     status_path="$temporary_directory/status"
@@ -380,8 +504,10 @@ esac && {
     fixture_pid_paths="$parent_pid_path $child_pid_path"
     late_probe_marker="$temporary_directory/late-probe"
     probe_count_path="$temporary_directory/probe-count"
+    completed_diagnostic_path="$temporary_directory/completed-diagnostic"
     export UUREMOTE_TEST_LATE_PROBE_MARKER="$late_probe_marker"
     export UUREMOTE_TEST_PROBE_COUNT_PATH="$probe_count_path"
+    export UUREMOTE_TEST_COMPLETED_DIAGNOSTIC_PATH="$completed_diagnostic_path"
 
     . "$subject"
     case "$scenario" in
@@ -412,16 +538,25 @@ esac && {
                 echo "Process group was probed after the cleanup deadline" >&2
                 exit 1
             fi
-            if [ "$(cat "$probe_count_path")" -ne 1 ]; then
-                echo "Unexpected process-group probe count" >&2
+            if [ "$(cat "$probe_count_path")" -lt 2 ]; then
+                echo "Persistent process-group error was not retried" >&2
                 exit 1
             fi
-            printf 'EXIT=125\nSTATUS=absent\nPROBES=1\nLATE_PROBE=false\n'
+            printf 'EXIT=125\nSTATUS=absent\nPROBES_RETRIED=true\nLATE_PROBE=false\n'
             exit 0
             ;;
         completed)
-            run_bounded_uuremote_cli_to_file_with_status \
+            if run_bounded_uuremote_cli_to_file_with_status \
                 "$output_path" "$status_path" 3000 /bin/true
+            then
+                bounded_exit=0
+            else
+                bounded_exit="$?"
+            fi
+            if [ "$bounded_exit" -ne 0 ]; then
+                emit_completed_failure_diagnostic || true
+                exit "$bounded_exit"
+            fi
             ;;
         nonzero)
             if run_bounded_uuremote_cli_to_file_with_status \
@@ -549,16 +684,17 @@ esac && {
             console_uid=501
             run_bounded_gui_cli_to_file \
                 "$output_path" "$status_path" 3000 /bin/true
-            gui_command="sudo|launchctl|$(
-                while IFS= read -r argument; do
-                    case "$argument" in
-                        "$sudo_stub") printf 'sudo|' ;;
-                        */bin/bash) printf 'sudo|' ;;
-                        */bin/true) printf '/bin/true|' ;;
-                        *) printf '%s|' "$argument" ;;
-                    esac
-                done <"$command_capture"
-            )"
+            gui_command="sudo|launchctl|"
+            while IFS= read -r argument; do
+                if [ "$argument" = "$sudo_stub" ] || \
+                    [ "${argument%/bin/bash}" != "$argument" ]; then
+                    gui_command="${gui_command}sudo|"
+                elif [ "${argument%/bin/true}" != "$argument" ]; then
+                    gui_command="${gui_command}/bin/true|"
+                else
+                    gui_command="${gui_command}${argument}|"
+                fi
+            done <"$command_capture"
             printf 'STATUS=%s\n' "$(cat "$status_path")"
             printf 'GUI_COMMAND=%s\n' "${gui_command%|}"
             exit 0

@@ -308,22 +308,96 @@ class MacOSAssistAllowSignalFinalizationSourceTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             self.assert_guarded_handler_precedes_only_after_mask_restore(swapped_runner)
 
+    def test_recorded_group_fixtures_do_not_spawn_untracked_sleep_loops(self):
+        harness = text(MACOS_ASSIST_ALLOW_HARNESS_PATH)
+        fixture_region = harness[
+            harness.index('"fixture-hang"')
+            : harness.index('"fixture-term-observed"')
+        ]
+        leader_region = harness[
+            harness.index('"fixture-leader-completes"')
+            : harness.index("umask 077")
+        ]
+        self.assertNotIn("while :; do sleep 1; done", fixture_region)
+        self.assertNotIn("while :; do sleep 1; done", leader_region)
+        self.assertIn('wait "$child_pid"', fixture_region)
+        self.assertIn("exec /bin/sleep 30", fixture_region + leader_region)
+
+    def test_gui_wrapper_normalization_avoids_bash_32_command_substitution_case(self):
+        harness = text(MACOS_ASSIST_ALLOW_HARNESS_PATH)
+        gui_region = harness[
+            harness.index("        gui-wrapper)")
+            : harness.index("        signal-term|signal-int|signal-hup)")
+        ]
+        self.assertNotIn('gui_command="sudo|launchctl|$(', gui_region)
+        self.assertNotIn('case "$argument"', gui_region)
+        self.assertIn('while IFS= read -r argument; do', gui_region)
+
+    def test_completed_failure_diagnostic_is_fixed_field_and_identifier_free(self):
+        harness = text(MACOS_ASSIST_ALLOW_HARNESS_PATH)
+        start = harness.index("emit_completed_failure_diagnostic()")
+        diagnostic_region = harness[
+            start : harness.index('case "$mode" in', start)
+        ]
+        for field in (
+            "INITIAL_PROBE_KIND=",
+            "FINAL_PROBE_KIND=",
+            "WAIT_RETURN_CODE=",
+            "PROBE_COUNT=",
+            "ELAPSED_BUCKET=",
+        ):
+            self.assertIn(field, diagnostic_region)
+        lowered = diagnostic_region.lower()
+        for forbidden in ("pid=", "pgid=", "exception", "traceback"):
+            self.assertNotIn(forbidden, lowered)
+
 
 @unittest.skipUnless(BASH_AVAILABLE, "requires /bin/bash")
 class MacOSAssistAllowProcessTests(unittest.TestCase):
-    def run_harness(self, mode: str, scenario: str) -> subprocess.CompletedProcess[str]:
+    def run_harness(
+        self,
+        mode: str,
+        scenario: str,
+        subject_source=None,
+    ) -> subprocess.CompletedProcess[str]:
+        environment = os.environ.copy()
+        if subject_source is not None:
+            environment["MACOS_ASSIST_ALLOW_SUBJECT_SOURCE"] = str(subject_source)
         return subprocess.run(
             ["/bin/bash", str(MACOS_ASSIST_ALLOW_HARNESS_PATH), mode, scenario],
             cwd=ROOT,
             text=True,
             capture_output=True,
             check=False,
+            env=environment,
         )
 
     def test_completed_process_records_exact_safe_status(self):
-        result = self.run_harness("process", "completed")
+        result = self.run_harness("process-completed-diagnostic", "completed")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, "STATUS=completed:0\n")
+
+    def test_completed_failure_reports_only_fixed_safe_probe_fields(self):
+        result = self.run_harness(
+            "process-completed-diagnostic-failure",
+            "completed",
+        )
+        self.assertEqual(result.returncode, 125, result.stderr)
+        self.assertEqual(result.stdout, "")
+        diagnostic = result.stderr.splitlines()
+        self.assertEqual(diagnostic[0], "INITIAL_PROBE_KIND=alive")
+        self.assertEqual(diagnostic[1], "FINAL_PROBE_KIND=alive")
+        self.assertEqual(diagnostic[2], "WAIT_RETURN_CODE=0")
+        self.assertRegex(diagnostic[3], r"^PROBE_COUNT=[1-9][0-9]*$")
+        self.assertIn(
+            diagnostic[4],
+            (
+                "ELAPSED_BUCKET=fast",
+                "ELAPSED_BUCKET=bounded",
+                "ELAPSED_BUCKET=extended",
+            ),
+        )
+        self.assertEqual(len(diagnostic), 5)
 
     def test_nonzero_process_records_exact_safe_status(self):
         result = self.run_harness("process", "nonzero")
@@ -355,7 +429,34 @@ class MacOSAssistAllowProcessTests(unittest.TestCase):
         self.assertLess(elapsed, 2)
         self.assertEqual(
             result.stdout,
-            "EXIT=125\nSTATUS=absent\nPROBES=1\nLATE_PROBE=false\n",
+            "EXIT=125\nSTATUS=absent\nPROBES_RETRIED=true\nLATE_PROBE=false\n",
+        )
+
+    def test_persistent_probe_oracle_rejects_a_post_deadline_probe(self):
+        source = text(SCRIPT_PATH)
+        target = "    return cleanup_confirmed\n\ncleanup_in_progress = False"
+        replacement = (
+            "    try:\n"
+            "        cleanup_confirmed = not process_group_alive()\n"
+            "    except OSError:\n"
+            "        pass\n"
+            "    return cleanup_confirmed\n\n"
+            "cleanup_in_progress = False"
+        )
+        mutated = source.replace(target, replacement, 1)
+        self.assertNotEqual(mutated, source)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            subject = Path(temporary_directory) / "apple.sh"
+            subject.write_text(mutated, encoding="utf-8")
+            result = self.run_harness(
+                "probe-persistent-error",
+                "persistent-probe-error",
+                subject,
+            )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "Process group was probed after the cleanup deadline",
+            result.stderr,
         )
 
     def test_term_exiting_group_leader_does_not_leave_a_descendant(self):
