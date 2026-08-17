@@ -40,6 +40,8 @@ fi
 root="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 apple_script="${UUREMOTE_CLI_OUTPUT_APPLE_SCRIPT:-$root/.github/workflows/apple.sh}"
 temporary_directory="$(mktemp -d "${TMPDIR:-/tmp}/uuremote-cli-output-test.XXXXXX")"
+mutation_pid=""
+mutation_watchdog_pid=""
 stdout_path="$temporary_directory/stdout"
 stderr_path="$temporary_directory/stderr"
 status_count_path="$temporary_directory/status-count"
@@ -49,6 +51,14 @@ fixture_device_id="device-id-fixture-3187"
 fixture_custom_code="CustomCodeFixture3187"
 
 cleanup() {
+    if [ -n "$mutation_watchdog_pid" ]; then
+        /bin/kill -TERM "$mutation_watchdog_pid" 2>/dev/null || true
+        wait "$mutation_watchdog_pid" 2>/dev/null || true
+    fi
+    if [ -n "$mutation_pid" ]; then
+        /bin/kill -TERM "$mutation_pid" 2>/dev/null || true
+        wait "$mutation_pid" 2>/dev/null || true
+    fi
     rm -rf -- "$temporary_directory"
 }
 trap cleanup EXIT
@@ -93,13 +103,22 @@ if [ "$(<"$status_count_path")" -ne 2 ] ||
     exit 1
 fi
 
-mutation_script="$temporary_directory/apple-missing-self-test-gui-wrapper.sh"
+mutation_script="$temporary_directory/apple-failing-self-test-gui-wrapper.sh"
 mutation_timeout_path="$temporary_directory/mutation-timeout"
+mutation_reached_path="$temporary_directory/mutation-reached"
+mutation_status_count_before="$(<"$status_count_path")"
+mutation_assist_count_before="$(<"$assist_count_path")"
 awk '
-    /^self_test_cli_output_redaction\(\) \{/ { in_self_test = 1 }
-    in_self_test && /^    run_bounded_gui_cli_to_file\(\) \{/ { skip = 1; next }
-    skip && /^    }$/ { skip = 0; next }
-    !skip { print }
+    $0 == "self_test_cli_output_redaction() {" { in_self_test = 1 }
+    in_self_test && $0 == "    run_bounded_gui_cli_to_file() {" {
+        print
+        print "        printf \"%s\\n\" \"bounded-gui-override-reached\" >\"${UUREMOTE_CLI_OUTPUT_MUTATION_REACHED_PATH:?}\""
+        print "        return 1"
+        mutation_count++
+        next
+    }
+    { print }
+    END { if (mutation_count != 1) exit 2 }
 ' "$apple_script" >"$mutation_script"
 chmod 0700 "$mutation_script"
 
@@ -111,6 +130,7 @@ env -u console_uid \
     UUREMOTE_ASSIST_COUNT_PATH="$assist_count_path" \
     UUREMOTE_FIXTURE_DEVICE_ID="$fixture_device_id" \
     UUREMOTE_FIXTURE_CUSTOM_CODE="$fixture_custom_code" \
+    UUREMOTE_CLI_OUTPUT_MUTATION_REACHED_PATH="$mutation_reached_path" \
         /bin/bash "$mutation_script" self-test-cli-output-redaction \
         >"$temporary_directory/mutation-stdout" 2>"$temporary_directory/mutation-stderr" &
 mutation_pid="$!"
@@ -125,14 +145,44 @@ mutation_pid="$!"
 ) &
 mutation_watchdog_pid="$!"
 if wait "$mutation_pid"; then
-    echo "Self-test mutation unexpectedly used a GUI-independent path" >&2
-    exit 1
+    mutation_status=0
+else
+    mutation_status="$?"
 fi
+mutation_pid=""
 /bin/kill -TERM "$mutation_watchdog_pid" 2>/dev/null || true
 wait "$mutation_watchdog_pid" 2>/dev/null || true
+mutation_watchdog_pid=""
+
+if [ "$mutation_status" -eq 0 ]; then
+    echo "Self-test mutation did not exercise the bounded GUI override" >&2
+    exit 1
+fi
 
 if [ -e "$mutation_timeout_path" ]; then
-    echo "Self-test mutation masked the console UID dependency" >&2
+    echo "Self-test bounded GUI override mutation exceeded its timeout" >&2
+    exit 1
+fi
+
+if [ ! -f "$mutation_reached_path" ] ||
+    [ "$(<"$mutation_reached_path")" != "bounded-gui-override-reached" ]
+then
+    echo "Self-test mutation did not reach the bounded GUI override" >&2
+    exit 1
+fi
+
+if [ "$mutation_status" -ne 1 ] ||
+    [ "$(<"$status_count_path")" -ne "$((mutation_status_count_before + 1))" ] ||
+    [ "$(<"$assist_count_path")" -ne "$mutation_assist_count_before" ]
+then
+    echo "Self-test mutation did not stop at the bounded GUI override" >&2
+    exit 1
+fi
+
+if [ "$(<"$temporary_directory/mutation-stdout")" != "CLI_STATUS_STATE=ready" ] ||
+    [ -s "$temporary_directory/mutation-stderr" ]
+then
+    echo "Self-test mutation emitted an unexpected boundary result" >&2
     exit 1
 fi
 
