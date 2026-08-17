@@ -357,6 +357,41 @@ class MacOSAssistAllowProcessTests(unittest.TestCase):
                     expected += "PROCESS_GROUP_RELEASED=true\n"
                 self.assertEqual(result.stdout, expected)
 
+    def test_runner_marks_ownership_before_parent_unmask_and_wait(self):
+        runner = text(SCRIPT_PATH)
+        ownership = runner.index("process_group_id = process.pid\n        owned_cleanup_required = True")
+        parent_unmask = runner.index(
+            "if previous_signal_mask is not None:\n        signal.pthread_sigmask",
+            ownership,
+        )
+        first_wait = runner.index("return_code = process.wait(timeout=timeout_seconds)", ownership)
+        self.assertLess(ownership, parent_unmask)
+        self.assertLess(parent_unmask, first_wait)
+
+    def test_runner_post_ownership_exception_cleans_without_status(self):
+        runner = text(SCRIPT_PATH)
+        exception = runner.index("except Exception:\n")
+        exception_body = runner[exception:runner.index("finally:\n", exception)]
+        owned_branch = exception_body.split("    else:\n", 1)[0]
+        self.assertIn("if owned_cleanup_required and process is not None:", exception_body)
+        self.assertIn("block_handled_signals_for_cleanup()", owned_branch)
+        self.assertIn("release_owned_process_if_confirmed(cleanup_owned_process_no_throw())", owned_branch)
+        self.assertNotIn("write_status", owned_branch)
+
+    def test_post_popen_exceptions_fail_closed_without_a_status(self):
+        for mode in ("fault-post-unmask", "fault-first-wait"):
+            with self.subTest(mode=mode):
+                started = time.monotonic()
+                result = self.run_harness(mode, "post-ownership-fault")
+                elapsed = time.monotonic() - started
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertLess(elapsed, 5)
+                self.assertEqual(result.stderr, "")
+                expected = "EXIT=125\nSTATUS=absent\n"
+                if NATIVE_MACOS_BASH_AVAILABLE:
+                    expected += "PROCESS_GROUP_RELEASED=true\n"
+                self.assertEqual(result.stdout, expected)
+
     @unittest.skipUnless(
         NATIVE_MACOS_BASH_AVAILABLE,
         "requires native macOS process-group cleanup and reaping",
@@ -413,7 +448,12 @@ class MacOSAssistAllowAggregationTests(unittest.TestCase):
         self.assertEqual(result.stderr, "")
 
     def test_outer_caller_hides_mutated_real_cleanup_failures(self):
-        for mode in ("outer-cleanup-false", "outer-cleanup-raises"):
+        for mode in (
+            "outer-cleanup-false",
+            "outer-cleanup-raises",
+            "outer-post-unmask",
+            "outer-first-wait",
+        ):
             with self.subTest(mode=mode):
                 started = time.monotonic()
                 result = subprocess.run(

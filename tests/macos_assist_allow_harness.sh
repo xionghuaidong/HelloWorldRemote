@@ -173,7 +173,7 @@ trap cleanup_harness EXIT
 awk '/^if \[ "\$mode" = "self-test-kcpassword" \]; then$/ { exit } { print }' \
     "$source_script" >"$subject"
 case "$mode" in
-    fault-*|outer-cleanup-*)
+    fault-timeout|fault-raises|fault-leader|fault-leader-raises|fault-signal|fault-signal-raises|outer-cleanup-false|outer-cleanup-raises)
         awk -v fault_mode="$mode" '
             /^def cleanup_owned_process\(\):$/ {
                 print "def cleanup_owned_process_real():"
@@ -191,6 +191,29 @@ case "$mode" in
             { print }
         ' "$subject" >"$subject.fault"
         mv "$subject.fault" "$subject"
+        ;;
+esac
+case "$mode" in
+    fault-post-unmask|outer-post-unmask)
+        awk '
+            /^    if previous_signal_mask is not None:$/ {
+                restore_count++
+                if (restore_count == 2) {
+                    print "    raise RuntimeError"
+                }
+            }
+            { print }
+        ' "$subject" >"$subject.injected"
+        mv "$subject.injected" "$subject"
+        ;;
+    fault-first-wait|outer-first-wait)
+        awk '
+            /^        return_code = process\.wait\(timeout=timeout_seconds\)$/ {
+                print "        raise RuntimeError"
+            }
+            { print }
+        ' "$subject" >"$subject.injected"
+        mv "$subject.injected" "$subject"
         ;;
 esac
 if [ ! -x /usr/bin/python3 ]; then
@@ -276,6 +299,33 @@ esac && {
             fi
             printf 'STATUS=%s\n' "$(cat "$status_path")"
             printf 'PROCESS_GROUP_RELEASED=true\n'
+            exit 0
+            ;;
+        post-ownership-fault)
+            if [ "$mode" != fault-post-unmask ] && [ "$mode" != fault-first-wait ]; then
+                exit 2
+            fi
+            if run_recorded_bounded_fixture \
+                "$output_path" "$status_path" 3000 /bin/bash "$0" fixture-hang \
+                "$parent_pid_path" "$child_pid_path"
+            then
+                echo "Post-ownership fault unexpectedly succeeded" >&2
+                exit 1
+            else
+                bounded_exit="$?"
+            fi
+            if [ "$bounded_exit" -ne 125 ] || [ -s "$status_path" ]; then
+                echo "Post-ownership fault did not fail closed" >&2
+                exit 1
+            fi
+            if ! assert_recorded_fixture_teardown; then
+                echo "Post-ownership cleanup left a recorded process" >&2
+                exit 1
+            fi
+            printf 'EXIT=125\nSTATUS=absent\n'
+            if is_native_macos; then
+                printf 'PROCESS_GROUP_RELEASED=true\n'
+            fi
             exit 0
             ;;
         leader-exits)
@@ -511,7 +561,7 @@ esac && {
 }
 
 case "$mode" in
-    aggregate|outer-cleanup-*) ;;
+    aggregate|outer-cleanup-*|outer-post-unmask|outer-first-wait) ;;
     *) false ;;
 esac && {
     . "$subject"
@@ -525,7 +575,8 @@ esac && {
     temporary_tree="$temporary_directory/assist-tree"
     mkdir -m 700 "$temporary_tree"
     TMPDIR="$temporary_tree"
-    if [ "$mode" = outer-cleanup-false ] || [ "$mode" = outer-cleanup-raises ]; then
+    if [ "$mode" = outer-cleanup-false ] || [ "$mode" = outer-cleanup-raises ] || \
+        [ "$mode" = outer-post-unmask ] || [ "$mode" = outer-first-wait ]; then
         parent_pid_path="$temporary_directory/outer-parent.pid"
         child_pid_path="$temporary_directory/outer-child.pid"
         outer_teardown_marker="$temporary_directory/outer-teardown-confirmed"
@@ -585,7 +636,8 @@ esac && {
         local timeout_milliseconds="$3"
         shift 3
         boundary_calls="$((boundary_calls + 1))"
-        if [ "$mode" = outer-cleanup-false ] || [ "$mode" = outer-cleanup-raises ]; then
+        if [ "$mode" = outer-cleanup-false ] || [ "$mode" = outer-cleanup-raises ] || \
+            [ "$mode" = outer-post-unmask ] || [ "$mode" = outer-first-wait ]; then
             if run_recorded_bounded_fixture \
                 "$output_path" "$status_path" "$timeout_milliseconds" \
                 /bin/bash "$0" fixture-hang "$parent_pid_path" "$child_pid_path"
@@ -788,12 +840,13 @@ esac && {
                 return 0
             }
             ;;
-        transient-success|debug0-failure|outer-cleanup-false|outer-cleanup-raises) ;;
+        transient-success|debug0-failure|outer-cleanup-false|outer-cleanup-raises|outer-post-unmask|outer-first-wait) ;;
         *) exit 2 ;;
     esac
 
     if [ "$scenario" = outer-success ] || \
-        [ "$mode" = outer-cleanup-false ] || [ "$mode" = outer-cleanup-raises ]; then
+        [ "$mode" = outer-cleanup-false ] || [ "$mode" = outer-cleanup-raises ] || \
+        [ "$mode" = outer-post-unmask ] || [ "$mode" = outer-first-wait ]; then
         if enable_assist_or_fail; then
             status=0
         else
@@ -804,12 +857,15 @@ esac && {
                 exit 125
             fi
         fi
-        if [ "$mode" = outer-cleanup-false ] || [ "$mode" = outer-cleanup-raises ]; then
-            if [ ! -f "$outer_teardown_marker" ]; then
-                exit 125
-            fi
-            if [ ! -s "$parent_pid_path" ] || [ ! -s "$child_pid_path" ]; then
-                exit 125
+        if [ "$mode" = outer-cleanup-false ] || [ "$mode" = outer-cleanup-raises ] || \
+            [ "$mode" = outer-post-unmask ] || [ "$mode" = outer-first-wait ]; then
+            if is_native_macos; then
+                if [ ! -f "$outer_teardown_marker" ]; then
+                    exit 125
+                fi
+                if [ ! -s "$parent_pid_path" ] || [ ! -s "$child_pid_path" ]; then
+                    exit 125
+                fi
             fi
         fi
         exit "$status"

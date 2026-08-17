@@ -439,6 +439,18 @@ cleanup_in_progress = False
 cleanup_signal_mask = None
 owned_cleanup_required = False
 
+def cleanup_owned_process_no_throw():
+    try:
+        return cleanup_owned_process()
+    except Exception:
+        return False
+
+def release_owned_process_if_confirmed(cleanup_confirmed):
+    global owned_cleanup_required
+    if cleanup_confirmed:
+        owned_cleanup_required = False
+    return cleanup_confirmed
+
 def interrupt_handler(_signum, _frame):
     if cleanup_in_progress:
         return
@@ -488,16 +500,16 @@ try:
             **popen_options,
         )
         process_group_id = process.pid
+        owned_cleanup_required = True
     if previous_signal_mask is not None:
         signal.pthread_sigmask(signal.SIG_SETMASK, previous_signal_mask)
         previous_signal_mask = None
     try:
         return_code = process.wait(timeout=timeout_seconds)
     except subprocess.TimeoutExpired:
-        owned_cleanup_required = True
         cleanup_in_progress = True
         block_handled_signals_for_cleanup()
-        if not cleanup_owned_process():
+        if not release_owned_process_if_confirmed(cleanup_owned_process_no_throw()):
             exit_code = 125
         else:
             write_status("timeout")
@@ -508,28 +520,31 @@ try:
         except OSError:
             group_remains = True
         if group_remains is True:
-            owned_cleanup_required = True
             cleanup_in_progress = True
             block_handled_signals_for_cleanup()
-            if cleanup_owned_process():
+            if release_owned_process_if_confirmed(cleanup_owned_process_no_throw()):
                 write_status("unavailable")
             exit_code = 125
         else:
             safe_return_code = return_code if 0 <= return_code <= 255 else 1
+            owned_cleanup_required = False
             write_status(f"completed:{safe_return_code}")
             exit_code = safe_return_code
 except HandledSignal:
-    owned_cleanup_required = process is not None
     cleanup_in_progress = True
     block_handled_signals_for_cleanup()
     if process is not None:
-        if cleanup_owned_process():
+        if release_owned_process_if_confirmed(cleanup_owned_process_no_throw()):
             write_status("unavailable")
     else:
         write_status("unavailable")
     exit_code = 125
 except Exception:
-    if not (owned_cleanup_required and process is not None):
+    if owned_cleanup_required and process is not None:
+        cleanup_in_progress = True
+        block_handled_signals_for_cleanup()
+        release_owned_process_if_confirmed(cleanup_owned_process_no_throw())
+    else:
         write_status("unavailable")
     exit_code = 125
 finally:
