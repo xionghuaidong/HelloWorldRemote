@@ -62,7 +62,9 @@ record_fixture_group_when_known() {
     if ! is_native_macos || [ ! -s "$parent_pid_path" ]; then
         return 0
     fi
-    pid="$(cat "$parent_pid_path")"
+    if ! pid="$(read_recorded_pid_file "$parent_pid_path" 2>/dev/null)"; then
+        return 1
+    fi
     case "$pid" in
         ''|*[!0-9]*) return 1 ;;
     esac
@@ -74,6 +76,13 @@ record_fixture_group_when_known() {
     fixture_groups="$group"
 }
 
+read_recorded_pid_file() {
+    if [ "$mode" = fault-residue-read-diagnostic ]; then
+        return 1
+    fi
+    /bin/cat "$1"
+}
+
 assert_recorded_fixture_teardown() {
     local pid pid_path group wait_attempt released
 
@@ -81,15 +90,27 @@ assert_recorded_fixture_teardown() {
         # Windows owns only the direct child; native macOS proves group teardown.
         return 0
     fi
-    [ -n "$fixture_groups" ] || return 1
+    [ -n "$fixture_groups" ] || {
+        emit_recorded_residue_diagnostic || true
+        return 1
+    }
     wait_attempt=0
     while [ "$wait_attempt" -lt 40 ]; do
         released=1
         for pid_path in $fixture_pid_paths; do
-            [ -s "$pid_path" ] || return 1
-            pid="$(cat "$pid_path")"
+            [ -s "$pid_path" ] || {
+                emit_recorded_residue_diagnostic || true
+                return 1
+            }
+            if ! pid="$(read_recorded_pid_file "$pid_path" 2>/dev/null)"; then
+                emit_recorded_residue_diagnostic || true
+                return 1
+            fi
             case "$pid" in
-                ''|*[!0-9]*) return 1 ;;
+                ''|*[!0-9]*)
+                    emit_recorded_residue_diagnostic || true
+                    return 1
+                    ;;
             esac
             if /bin/kill -0 "$pid" 2>/dev/null; then
                 released=0
@@ -97,7 +118,10 @@ assert_recorded_fixture_teardown() {
         done
         for group in $fixture_groups; do
             case "$group" in
-                ''|*[!0-9]*) return 1 ;;
+                ''|*[!0-9]*)
+                    emit_recorded_residue_diagnostic || true
+                    return 1
+                    ;;
             esac
             if /bin/kill -0 -- "-$group" 2>/dev/null; then
                 released=0
@@ -129,6 +153,12 @@ recorded_process_state() {
     local pid="$1"
     local state
 
+    case "$pid" in
+        ''|*[!0-9]*)
+            printf 'unknown\n'
+            return
+            ;;
+    esac
     if ! state="$(run_residue_ps -o state= -p "$pid" 2>/dev/null)"; then
         printf 'unknown\n'
         return
@@ -145,20 +175,22 @@ emit_recorded_residue_diagnostic() {
     local parent_pid child_pid group group_signal_state group_observation
     local membership activity
 
-    [ -s "$parent_pid_path" ] || return 1
-    [ -s "$child_pid_path" ] || return 1
-    parent_pid="$(cat "$parent_pid_path")"
-    child_pid="$(cat "$child_pid_path")"
-    case "$parent_pid:$child_pid" in
-        *[!0-9:]*) return 1 ;;
-    esac
+    parent_pid=""
+    child_pid=""
+    if [ -s "$parent_pid_path" ]; then
+        parent_pid="$(read_recorded_pid_file "$parent_pid_path" 2>/dev/null || true)"
+    fi
+    if [ -s "$child_pid_path" ]; then
+        child_pid="$(read_recorded_pid_file "$child_pid_path" 2>/dev/null || true)"
+    fi
+    case "$parent_pid" in *[!0-9]*) parent_pid="" ;; esac
+    case "$child_pid" in *[!0-9]*) child_pid="" ;; esac
     set -- $fixture_groups
     group="${1:-}"
-    case "$group" in
-        ''|*[!0-9]*) return 1 ;;
-    esac
+    case "$group" in *[!0-9]*) group="" ;; esac
 
-    if group_observation="$(run_residue_ps -axo pid=,pgid=,state= 2>/dev/null | /usr/bin/awk \
+    if [ -n "$group" ] && \
+        group_observation="$(run_residue_ps -axo pid=,pgid=,state= 2>/dev/null | /usr/bin/awk \
         -v group="$group" -v parent="$parent_pid" -v child="$child_pid" '
             $2 == group {
                 total += 1
@@ -185,11 +217,14 @@ emit_recorded_residue_diagnostic() {
         membership=unknown
         activity=unknown
     fi
+    if [ -z "$parent_pid" ] || [ -z "$child_pid" ]; then
+        membership=unknown
+    fi
     case "$membership" in absent|recorded-only|unrecorded-only|mixed|unknown) ;; *) return 1 ;; esac
     case "$activity" in absent|live-only|zombie-only|mixed|unknown) ;; *) return 1 ;; esac
-    if probe_recorded_group_signal "$group" 2>/dev/null; then
+    if [ -n "$group" ] && probe_recorded_group_signal "$group" 2>/dev/null; then
         group_signal_state=present
-    elif [ "$membership" = absent ]; then
+    elif [ "$activity" = absent ]; then
         group_signal_state=absent
     else
         group_signal_state=unknown
@@ -720,6 +755,49 @@ esac && {
 
     . "$subject"
     case "$scenario" in
+        residue-metadata-failure)
+            case "$mode" in
+                fault-residue-metadata-diagnostic)
+                    fixture_groups=""
+                    ;;
+                fault-residue-partial-diagnostic)
+                    printf '99999991\n' >"$parent_pid_path"
+                    fixture_groups="99999991"
+                    ;;
+                fault-residue-invalid-group-diagnostic)
+                    printf '99999992\n' >"$parent_pid_path"
+                    printf '99999993\n' >"$child_pid_path"
+                    fixture_groups="invalid"
+                    ;;
+                fault-residue-invalid-pid-diagnostic)
+                    printf 'invalid\n' >"$parent_pid_path"
+                    printf '99999996\n' >"$child_pid_path"
+                    fixture_groups="99999996"
+                    ;;
+                fault-residue-read-diagnostic)
+                    printf '99999994\n' >"$parent_pid_path"
+                    printf '99999995\n' >"$child_pid_path"
+                    fixture_groups="99999994"
+                    ;;
+                *) exit 2 ;;
+            esac
+            is_native_macos() {
+                return 0
+            }
+            run_residue_ps() {
+                return 0
+            }
+            probe_recorded_group_signal() {
+                return 1
+            }
+            fixture_pid_paths="$parent_pid_path $child_pid_path"
+            if assert_recorded_fixture_teardown; then
+                echo "Missing residue metadata unexpectedly passed" >&2
+                exit 1
+            fi
+            printf 'ASSERTION=failed\n'
+            exit 0
+            ;;
         transient-probe-error)
             if run_bounded_uuremote_cli_to_file_with_status \
                 "$output_path" "$status_path" 100 /bin/sleep 30
@@ -755,7 +833,7 @@ esac && {
             exit 0
             ;;
         completed)
-            completed_command=/bin/true
+            completed_command=/usr/bin/true
             if [ "$mode" = process-completed-diagnostic-popen-failure ]; then
                 completed_command=/uuremote-test-command-that-does-not-exist
             fi
@@ -900,14 +978,14 @@ esac && {
             . "$subject.gui"
             console_uid=501
             run_bounded_gui_cli_to_file \
-                "$output_path" "$status_path" 3000 /bin/true
+                "$output_path" "$status_path" 3000 /usr/bin/true
             gui_command="sudo|launchctl|"
             while IFS= read -r argument; do
                 if [ "$argument" = "$sudo_stub" ] || \
                     [ "${argument%/bin/bash}" != "$argument" ]; then
                     gui_command="${gui_command}sudo|"
-                elif [ "${argument%/bin/true}" != "$argument" ]; then
-                    gui_command="${gui_command}/bin/true|"
+                elif [ "${argument%/usr/bin/true}" != "$argument" ]; then
+                    gui_command="${gui_command}/usr/bin/true|"
                 else
                     gui_command="${gui_command}${argument}|"
                 fi

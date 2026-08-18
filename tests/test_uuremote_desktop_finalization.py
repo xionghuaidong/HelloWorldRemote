@@ -371,6 +371,14 @@ class MacOSAssistAllowSignalFinalizationSourceTests(unittest.TestCase):
         for forbidden_field in ("PID=", "PGID=", "COMMAND=", "ERROR="):
             self.assertNotIn(forbidden_field, diagnostic_region)
 
+    def test_completed_fixture_uses_the_macos_true_executable(self):
+        harness = text(MACOS_ASSIST_ALLOW_HARNESS_PATH)
+        completed_start = harness.index("        completed)")
+        completed_end = harness.index("        nonzero)", completed_start)
+        completed_region = harness[completed_start:completed_end]
+        self.assertIn("completed_command=/usr/bin/true", completed_region)
+        self.assertNotIn("completed_command=/bin/true", completed_region)
+
 
 @unittest.skipUnless(BASH_AVAILABLE, "requires /bin/bash")
 class MacOSAssistAllowProcessTests(unittest.TestCase):
@@ -522,6 +530,66 @@ class MacOSAssistAllowProcessTests(unittest.TestCase):
             ],
         )
 
+    def test_missing_residue_metadata_still_emits_fixed_unknown_fields(self):
+        cases = (
+            (
+                "fault-residue-metadata-diagnostic",
+                "unknown",
+                "unknown",
+                "unknown",
+                "unknown",
+            ),
+            (
+                "fault-residue-partial-diagnostic",
+                "absent",
+                "unknown",
+                "absent",
+                "absent",
+            ),
+            (
+                "fault-residue-invalid-group-diagnostic",
+                "absent",
+                "absent",
+                "unknown",
+                "unknown",
+            ),
+            (
+                "fault-residue-invalid-pid-diagnostic",
+                "unknown",
+                "absent",
+                "absent",
+                "absent",
+            ),
+            (
+                "fault-residue-read-diagnostic",
+                "unknown",
+                "unknown",
+                "absent",
+                "absent",
+            ),
+        )
+        for (
+            mode,
+            parent_state,
+            child_state,
+            group_signal_state,
+            group_activity,
+        ) in cases:
+            with self.subTest(mode=mode):
+                result = self.run_harness(mode, "residue-metadata-failure")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout, "ASSERTION=failed\n")
+                self.assertEqual(
+                    result.stderr.splitlines(),
+                    [
+                        f"RECORDED_PARENT_STATE={parent_state}",
+                        f"RECORDED_CHILD_STATE={child_state}",
+                        f"GROUP_SIGNAL_STATE={group_signal_state}",
+                        "GROUP_MEMBERSHIP=unknown",
+                        f"GROUP_ACTIVITY={group_activity}",
+                    ],
+                )
+
     def test_nonzero_process_records_exact_safe_status(self):
         result = self.run_harness("process", "nonzero")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -596,7 +664,7 @@ class MacOSAssistAllowProcessTests(unittest.TestCase):
         self.assertEqual(
             result.stdout,
             "STATUS=completed:0\n"
-            "GUI_COMMAND=sudo|launchctl|asuser|501|sudo|-u|#501|/bin/true\n",
+            "GUI_COMMAND=sudo|launchctl|asuser|501|sudo|-u|#501|/usr/bin/true\n",
         )
 
     def test_term_interrupt_reaps_the_owned_process_group_fail_closed(self):
