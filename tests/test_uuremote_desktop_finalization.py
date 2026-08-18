@@ -340,6 +340,8 @@ class MacOSAssistAllowSignalFinalizationSourceTests(unittest.TestCase):
             start : harness.index('case "$mode" in', start)
         ]
         for field in (
+            "BOUNDARY_STAGE=",
+            "EXCEPTION_KIND=",
             "INITIAL_PROBE_KIND=",
             "FINAL_PROBE_KIND=",
             "WAIT_RETURN_CODE=",
@@ -348,8 +350,26 @@ class MacOSAssistAllowSignalFinalizationSourceTests(unittest.TestCase):
         ):
             self.assertIn(field, diagnostic_region)
         lowered = diagnostic_region.lower()
-        for forbidden in ("pid=", "pgid=", "exception", "traceback"):
+        for forbidden in ("pid=", "pgid=", "traceback", "repr("):
             self.assertNotIn(forbidden, lowered)
+        self.assertNotIn("str(diagnostic_exception)", diagnostic_region)
+
+    def test_residue_failure_diagnostic_has_only_fixed_state_fields(self):
+        harness = text(MACOS_ASSIST_ALLOW_HARNESS_PATH)
+        start = harness.index("emit_recorded_residue_diagnostic()")
+        diagnostic_region = harness[
+            start : harness.index("run_recorded_bounded_fixture()", start)
+        ]
+        for field in (
+            "RECORDED_PARENT_STATE=%s",
+            "RECORDED_CHILD_STATE=%s",
+            "GROUP_SIGNAL_STATE=%s",
+            "GROUP_MEMBERSHIP=%s",
+            "GROUP_ACTIVITY=%s",
+        ):
+            self.assertIn(field, diagnostic_region)
+        for forbidden_field in ("PID=", "PGID=", "COMMAND=", "ERROR="):
+            self.assertNotIn(forbidden_field, diagnostic_region)
 
 
 @unittest.skipUnless(BASH_AVAILABLE, "requires /bin/bash")
@@ -378,26 +398,129 @@ class MacOSAssistAllowProcessTests(unittest.TestCase):
         self.assertEqual(result.stdout, "STATUS=completed:0\n")
 
     def test_completed_failure_reports_only_fixed_safe_probe_fields(self):
+        started = time.monotonic()
         result = self.run_harness(
             "process-completed-diagnostic-failure",
             "completed",
         )
+        elapsed = time.monotonic() - started
         self.assertEqual(result.returncode, 125, result.stderr)
         self.assertEqual(result.stdout, "")
+        self.assertLess(elapsed, 5)
         diagnostic = result.stderr.splitlines()
-        self.assertEqual(diagnostic[0], "INITIAL_PROBE_KIND=alive")
-        self.assertEqual(diagnostic[1], "FINAL_PROBE_KIND=alive")
-        self.assertEqual(diagnostic[2], "WAIT_RETURN_CODE=0")
-        self.assertRegex(diagnostic[3], r"^PROBE_COUNT=[1-9][0-9]*$")
+        self.assertEqual(diagnostic[0], "BOUNDARY_STAGE=wait-returned")
+        self.assertEqual(diagnostic[1], "EXCEPTION_KIND=none")
+        self.assertEqual(diagnostic[2], "INITIAL_PROBE_KIND=alive")
+        self.assertEqual(diagnostic[3], "FINAL_PROBE_KIND=alive")
+        self.assertEqual(diagnostic[4], "WAIT_RETURN_CODE=0")
+        self.assertRegex(diagnostic[5], r"^PROBE_COUNT=[1-9][0-9]*$")
+        self.assertLessEqual(int(diagnostic[5].partition("=")[2]), 100)
         self.assertIn(
-            diagnostic[4],
+            diagnostic[6],
             (
                 "ELAPSED_BUCKET=fast",
                 "ELAPSED_BUCKET=bounded",
                 "ELAPSED_BUCKET=extended",
             ),
         )
-        self.assertEqual(len(diagnostic), 5)
+        self.assertEqual(len(diagnostic), 7)
+
+    def test_completed_failure_diagnostic_identifies_the_failing_boundary(self):
+        cases = (
+            (
+                "process-completed-diagnostic-popen-failure",
+                "popen-entered",
+                "os-error",
+            ),
+            (
+                "process-completed-diagnostic-preexec-failure",
+                "popen-entered",
+                "subprocess-error",
+            ),
+            (
+                "process-completed-diagnostic-ownership-failure",
+                "group-recorded",
+                "runtime-error",
+            ),
+            (
+                "process-completed-diagnostic-parent-restore-failure",
+                "restoring-parent-mask",
+                "runtime-error",
+            ),
+        )
+        for mode, stage, exception_kind in cases:
+            with self.subTest(mode=mode):
+                started = time.monotonic()
+                result = self.run_harness(mode, "completed")
+                elapsed = time.monotonic() - started
+                self.assertEqual(result.returncode, 125, result.stderr)
+                self.assertEqual(result.stdout, "")
+                self.assertLess(elapsed, 5)
+                diagnostic = result.stderr.splitlines()
+                self.assertEqual(diagnostic[0], f"BOUNDARY_STAGE={stage}")
+                self.assertEqual(
+                    diagnostic[1],
+                    f"EXCEPTION_KIND={exception_kind}",
+                )
+                self.assertRegex(
+                    diagnostic[2],
+                    r"^INITIAL_PROBE_KIND=(absent|alive|unknown|error|unavailable)$",
+                )
+                self.assertRegex(
+                    diagnostic[3],
+                    r"^FINAL_PROBE_KIND=(absent|alive|unknown|error|unavailable)$",
+                )
+                self.assertEqual(diagnostic[4], "WAIT_RETURN_CODE=unavailable")
+                self.assertRegex(diagnostic[5], r"^PROBE_COUNT=[0-9]+$")
+                self.assertLessEqual(int(diagnostic[5].partition("=")[2]), 100)
+                self.assertRegex(
+                    diagnostic[6],
+                    r"^ELAPSED_BUCKET=(fast|bounded|extended)$",
+                )
+                self.assertEqual(len(diagnostic), 7)
+
+    @unittest.skipUnless(
+        NATIVE_MACOS_BASH_AVAILABLE,
+        "requires native macOS process-group residue observation",
+    )
+    def test_residue_failure_reports_only_fixed_group_state_fields(self):
+        result = self.run_harness("fault-residue-diagnostic", "timeout")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(
+            result.stderr.splitlines(),
+            [
+                "RECORDED_PARENT_STATE=live",
+                "RECORDED_CHILD_STATE=live",
+                "GROUP_SIGNAL_STATE=present",
+                "GROUP_MEMBERSHIP=recorded-only",
+                "GROUP_ACTIVITY=live-only",
+                "Unconfirmed cleanup left a recorded process",
+            ],
+        )
+
+    @unittest.skipUnless(
+        NATIVE_MACOS_BASH_AVAILABLE,
+        "requires native macOS process-group residue observation",
+    )
+    def test_residue_observer_failure_reports_unknown_without_raw_stderr(self):
+        result = self.run_harness(
+            "fault-residue-observer-diagnostic",
+            "timeout",
+        )
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(
+            result.stderr.splitlines(),
+            [
+                "RECORDED_PARENT_STATE=unknown",
+                "RECORDED_CHILD_STATE=unknown",
+                "GROUP_SIGNAL_STATE=unknown",
+                "GROUP_MEMBERSHIP=unknown",
+                "GROUP_ACTIVITY=unknown",
+                "Unconfirmed cleanup left a recorded process",
+            ],
+        )
 
     def test_nonzero_process_records_exact_safe_status(self):
         result = self.run_harness("process", "nonzero")

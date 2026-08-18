@@ -107,13 +107,99 @@ assert_recorded_fixture_teardown() {
         wait_attempt="$((wait_attempt + 1))"
         sleep 0.05
     done
-    for pid_path in $fixture_pid_paths; do
-        if [ -s "$pid_path" ]; then
-            pid="$(cat "$pid_path")"
-            /bin/ps -o pid=,ppid=,pgid=,state= -p "$pid" >&2 || true
-        fi
-    done
+    emit_recorded_residue_diagnostic || true
     return 1
+}
+
+run_residue_ps() {
+    if [ "$mode" = fault-residue-observer-diagnostic ]; then
+        return 1
+    fi
+    /bin/ps "$@"
+}
+
+probe_recorded_group_signal() {
+    if [ "$mode" = fault-residue-observer-diagnostic ]; then
+        return 1
+    fi
+    /bin/kill -0 -- "-$1"
+}
+
+recorded_process_state() {
+    local pid="$1"
+    local state
+
+    if ! state="$(run_residue_ps -o state= -p "$pid" 2>/dev/null)"; then
+        printf 'unknown\n'
+        return
+    fi
+    state="$(printf '%s' "$state" | /usr/bin/tr -d '[:space:]')"
+    case "$state" in
+        '') printf 'absent\n' ;;
+        Z*) printf 'zombie\n' ;;
+        *) printf 'live\n' ;;
+    esac
+}
+
+emit_recorded_residue_diagnostic() {
+    local parent_pid child_pid group group_signal_state group_observation
+    local membership activity
+
+    [ -s "$parent_pid_path" ] || return 1
+    [ -s "$child_pid_path" ] || return 1
+    parent_pid="$(cat "$parent_pid_path")"
+    child_pid="$(cat "$child_pid_path")"
+    case "$parent_pid:$child_pid" in
+        *[!0-9:]*) return 1 ;;
+    esac
+    set -- $fixture_groups
+    group="${1:-}"
+    case "$group" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+
+    if group_observation="$(run_residue_ps -axo pid=,pgid=,state= 2>/dev/null | /usr/bin/awk \
+        -v group="$group" -v parent="$parent_pid" -v child="$child_pid" '
+            $2 == group {
+                total += 1
+                if ($1 != parent && $1 != child) unrecorded += 1
+                if ($3 ~ /^Z/) zombies += 1
+                else live += 1
+            }
+            END {
+                if (total == 0) membership = "absent"
+                else if (unrecorded == 0) membership = "recorded-only"
+                else if (unrecorded == total) membership = "unrecorded-only"
+                else membership = "mixed"
+                if (total == 0) activity = "absent"
+                else if (live > 0 && zombies > 0) activity = "mixed"
+                else if (live > 0) activity = "live-only"
+                else activity = "zombie-only"
+                print membership, activity
+            }
+        ')"; then
+        set -- $group_observation
+        membership="${1:-unknown}"
+        activity="${2:-unknown}"
+    else
+        membership=unknown
+        activity=unknown
+    fi
+    case "$membership" in absent|recorded-only|unrecorded-only|mixed|unknown) ;; *) return 1 ;; esac
+    case "$activity" in absent|live-only|zombie-only|mixed|unknown) ;; *) return 1 ;; esac
+    if probe_recorded_group_signal "$group" 2>/dev/null; then
+        group_signal_state=present
+    elif [ "$membership" = absent ]; then
+        group_signal_state=absent
+    else
+        group_signal_state=unknown
+    fi
+
+    printf 'RECORDED_PARENT_STATE=%s\n' "$(recorded_process_state "$parent_pid")" >&2
+    printf 'RECORDED_CHILD_STATE=%s\n' "$(recorded_process_state "$child_pid")" >&2
+    printf 'GROUP_SIGNAL_STATE=%s\n' "$group_signal_state" >&2
+    printf 'GROUP_MEMBERSHIP=%s\n' "$membership" >&2
+    printf 'GROUP_ACTIVITY=%s\n' "$activity" >&2
 }
 
 run_recorded_bounded_fixture() {
@@ -198,12 +284,22 @@ emit_completed_failure_diagnostic() {
     local field value numeric_value
 
     [ -s "$diagnostic_path" ] || return 0
-    [ "$(/usr/bin/wc -l <"$diagnostic_path" | /usr/bin/tr -d '[:space:]')" = 5 ] || return 1
+    [ "$(/usr/bin/wc -l <"$diagnostic_path" | /usr/bin/tr -d '[:space:]')" = 7 ] || return 1
     for field in \
-        INITIAL_PROBE_KIND= FINAL_PROBE_KIND= WAIT_RETURN_CODE= PROBE_COUNT= ELAPSED_BUCKET=
+        BOUNDARY_STAGE= EXCEPTION_KIND= INITIAL_PROBE_KIND= FINAL_PROBE_KIND= \
+        WAIT_RETURN_CODE= PROBE_COUNT= ELAPSED_BUCKET=
     do
         value="$(/usr/bin/sed -n "s/^${field}//p" "$diagnostic_path")"
         case "$field" in
+            BOUNDARY_STAGE=)
+                case "$value" in
+                    initialized|opening-output|output-opened|popen-entered|popen-returned|group-recorded|ownership-recorded|restoring-parent-mask|parent-mask-restored|waiting|wait-returned) ;;
+                    *) return 1 ;;
+                esac
+                ;;
+            EXCEPTION_KIND=)
+                case "$value" in none|os-error|subprocess-error|runtime-error|handled-signal|other) ;; *) return 1 ;; esac
+                ;;
             INITIAL_PROBE_KIND=|FINAL_PROBE_KIND=)
                 case "$value" in absent|alive|unknown|error|unavailable) ;; *) return 1 ;; esac
                 ;;
@@ -231,7 +327,7 @@ emit_completed_failure_diagnostic() {
 awk '/^if \[ "\$mode" = "self-test-kcpassword" \]; then$/ { exit } { print }' \
     "$source_script" >"$subject"
 case "$mode" in
-    fault-timeout|fault-raises|fault-leader|fault-leader-raises|fault-signal|fault-signal-raises|outer-cleanup-false|outer-cleanup-raises)
+    fault-timeout|fault-raises|fault-leader|fault-leader-raises|fault-signal|fault-signal-raises|fault-residue-diagnostic|fault-residue-observer-diagnostic|outer-cleanup-false|outer-cleanup-raises)
         awk -v fault_mode="$mode" '
             /^def cleanup_owned_process\(\):$/ {
                 print "def cleanup_owned_process_real():"
@@ -239,7 +335,9 @@ case "$mode" in
             }
             /^cleanup_in_progress = False$/ {
                 print "def cleanup_owned_process():"
-                print "    cleanup_owned_process_real()"
+                if (fault_mode != "fault-residue-diagnostic" && fault_mode != "fault-residue-observer-diagnostic") {
+                    print "    cleanup_owned_process_real()"
+                }
                 if (fault_mode == "fault-raises" || fault_mode == "fault-leader-raises" || fault_mode == "fault-signal-raises" || fault_mode == "outer-cleanup-raises") {
                     print "    raise RuntimeError"
                 } else {
@@ -344,7 +442,7 @@ case "$mode" in
         ' "$subject" >"$subject.probe"
         mv "$subject.probe" "$subject"
         ;;
-    process-completed-diagnostic|process-completed-diagnostic-failure)
+    process-completed-diagnostic|process-completed-diagnostic-*)
         awk '
             /^def process_group_alive\(\):$/ {
                 print "def process_group_alive_real():"
@@ -373,12 +471,77 @@ case "$mode" in
             /^exit_code = 125$/ {
                 print
                 print "observed_wait_return_code = \"unavailable\""
+                print "diagnostic_boundary_stage = \"initialized\""
+                print "diagnostic_exception_kind = \"none\""
                 print "diagnostic_started_at = time.monotonic()"
                 next
             }
+            /^    output_descriptor = os\.open\($/ {
+                print "    diagnostic_boundary_stage = \"opening-output\""
+                print
+                in_output_open = 1
+                next
+            }
+            in_output_open && /^    \)$/ {
+                print
+                print "    diagnostic_boundary_stage = \"output-opened\""
+                in_output_open = 0
+                next
+            }
+            /^        process = subprocess\.Popen\($/ {
+                print "        diagnostic_boundary_stage = \"popen-entered\""
+                print
+                in_popen = 1
+                next
+            }
+            in_popen && /^        \)$/ {
+                print
+                print "        diagnostic_boundary_stage = \"popen-returned\""
+                in_popen = 0
+                next
+            }
+            /^        process_group_id = process\.pid$/ {
+                print
+                print "        diagnostic_boundary_stage = \"group-recorded\""
+                next
+            }
+            /^        owned_cleanup_required = True$/ {
+                print
+                print "        diagnostic_boundary_stage = \"ownership-recorded\""
+                next
+            }
+            /^        signal\.pthread_sigmask\(signal\.SIG_SETMASK, previous_signal_mask\)$/ {
+                print "        diagnostic_boundary_stage = \"restoring-parent-mask\""
+                print
+                next
+            }
+            /^        previous_signal_mask = None$/ {
+                print
+                print "        diagnostic_boundary_stage = \"parent-mask-restored\""
+                next
+            }
             /^        return_code = process\.wait\(timeout=timeout_seconds\)$/ {
+                print "        diagnostic_boundary_stage = \"waiting\""
                 print
                 print "        observed_wait_return_code = str(return_code)"
+                print "        diagnostic_boundary_stage = \"wait-returned\""
+                next
+            }
+            /^except HandledSignal:$/ {
+                print
+                print "    diagnostic_exception_kind = \"handled-signal\""
+                next
+            }
+            /^except Exception:$/ {
+                print "except Exception as diagnostic_exception:"
+                print "    if isinstance(diagnostic_exception, subprocess.SubprocessError):"
+                print "        diagnostic_exception_kind = \"subprocess-error\""
+                print "    elif isinstance(diagnostic_exception, OSError):"
+                print "        diagnostic_exception_kind = \"os-error\""
+                print "    elif isinstance(diagnostic_exception, RuntimeError):"
+                print "        diagnostic_exception_kind = \"runtime-error\""
+                print "    else:"
+                print "        diagnostic_exception_kind = \"other\""
                 next
             }
             /^raise SystemExit\(exit_code\)$/ {
@@ -392,6 +555,8 @@ case "$mode" in
                 print "diagnostic_initial_probe = process_group_probe_kinds[0] if process_group_probe_kinds else \"unavailable\""
                 print "diagnostic_final_probe = process_group_probe_kinds[-1] if process_group_probe_kinds else \"unavailable\""
                 print "pathlib.Path(os.environ[\"UUREMOTE_TEST_COMPLETED_DIAGNOSTIC_PATH\"]).write_text("
+                print "    f\"BOUNDARY_STAGE={diagnostic_boundary_stage}\\n\""
+                print "    f\"EXCEPTION_KIND={diagnostic_exception_kind}\\n\""
                 print "    f\"INITIAL_PROBE_KIND={diagnostic_initial_probe}\\n\""
                 print "    f\"FINAL_PROBE_KIND={diagnostic_final_probe}\\n\""
                 print "    f\"WAIT_RETURN_CODE={observed_wait_return_code}\\n\""
@@ -423,6 +588,50 @@ case "$mode" in
             { print }
         ' "$subject" >"$subject.diagnostic-failure"
         mv "$subject.diagnostic-failure" "$subject"
+        ;;
+esac
+case "$mode" in
+    process-completed-diagnostic-preexec-failure)
+        awk '
+            /^        def restore_child_signal_mask\(\):$/ {
+                print
+                print "            raise RuntimeError"
+                next
+            }
+            { print }
+        ' "$subject" >"$subject.diagnostic-boundary"
+        mv "$subject.diagnostic-boundary" "$subject"
+        ;;
+    process-completed-diagnostic-ownership-failure)
+        awk '
+            /^        diagnostic_boundary_stage = "group-recorded"$/ {
+                print
+                print "        raise RuntimeError"
+                next
+            }
+            { print }
+        ' "$subject" >"$subject.diagnostic-boundary"
+        mv "$subject.diagnostic-boundary" "$subject"
+        ;;
+    process-completed-diagnostic-parent-restore-failure)
+        awk '
+            /^        diagnostic_boundary_stage = "ownership-recorded"$/ {
+                parent_restore_pending = 1
+                print
+                next
+            }
+            parent_restore_pending && /^    if previous_signal_mask is not None:$/ {
+                print "    if True:"
+                parent_restore_pending = 0
+                next
+            }
+            /^        signal\.pthread_sigmask\(signal\.SIG_SETMASK, previous_signal_mask\)$/ {
+                print "        raise RuntimeError"
+                next
+            }
+            { print }
+        ' "$subject" >"$subject.diagnostic-boundary"
+        mv "$subject.diagnostic-boundary" "$subject"
         ;;
 esac
 case "$mode" in
@@ -494,7 +703,7 @@ fi
 scenario="${2:?}"
 
 case "$mode" in
-    process|process-completed-diagnostic|process-completed-diagnostic-failure|fault-*|block-*|probe-transient-error|probe-persistent-error|pending-finalization-swapped) ;;
+    process|process-completed-diagnostic|process-completed-diagnostic-*|fault-*|block-*|probe-transient-error|probe-persistent-error|pending-finalization-swapped) ;;
     *) false ;;
 esac && {
     status_path="$temporary_directory/status"
@@ -546,8 +755,12 @@ esac && {
             exit 0
             ;;
         completed)
+            completed_command=/bin/true
+            if [ "$mode" = process-completed-diagnostic-popen-failure ]; then
+                completed_command=/uuremote-test-command-that-does-not-exist
+            fi
             if run_bounded_uuremote_cli_to_file_with_status \
-                "$output_path" "$status_path" 3000 /bin/true
+                "$output_path" "$status_path" 3000 "$completed_command"
             then
                 bounded_exit=0
             else
@@ -568,6 +781,8 @@ esac && {
             ;;
         timeout)
             if [ "$mode" = fault-timeout ] || [ "$mode" = fault-raises ] || \
+                [ "$mode" = fault-residue-diagnostic ] || \
+                [ "$mode" = fault-residue-observer-diagnostic ] || \
                 [ "$mode" = block-false ] || [ "$mode" = block-raises ]; then
                 run_boundary=run_recorded_bounded_fixture
             else
@@ -583,6 +798,8 @@ esac && {
                 bounded_exit="$?"
             fi
             if [ "$mode" = fault-timeout ] || [ "$mode" = fault-raises ] || \
+                [ "$mode" = fault-residue-diagnostic ] || \
+                [ "$mode" = fault-residue-observer-diagnostic ] || \
                 [ "$mode" = block-false ] || [ "$mode" = block-raises ]; then
                 if [ "$bounded_exit" -ne 125 ]; then
                     echo "Unconfirmed cleanup did not fail closed" >&2
