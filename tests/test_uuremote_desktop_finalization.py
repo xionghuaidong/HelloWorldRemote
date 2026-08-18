@@ -372,6 +372,42 @@ class MacOSAssistAllowSignalFinalizationSourceTests(unittest.TestCase):
             "ASSIST_ALLOW_DEADLINE_MILLISECONDS=6000",
             deadline_rewrite,
         )
+        summary_clock_start = harness.index(
+            'if [ "$mode" = "absolute-worker-summary" ]; then',
+            deadline_rewrite_start,
+        )
+        summary_clock_end = harness.index(
+            'case "$mode" in', summary_clock_start
+        )
+        summary_clock = harness[summary_clock_start:summary_clock_end]
+        self.assertIn("UUREMOTE_TEST_SUMMARY_CLOCK_PATH", summary_clock)
+        self.assertIn(
+            "assist_allow_absolute_deadline_milliseconds - 1000",
+            summary_clock,
+        )
+        self.assertIn(
+            r'print "        printf \047%s\\n\047 '
+            r'\"$assist_allow_absolute_deadline_milliseconds\""',
+            summary_clock,
+        )
+        self.assertNotIn("uuremote_python3", summary_clock)
+        self.assertIn(r'[ \"$1\" -eq 500 ] || return 1', summary_clock)
+        summary_boundary_start = harness.index(
+            'case "$mode" in\n'
+            '    startup-preexec-block|absolute-poll-block|absolute-worker-summary',
+            summary_clock_end,
+        )
+        summary_boundary_end = harness.index(
+            "esac", summary_boundary_start
+        )
+        summary_boundary = harness[
+            summary_boundary_start:summary_boundary_end
+        ]
+        self.assertIn(
+            'boundary_mode == "absolute-worker-summary"',
+            summary_boundary,
+        )
+        self.assertIn(r'[ \"$3\" -eq 1000 ] || return 1', summary_boundary)
 
     def test_completed_failure_diagnostic_is_fixed_field_and_identifier_free(self):
         harness = text(MACOS_ASSIST_ALLOW_HARNESS_PATH)
@@ -1139,6 +1175,9 @@ class MacOSAssistAbsoluteDeadlineBoundaryTests(unittest.TestCase):
             supervisor_pid_path = temporary_root / "supervisor-pid"
             blocker_ready_path = temporary_root / "blocker-ready"
             relay_ready_path = temporary_root / "relay-ready"
+            summary_clock_path = temporary_root / "summary-clock"
+            if mode == "absolute-worker-summary":
+                summary_clock_path.write_text("0\n", encoding="ascii")
             environment = os.environ.copy()
             environment.update(
                 {
@@ -1152,6 +1191,9 @@ class MacOSAssistAbsoluteDeadlineBoundaryTests(unittest.TestCase):
                         blocker_ready_path
                     ),
                     "UUREMOTE_TEST_RELAY_READY_PATH": str(relay_ready_path),
+                    "UUREMOTE_TEST_SUMMARY_CLOCK_PATH": str(
+                        summary_clock_path
+                    ),
                 }
             )
             popen_options = {
@@ -1281,6 +1323,11 @@ class MacOSAssistAbsoluteDeadlineBoundaryTests(unittest.TestCase):
                 metadata_confirmed,
                 "validated runner and fixture PID/PGID metadata is required",
             )
+            if mode == "absolute-worker-summary":
+                self.assertEqual(
+                    summary_clock_path.read_text(encoding="ascii"),
+                    "5\n",
+                )
             if supervisor_state == "completed":
                 self.assertEqual(process.returncode, 1, stdout + stderr)
             else:
@@ -1349,6 +1396,12 @@ class MacOSAssistAbsoluteDeadlineBoundaryTests(unittest.TestCase):
         )
         self.assertIn("ASSIST_DIAGNOSTIC_FINAL_CATEGORY=enabled-false", lines)
         self.assertIn("ASSIST_DIAGNOSTIC_FINAL_CLI_EXIT=0", lines)
+        self.assertIn("ASSIST_DIAGNOSTIC_ATTEMPTS=1", lines)
+        self.assertIn("ASSIST_DIAGNOSTIC_ENABLED_FALSE_COUNT=1", lines)
+        self.assertEqual(
+            sum(line.startswith("ASSIST_DIAGNOSTIC_") for line in lines),
+            19,
+        )
         self.assertTrue(
             all(
                 line.startswith("ASSIST_DIAGNOSTIC_")

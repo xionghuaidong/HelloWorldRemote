@@ -799,6 +799,51 @@ if [ "$mode" = "absolute-worker-summary" ] ||
         "$subject" >"$subject.signal-relay-deadline"
     mv "$subject.signal-relay-deadline" "$subject"
 fi
+if [ "$mode" = "absolute-worker-summary" ]; then
+    awk '
+        /^uuremote_now_milliseconds\(\) \{$/ {
+            print "uuremote_now_milliseconds() {"
+            print "    local summary_clock_path=\"${UUREMOTE_TEST_SUMMARY_CLOCK_PATH:?}\""
+            print "    local summary_clock_count"
+            print "    IFS= read -r summary_clock_count <\"$summary_clock_path\" || return 1"
+            print "    case \"$summary_clock_count\" in"
+            print "        0) ;;"
+            print "        [1-9]*)"
+            print "            case \"$summary_clock_count\" in *[!0-9]*) return 1 ;; esac"
+            print "            ;;"
+            print "        *) return 1 ;;"
+            print "    esac"
+            print "    summary_clock_count=\"$((summary_clock_count + 1))\""
+            print "    printf \047%s\\n\047 \"$summary_clock_count\" >\"$summary_clock_path\" || return 1"
+            print "    if [ \"$summary_clock_count\" -le 4 ]; then"
+            print "        printf \047%s\\n\047 \"$((assist_allow_absolute_deadline_milliseconds - 1000))\""
+            print "    else"
+            print "        printf \047%s\\n\047 \"$assist_allow_absolute_deadline_milliseconds\""
+            print "    fi"
+            print "}"
+            skipping_clock = 1
+            next
+        }
+        skipping_clock && /^}$/ {
+            skipping_clock = 0
+            next
+        }
+        /^wait_uuremote_poll\(\) \{$/ {
+            print "wait_uuremote_poll() {"
+            print "    [ \"$1\" -eq 500 ] || return 1"
+            print "    return 0"
+            print "}"
+            skipping_poll = 1
+            next
+        }
+        skipping_poll && /^}$/ {
+            skipping_poll = 0
+            next
+        }
+        !skipping_clock && !skipping_poll { print }
+    ' "$subject" >"$subject.summary-clock"
+    mv "$subject.summary-clock" "$subject"
+fi
 case "$mode" in
     absolute-clock-block|absolute-poll-block|absolute-shell-signal-relay)
         awk -v block_mode="$mode" '
@@ -861,6 +906,10 @@ case "$mode" in
                 print
                 if (boundary_mode == "startup-preexec-block") {
                     print "    run_bounded_uuremote_cli_to_file_with_status \"$1\" \"$2\" \"$3\" /usr/bin/true"
+                } else if (boundary_mode == "absolute-worker-summary") {
+                    print "    [ \"$3\" -eq 1000 ] || return 1"
+                    print "    printf \047%s\\n\047 \047{\"success\":true,\"enabled\":false}\047 >\"$1\""
+                    print "    printf \047completed:0\\n\047 >\"$2\""
                 } else if (boundary_mode == "absolute-precommit-signal") {
                     print "    printf \047%s\\n\047 \047{\"success\":true,\"enabled\":true}\047 >\"$1\""
                     print "    printf \047completed:0\\n\047 >\"$2\""
