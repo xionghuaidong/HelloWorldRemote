@@ -793,7 +793,8 @@ case "$mode" in
         mv "$subject.short-deadline" "$subject"
         ;;
 esac
-if [ "$mode" = "absolute-shell-signal-relay" ]; then
+if [ "$mode" = "absolute-worker-summary" ] ||
+    [ "$mode" = "absolute-shell-signal-relay" ]; then
     sed 's/ASSIST_ALLOW_DEADLINE_MILLISECONDS=2500/ASSIST_ALLOW_DEADLINE_MILLISECONDS=6000/' \
         "$subject" >"$subject.signal-relay-deadline"
     mv "$subject.signal-relay-deadline" "$subject"

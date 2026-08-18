@@ -352,6 +352,27 @@ class MacOSAssistAllowSignalFinalizationSourceTests(unittest.TestCase):
             route,
         )
 
+    def test_worker_summary_budget_outlives_the_fixed_finalization_reserve(self):
+        harness = text(MACOS_ASSIST_ALLOW_HARNESS_PATH)
+        deadline_rewrite_start = harness.index(
+            "sed 's/ASSIST_ALLOW_DEADLINE_MILLISECONDS=60000/"
+        )
+        deadline_rewrite_end = harness.index(
+            'case "$mode" in', deadline_rewrite_start
+        )
+        deadline_rewrite = harness[
+            deadline_rewrite_start:deadline_rewrite_end
+        ]
+        self.assertIn(
+            'if [ "$mode" = "absolute-worker-summary" ] ||\n'
+            '    [ "$mode" = "absolute-shell-signal-relay" ]; then',
+            deadline_rewrite,
+        )
+        self.assertIn(
+            "ASSIST_ALLOW_DEADLINE_MILLISECONDS=6000",
+            deadline_rewrite,
+        )
+
     def test_completed_failure_diagnostic_is_fixed_field_and_identifier_free(self):
         harness = text(MACOS_ASSIST_ALLOW_HARNESS_PATH)
         start = harness.index("emit_completed_failure_diagnostic()")
@@ -1191,7 +1212,12 @@ class MacOSAssistAbsoluteDeadlineBoundaryTests(unittest.TestCase):
                     except (OSError, ValueError):
                         relay_metadata_confirmed = False
                 try:
-                    stdout, stderr = process.communicate(timeout=3)
+                    communicate_timeout = (
+                        7 if mode == "absolute-worker-summary" else 3
+                    )
+                    stdout, stderr = process.communicate(
+                        timeout=communicate_timeout
+                    )
                     supervisor_state = "completed"
                 except subprocess.TimeoutExpired:
                     supervisor_state = "timeout"
