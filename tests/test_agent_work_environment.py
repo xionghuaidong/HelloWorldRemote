@@ -618,6 +618,202 @@ class AgentInstructionContractTests(unittest.TestCase):
                 end = source.index("\n)\n```", start) + 3
             return source[start:end]
 
+        def extract_assist_supervisor(source: str) -> str:
+            wrapper_start = source.index(
+                "run_assist_allow_with_absolute_deadline() ("
+            )
+            heredoc_marker = "<<'PYTHON' &\n"
+            heredoc_start = source.index(heredoc_marker, wrapper_start)
+            python_start = heredoc_start + len(heredoc_marker)
+            python_end = source.index("\nPYTHON\n", python_start)
+            return source[python_start:python_end]
+
+        def extract_assist_supervisor_wrapper(source: str) -> str:
+            start = source.index("run_assist_allow_with_absolute_deadline() (")
+            end = source.index("\n)\n", start) + 3
+            return source[start:end]
+
+        def assert_supervisor_shell_contract(wrapper: str) -> None:
+            self.assertIn("trap cleanup_assist_supervisor EXIT\n", wrapper)
+            self.assertIn(
+                "trap forward_assist_supervisor_signal HUP INT TERM", wrapper
+            )
+            self.assertIn("<<'PYTHON' &", wrapper)
+            self.assertIn("    /usr/bin/python3 - \\\n", wrapper)
+            self.assertNotIn("    uuremote_python3 - \\\n", wrapper)
+            self.assertIn('/bin/kill -TERM "$supervisor_pid"', wrapper)
+            self.assertIn('if wait "$supervisor_pid"; then', wrapper)
+            self.assertIn(
+                'supervisor_pid=""\n    trap - HUP INT TERM\n'
+                '    if [ "$supervisor_interrupted" -eq 1 ] &&\n'
+                '        ! [ "$supervisor_decision_path" -ef '
+                '"$supervisor_commit_source" ]; then\n'
+                "        supervisor_status=125",
+                wrapper,
+            )
+            self.assertIn(
+                '/bin/ln "$supervisor_interrupt_source"',
+                wrapper,
+            )
+            self.assertIn(
+                'elif [ "$supervisor_decision_path" -ef \\\n'
+                '                "$supervisor_commit_source" ]; then',
+                wrapper,
+            )
+            self.assertIn('return "$supervisor_status"', wrapper)
+            self.assertNotIn(
+                "trap cleanup_assist_supervisor EXIT HUP INT TERM", wrapper
+            )
+
+        def assert_supervisor_semantic_contract(supervisor: str) -> None:
+            tree = ast.parse(supervisor)
+            normalized_supervisor = ast.unparse(tree)
+            functions = {
+                node.name: node
+                for node in tree.body
+                if isinstance(node, ast.FunctionDef)
+            }
+            for name in (
+                "claim_interruption",
+                "descendant_snapshot",
+                "signal_owned_processes",
+                "cleanup_worker",
+                "remove_capture_files",
+            ):
+                self.assertIn(name, functions)
+
+            fork = "worker_pid = os.fork()"
+            deadline = "deadline = time.monotonic() + timeout_seconds"
+            signal_block = (
+                "previous_mask = signal.pthread_sigmask("
+                "signal.SIG_BLOCK, handled_signals)"
+            )
+            parent_unmask = (
+                "signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)"
+            )
+            for required in (signal_block, deadline, fork, parent_unmask):
+                self.assertIn(required, supervisor)
+            self.assertLess(supervisor.index(signal_block), supervisor.index(fork))
+            self.assertLess(supervisor.index(deadline), supervisor.index(fork))
+            handler_install = (
+                "for handled_signal_number in handled_signals:\n"
+                "        signal.signal(handled_signal_number, handled_signal)"
+            )
+            self.assertIn(handler_install, supervisor)
+            self.assertLess(supervisor.index(signal_block), supervisor.index(handler_install))
+            self.assertLess(supervisor.index(handler_install), supervisor.index(fork))
+            self.assertGreater(
+                supervisor.index(parent_unmask, supervisor.index(fork)),
+                supervisor.index(fork),
+            )
+            self.assertIn("os.setsid()", supervisor)
+            self.assertIn("for signal_number in (signal.SIGTERM, signal.SIGKILL):", supervisor)
+            self.assertIn(
+                '"UUREMOTE_ASSIST_INTERNAL_DEADLINE_MILLISECONDS"',
+                supervisor,
+            )
+            self.assertIn("str(\n                    worker_deadline_milliseconds", supervisor)
+            self.assertIn(
+                "worker_deadline_milliseconds = deadline_milliseconds - "
+                "finalization_reserve_milliseconds",
+                normalized_supervisor,
+            )
+            self.assertIn(
+                "'UUREMOTE_ASSIST_INTERNAL_DEADLINE_MILLISECONDS': "
+                "str(worker_deadline_milliseconds)",
+                normalized_supervisor,
+            )
+
+            handler = ast.dump(
+                functions["handled_signal"], include_attributes=False
+            )
+            self.assertIn("claim_interruption", handler)
+            self.assertIn("attr='pthread_sigmask'", handler)
+            self.assertIn("attr='SIG_BLOCK'", handler)
+            self.assertIn("Name(id='handled_signals'", handler)
+
+            signaler = ast.dump(
+                functions["signal_owned_processes"], include_attributes=False
+            )
+            self.assertIn("attr='killpg'", signaler)
+            self.assertIn("attr='kill'", signaler)
+            cleanup = ast.dump(functions["cleanup_worker"], include_attributes=False)
+            self.assertIn("observe_worker_descendants", cleanup)
+            self.assertIn("signal_owned_processes", cleanup)
+            self.assertIn("Name(id='phase_deadline'", cleanup)
+            self.assertIn("Name(id='recorded_pids'", cleanup)
+            self.assertIn("Name(id='recorded_groups'", cleanup)
+            cleanup_source = ast.unparse(functions["cleanup_worker"])
+            self.assertIn(
+                "for signal_number in (signal.SIGTERM, signal.SIGKILL):",
+                cleanup_source,
+            )
+            self.assertEqual(
+                cleanup_source.count(
+                    "phase_deadline = min(time.monotonic() + 0.5, "
+                    "absolute_cleanup_deadline)"
+                ),
+                1,
+            )
+            self.assertIn(
+                "signal_owned_processes(recorded_pids, recorded_groups, "
+                "signal_number)",
+                cleanup_source,
+            )
+
+            main_snapshot = "observe_worker_descendants(snapshot_timeout)"
+            main_reap = "wait_status = reap_worker_nonblocking()"
+            self.assertIn(main_snapshot, supervisor)
+            self.assertIn(main_reap, supervisor)
+            self.assertLess(
+                supervisor.index(main_snapshot), supervisor.index(main_reap)
+            )
+            self.assertIn("while time.monotonic() < cleanup_start:", supervisor)
+            self.assertIn("cleanup_worker(deadline)", supervisor)
+            observation_loop_start = supervisor.index(
+                "while time.monotonic() < cleanup_start:"
+            )
+            observation_loop_end = supervisor.index(
+                "    if wait_status is None:", observation_loop_start
+            )
+            self.assertIn(
+                "time.sleep(min(0.01, remaining))",
+                supervisor[observation_loop_start:observation_loop_end],
+            )
+
+            final_deadline = "if time.monotonic() >= deadline or"
+            stdout_read = "stdout_bytes = stdout_path.read_bytes()"
+            capture_cleanup = "if not remove_capture_files():"
+            commit_marker = "os.link(commit_source_path, decision_path)"
+            stdout_write = "sys.stdout.buffer.write(stdout_bytes)"
+            self.assertLess(supervisor.index(final_deadline), supervisor.index(stdout_read))
+            self.assertLess(supervisor.index(stdout_read), supervisor.index(capture_cleanup))
+            capture_cleanup_index = supervisor.index(capture_cleanup)
+            self.assertIn(
+                "if time.monotonic() >= deadline:",
+                supervisor[capture_cleanup_index:],
+            )
+            commit_deadline = supervisor.index(
+                "if time.monotonic() >= deadline:",
+                capture_cleanup_index,
+            )
+            self.assertLess(capture_cleanup_index, commit_deadline)
+            precommit_block = (
+                "precommit_mask = signal.pthread_sigmask("
+                "signal.SIG_BLOCK, handled_signals)"
+            )
+            precommit_unblock = (
+                "signal.pthread_sigmask(signal.SIG_SETMASK, precommit_mask)"
+            )
+            self.assertEqual(supervisor.count(precommit_block), 1)
+            first_block = supervisor.index(precommit_block, commit_deadline)
+            self.assertIn(precommit_unblock, supervisor[first_block:])
+            first_unblock = supervisor.index(precommit_unblock, first_block)
+            self.assertLess(commit_deadline, first_block)
+            self.assertLess(first_block, first_unblock)
+            self.assertLess(first_unblock, supervisor.index(commit_marker))
+            self.assertLess(supervisor.index(commit_marker), supervisor.index(stdout_write))
+
         def assert_assist_deadline_contract(helper: str) -> None:
             status_read = 'status_record="$(/bin/cat "$status_path" 2>/dev/null)" || return 1'
             child_clock = helper.index("read_assist_now || return 1", helper.index(status_read))
@@ -647,17 +843,45 @@ class AgentInstructionContractTests(unittest.TestCase):
             self.assertIn('timeout_count="$((timeout_count + 1))"', helper)
 
         production_source = text(ROOT / ".github/workflows/apple.sh")
+        self.assertIn(
+            "ASSIST_ALLOW_FINALIZATION_RESERVE_MILLISECONDS=1500",
+            production_source,
+        )
+        self.assertIn(
+            'deadline="${assist_allow_absolute_deadline_milliseconds:-'
+            '$((now + ASSIST_ALLOW_DEADLINE_MILLISECONDS))}"',
+            production_source,
+        )
+        self.assertIn(
+            "UUREMOTE_ASSIST_INTERNAL_DEADLINE_MILLISECONDS",
+            production_source,
+        )
         production_runner = extract_runner(production_source)
+        production_supervisor_wrapper = extract_assist_supervisor_wrapper(
+            production_source
+        )
+        production_supervisor = extract_assist_supervisor(production_source)
+        assert_supervisor_shell_contract(production_supervisor_wrapper)
+        assert_supervisor_semantic_contract(production_supervisor)
         assert_assist_deadline_contract(extract_assist_helper(production_source))
         for name in (
             "docs/superpowers/plans/2026-08-16-macos-unattended-permission-diagnostics.md",
             "docs/superpowers/plans/2026-08-16-macos-unattended-permission-diagnostics-zh_CN.md",
         ):
             plan_runner = extract_runner(text(ROOT / name))
-            plan_helper = extract_assist_helper(text(ROOT / name))
+            plan_source = text(ROOT / name)
+            plan_supervisor_wrapper = extract_assist_supervisor_wrapper(plan_source)
+            plan_supervisor = extract_assist_supervisor(plan_source)
+            plan_helper = extract_assist_helper(plan_source)
             with self.subTest(name=name):
                 assert_runner_ast_parity(plan_runner, production_runner)
+                self.assertEqual(
+                    plan_supervisor_wrapper, production_supervisor_wrapper
+                )
+                assert_runner_ast_parity(plan_supervisor, production_supervisor)
                 assert_runner_semantic_contract(plan_runner)
+                assert_supervisor_shell_contract(plan_supervisor_wrapper)
+                assert_supervisor_semantic_contract(plan_supervisor)
                 assert_assist_deadline_contract(plan_helper)
                 with self.assertRaises(AssertionError):
                     assert_assist_deadline_contract(
@@ -683,6 +907,127 @@ class AgentInstructionContractTests(unittest.TestCase):
                             "return None",
                             1,
                         ),
+                    )
+                with self.assertRaises(AssertionError):
+                    assert_supervisor_semantic_contract(
+                        plan_supervisor.replace(
+                            "deadline = time.monotonic() + timeout_seconds",
+                            "deadline = time.monotonic() - timeout_seconds",
+                            1,
+                        )
+                    )
+                with self.assertRaises(AssertionError):
+                    assert_supervisor_semantic_contract(
+                        plan_supervisor.replace(
+                            "deadline_milliseconds - finalization_reserve_milliseconds",
+                            "deadline_milliseconds",
+                            1,
+                        )
+                    )
+                with self.assertRaises(AssertionError):
+                    assert_supervisor_semantic_contract(
+                        plan_supervisor.replace(
+                            "for signal_number in (signal.SIGTERM, signal.SIGKILL):",
+                            "for signal_number in (signal.SIGTERM,):",
+                            1,
+                        )
+                    )
+                with self.assertRaises(AssertionError):
+                    assert_supervisor_semantic_contract(
+                        plan_supervisor.replace(
+                            "time.monotonic() + 0.5,",
+                            "time.monotonic() + 0.75,",
+                            1,
+                        )
+                    )
+                with self.assertRaises(AssertionError):
+                    assert_supervisor_semantic_contract(
+                        plan_supervisor.replace(
+                            "        observe_worker_descendants(snapshot_timeout)",
+                            "        wait_status = reap_worker_nonblocking()",
+                            1,
+                        )
+                    )
+                with self.assertRaises(AssertionError):
+                    assert_supervisor_semantic_contract(
+                        plan_supervisor.replace(
+                            "    if not claim_interruption():\n"
+                            "        return\n"
+                            "    signal.pthread_sigmask(signal.SIG_BLOCK, handled_signals)",
+                            "    signal.pthread_sigmask(signal.SIG_BLOCK, handled_signals)",
+                            1,
+                        )
+                    )
+                with self.assertRaises(AssertionError):
+                    assert_supervisor_shell_contract(
+                        plan_supervisor_wrapper.replace("<<'PYTHON' &", "<<'PYTHON'", 1)
+                    )
+                with self.assertRaises(AssertionError):
+                    assert_supervisor_shell_contract(
+                        plan_supervisor_wrapper.replace(
+                            "    /usr/bin/python3 - \\\n",
+                            "    uuremote_python3 - \\\n",
+                            1,
+                        )
+                    )
+                with self.assertRaises(AssertionError):
+                    assert_supervisor_shell_contract(
+                        plan_supervisor_wrapper.replace(
+                            'if [ "$supervisor_interrupted" -eq 1 ] &&\n'
+                            '        ! [ "$supervisor_decision_path" -ef '
+                            '"$supervisor_commit_source" ]; then\n'
+                            "        supervisor_status=125",
+                            "if false; then\n        supervisor_status=125",
+                            1,
+                        )
+                    )
+                with self.assertRaises(AssertionError):
+                    assert_supervisor_semantic_contract(
+                        plan_supervisor.replace(
+                            "    try:\n"
+                            "        os.link(commit_source_path, decision_path)",
+                            "    sys.stdout.buffer.write(stdout_bytes)\n"
+                            "    try:\n"
+                            "        os.link(commit_source_path, decision_path)",
+                            1,
+                        )
+                    )
+                with self.assertRaises(AssertionError):
+                    assert_supervisor_semantic_contract(
+                        plan_supervisor.replace(
+                            "        remaining = cleanup_start - time.monotonic()\n"
+                            "        if remaining <= 0:\n"
+                            "            break\n"
+                            "        time.sleep(min(0.01, remaining))",
+                            "        remaining = cleanup_start - time.monotonic()\n"
+                            "        if remaining <= 0:\n"
+                            "            break\n"
+                            "        time.sleep(min(0.1, remaining))",
+                            1,
+                        )
+                    )
+                with self.assertRaises(AssertionError):
+                    assert_supervisor_semantic_contract(
+                        plan_supervisor.replace(
+                            "    if time.monotonic() >= deadline:\n"
+                            "        raise SystemExit(125)\n"
+                            "    precommit_mask = signal.pthread_sigmask",
+                            "    if False:\n"
+                            "        raise SystemExit(125)\n"
+                            "    precommit_mask = signal.pthread_sigmask",
+                            1,
+                        )
+                    )
+                with self.assertRaises(AssertionError):
+                    assert_supervisor_semantic_contract(
+                        plan_supervisor.replace(
+                            "    signal.pthread_sigmask(signal.SIG_SETMASK, precommit_mask)\n"
+                            "    try:\n"
+                            "        os.link(commit_source_path, decision_path)",
+                            "    try:\n"
+                            "        os.link(commit_source_path, decision_path)",
+                            1,
+                        )
                     )
                 with self.assertRaises(AssertionError):
                     assert_runner_semantic_contract(

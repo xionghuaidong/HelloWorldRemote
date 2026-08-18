@@ -6,7 +6,7 @@
 
 **Goal:** Add permanent, safe diagnostics that identify why macOS `uuyc-cli assist allow on` does not reach `enabled=true`, without weakening the fail-closed permission gate.
 
-**Architecture:** Keep `ensure_assist_allowed` as the shell orchestrator. Put child ownership and timeout handling behind a bounded GUI-process boundary, convert every private response into one fixed safe category, and aggregate the complete 60-second window. The first native run is an evidence gate; a root-cause fix requires a later design amendment and plan based on that evidence.
+**Architecture:** Keep `ensure_assist_allowed` as the shell orchestrator. Put child ownership and timeout handling behind a bounded GUI-process boundary, convert every private response into one fixed safe category, and aggregate the complete 60-second window. An outer fork/setsid supervisor owns the complete route under a real wall-clock deadline, including synchronous startup, clock, and polling boundaries.
 
 **Tech Stack:** Bash 3.2-compatible shell, embedded Python 3 from `/usr/bin/python3`, GitHub Actions YAML, Python `unittest`, and native macOS process/session tools.
 
@@ -16,7 +16,7 @@
 - Use TDD for every runtime behavior change: observe RED, implement the minimum GREEN, refactor only while tests stay green.
 - Keep all source, test, workflow, and code-example comments in English.
 - Update English documentation first and keep the Simplified Chinese counterpart meaning-equivalent in the same commit.
-- Keep the overall deadline at exactly 60 seconds, the per-call cap at exactly 3,000 milliseconds, and the poll interval at exactly 500 milliseconds.
+- Keep the outer hard deadline at exactly 60 seconds, reserve exactly 1,500 milliseconds inside it for cleanup/report/capture finalization, keep the per-call cap at exactly 3,000 milliseconds, and keep the poll interval at exactly 500 milliseconds.
 - Accept success only when strict JSON has Boolean `success=true` and Boolean `enabled=true` before the deadline.
 - Print `ASSIST_STATE=enabled` on success and retain `Could not enable unattended control within 60 seconds` plus exit `1` on failure.
 - Emit detailed fields only when `UUREMOTE_DEBUG` is `1`, `2`, or `3` and the unattended operation fails.
@@ -25,11 +25,470 @@
 - Do not modify the Windows runtime, weaken TCC or other operating-system controls, guess another vendor command, or fall back to a weaker readiness check.
 - Keep raw response files and status files mode `0600`, truncate the response after classification, and attempt private temporary-file removal through the bounded fail-closed cleanup policy.
 - The helper uses the bounded fail-closed cleanup policy: `TERM`→`KILL`→reap/PGID probe, with at most 500 milliseconds of `TERM` grace and at most 500 milliseconds of `KILL`/reap/PGID-probe grace. Cleanup may add only the documented fixed cleanup grace beyond a CLI attempt; it never waits indefinitely.
+- The outer supervisor starts its deadline before worker creation, blocks handled signals until ownership is recorded, repeatedly snapshots descendant PID/PPID/PGID relationships during both cleanup phases, and signals recorded direct PIDs as well as process groups.
+- Background the resolved external Python executable directly, without shell-function or subshell indirection, so `$!` is the actual supervisor owner used for signal relay and cleanup; test shims replace that explicit executable path.
+- Pass the same outer absolute deadline to the worker and use `outer_deadline - 1500 milliseconds` as only the worker business/classification cutoff. The reserve never extends the outer deadline.
+- Begin forced supervisor cleanup no later than `outer_deadline - 1000 milliseconds`; cap both 500-millisecond phases at the outer deadline rather than starting fresh grace after it.
+- Worker output is replayed only after timely exit and confirmed capture-file removal. Every pre-commit supervisor timeout, exception, interruption, observation failure, or cleanup failure discards worker output and reaches only the generic outer failure.
+- Replay commits only after capture removal, handled-signal blocking, a fresh deadline check, synchronous delivery of pending signals while the fail-closed handler remains installed, and an atomic hard-link decision in which the interrupt source and commit source compete for one private path. Pre-commit failure discards output; post-commit signals and replay I/O errors preserve the already committed worker status so partial output cannot be followed by a contradictory supervisor failure.
 - Only confirmed cleanup publishes the existing safe status. Publishing `timeout` or `unavailable` also requires confirmed handled-signal blocking. Signal-block setup returns a Boolean and callers defensively treat a false value or injected exception as false, while still invoking no-throw owned-process cleanup. A broad post-owned exception always publishes no status. Unconfirmed cleanup or an exception publishes no final status and exits `125`; any unconfirmed prerequisite also exits `125`. The controller emits only the existing generic failure, and no subsequent normal or provisioning operation continues. Only the existing `always()` finalization/artifact-upload steps and hosted-runner teardown may execute. Raw assist payload, secrets, device connection data, and the new `ASSIST_DIAGNOSTIC_*` fields never enter artifacts; those fields remain in the current-step log only. The existing sanitized CLI diagnostics may be uploaded by the `always()` artifact step. OS-level residue may remain unconfirmed; no absolute cleanup claim is made.
 - Current GitHub-hosted macOS runner teardown is external containment after job failure. If reused/self-hosted execution is ever adopted, the runner must be quarantined and not reused until an operator confirms no residue.
 - Stop after the diagnostic live run. Do not implement a root-cause fix until the evidence is reviewed and the design is amended when required.
 - End each implementation task with an independent code-review gate. Resolve all Critical and Important findings before the next task.
 - Use Conventional Commits.
+
+---
+
+## Native run #155 follow-up: supervise the complete route
+
+Run #155 reached `CLI_STATUS_STATE=ready` and then remained silent until it was
+canceled after 1 hour 53 minutes. The previous in-worker deadline did not
+control synchronous child startup/`preexec_fn`, the initial clock read, or the
+poll helper. Three native causal tests block those exact production boundaries
+and use an independent three-second supervisor to require timely generic
+failure plus confirmed absence of every recorded PID and PGID.
+
+Implement the following production wrapper exactly; the plan/source AST parity
+test protects the embedded supervisor while semantic mutations independently
+protect deadline placement, ownership-before-unmask, direct and group cleanup,
+and output replay only after capture cleanup.
+
+<!-- ASSIST_SUPERVISOR_IMPLEMENTATION -->
+
+```bash
+run_assist_allow_with_absolute_deadline() (
+    local supervisor_temp_dir="" worker_stdout="" worker_stderr=""
+    local supervisor_decision_path="" supervisor_commit_source=""
+    local supervisor_interrupt_source=""
+    local worker_script worker_bash supervisor_pid="" supervisor_status=125
+    local supervisor_interrupted=0
+
+    cleanup_assist_supervisor() {
+        if [ -n "$worker_stdout" ]; then
+            /bin/rm -f -- "$worker_stdout" 2>/dev/null || true
+        fi
+        if [ -n "$worker_stderr" ]; then
+            /bin/rm -f -- "$worker_stderr" 2>/dev/null || true
+        fi
+        /bin/rm -f -- "$supervisor_decision_path" \
+            "$supervisor_commit_source" "$supervisor_interrupt_source" \
+            2>/dev/null || true
+        if [ -n "$supervisor_temp_dir" ]; then
+            /bin/rmdir "$supervisor_temp_dir" 2>/dev/null || true
+        fi
+    }
+    forward_assist_supervisor_signal() {
+        if [ -n "$supervisor_decision_path" ]; then
+            if /bin/ln "$supervisor_interrupt_source" \
+                "$supervisor_decision_path" 2>/dev/null; then
+                supervisor_interrupted=1
+            elif [ "$supervisor_decision_path" -ef \
+                "$supervisor_commit_source" ]; then
+                return
+            else
+                supervisor_interrupted=1
+            fi
+        else
+            supervisor_interrupted=1
+        fi
+        if [ -n "$supervisor_pid" ]; then
+            /bin/kill -TERM "$supervisor_pid" 2>/dev/null || true
+        fi
+    }
+    trap cleanup_assist_supervisor EXIT
+    trap forward_assist_supervisor_signal HUP INT TERM
+
+    worker_script="${BASH_SOURCE[0]}"
+    [ -r "$worker_script" ] || return 1
+    worker_bash="$(command -v bash)" || return 1
+    umask 077
+    supervisor_temp_dir="$(/usr/bin/mktemp -d \
+        "${TMPDIR:-/tmp}/uuremote-assist-supervisor.XXXXXX")" || return 1
+    /bin/chmod 0700 "$supervisor_temp_dir" || return 1
+    worker_stdout="$supervisor_temp_dir/stdout"
+    worker_stderr="$supervisor_temp_dir/stderr"
+    supervisor_decision_path="$supervisor_temp_dir/decision"
+    supervisor_commit_source="$supervisor_temp_dir/commit-source"
+    supervisor_interrupt_source="$supervisor_temp_dir/interrupt-source"
+    : >"$worker_stdout" || return 1
+    : >"$worker_stderr" || return 1
+    : >"$supervisor_commit_source" || return 1
+    : >"$supervisor_interrupt_source" || return 1
+    /bin/chmod 0600 "$worker_stdout" "$worker_stderr" \
+        "$supervisor_commit_source" "$supervisor_interrupt_source" || return 1
+    if [ "$supervisor_interrupted" -eq 1 ]; then
+        /bin/ln "$supervisor_interrupt_source" \
+            "$supervisor_decision_path" 2>/dev/null || true
+    fi
+
+    /usr/bin/python3 - \
+        "$worker_stdout" "$worker_stderr" "$supervisor_decision_path" \
+        "$supervisor_commit_source" "$supervisor_interrupt_source" \
+        "$ASSIST_ALLOW_DEADLINE_MILLISECONDS" \
+        "$ASSIST_ALLOW_FINALIZATION_RESERVE_MILLISECONDS" \
+        "$worker_bash" "$worker_script" "$debug_level" "$console_uid" <<'PYTHON' &
+import os
+import pathlib
+import signal
+import subprocess
+import sys
+import time
+
+stdout_path = pathlib.Path(sys.argv[1])
+stderr_path = pathlib.Path(sys.argv[2])
+decision_path = pathlib.Path(sys.argv[3])
+commit_source_path = pathlib.Path(sys.argv[4])
+interrupt_source_path = pathlib.Path(sys.argv[5])
+timeout_seconds = int(sys.argv[6]) / 1000
+finalization_reserve_milliseconds = int(sys.argv[7])
+worker_bash = sys.argv[8]
+worker_script = str(pathlib.Path(sys.argv[9]).resolve())
+debug_level = sys.argv[10]
+console_uid = sys.argv[11]
+worker_pid = None
+worker_reaped = False
+recorded_pids = set()
+recorded_groups = set()
+observations_confirmed = True
+handled_signals = {
+    getattr(signal, signal_name)
+    for signal_name in ("SIGHUP", "SIGINT", "SIGTERM")
+    if hasattr(signal, signal_name)
+}
+
+
+class HandledSignal(Exception):
+    pass
+
+
+def decision_is(source_path):
+    try:
+        return os.path.samefile(decision_path, source_path)
+    except OSError:
+        return False
+
+
+def claim_interruption():
+    try:
+        os.link(interrupt_source_path, decision_path)
+    except FileExistsError:
+        return not decision_is(commit_source_path)
+    except OSError:
+        return True
+    return True
+
+
+def handled_signal(_signal_number, _frame):
+    if not claim_interruption():
+        return
+    signal.pthread_sigmask(signal.SIG_BLOCK, handled_signals)
+    raise HandledSignal
+
+
+def process_exists(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return None
+    return True
+
+
+def group_exists(process_group):
+    try:
+        os.killpg(process_group, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return None
+    return True
+
+
+def descendant_snapshot(root_pid, timeout_seconds):
+    if timeout_seconds <= 0:
+        return None
+    try:
+        result = subprocess.run(
+            ["/bin/ps", "-axo", "pid=,ppid=,pgid="],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=min(0.2, timeout_seconds),
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    records = {}
+    try:
+        for line in result.stdout.splitlines():
+            pid_text, parent_text, group_text = line.split()
+            records[int(pid_text)] = (int(parent_text), int(group_text))
+    except (TypeError, ValueError):
+        return None
+    descendants = {root_pid}
+    changed = True
+    while changed:
+        changed = False
+        for pid, (parent_pid, _process_group) in records.items():
+            if parent_pid in descendants and pid not in descendants:
+                descendants.add(pid)
+                changed = True
+    groups = {
+        records[pid][1]
+        for pid in descendants
+        if pid in records
+    }
+    groups.add(root_pid)
+    return descendants, groups
+
+
+def observe_worker_descendants(timeout_seconds):
+    global observations_confirmed
+    snapshot = descendant_snapshot(worker_pid, timeout_seconds)
+    if snapshot is None:
+        observations_confirmed = False
+        return
+    snapshot_pids, snapshot_groups = snapshot
+    snapshot_groups.discard(os.getpgrp())
+    recorded_pids.update(snapshot_pids)
+    recorded_groups.update(snapshot_groups)
+
+
+def signal_owned_processes(pids, groups, signal_number):
+    confirmed = True
+    for process_group in groups:
+        if process_group == os.getpgrp():
+            confirmed = False
+            continue
+        try:
+            os.killpg(process_group, signal_number)
+        except ProcessLookupError:
+            pass
+        except OSError:
+            confirmed = False
+    for pid in pids:
+        try:
+            os.kill(pid, signal_number)
+        except ProcessLookupError:
+            pass
+        except OSError:
+            confirmed = False
+    return confirmed
+
+
+def reap_worker_nonblocking():
+    global worker_reaped
+    if worker_pid is None or worker_reaped:
+        return None
+    try:
+        waited_pid, wait_status = os.waitpid(worker_pid, os.WNOHANG)
+    except ChildProcessError:
+        worker_reaped = True
+        return None
+    if waited_pid == 0:
+        return None
+    worker_reaped = True
+    return wait_status
+
+
+def cleanup_worker(absolute_cleanup_deadline):
+    if worker_pid is None:
+        return False
+    signals_confirmed = True
+    for signal_number in (signal.SIGTERM, signal.SIGKILL):
+        phase_deadline = min(
+            time.monotonic() + 0.5,
+            absolute_cleanup_deadline,
+        )
+        while time.monotonic() < phase_deadline:
+            remaining = phase_deadline - time.monotonic()
+            observe_worker_descendants(remaining)
+            signals_confirmed = (
+                signal_owned_processes(
+                    recorded_pids,
+                    recorded_groups,
+                    signal_number,
+                )
+                and signals_confirmed
+            )
+            reap_worker_nonblocking()
+            pid_states = [process_exists(pid) for pid in recorded_pids]
+            group_states = [group_exists(group) for group in recorded_groups]
+            if all(state is False for state in pid_states + group_states):
+                return observations_confirmed and signals_confirmed
+            remaining = phase_deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(0.01, remaining))
+    return False
+
+
+def remove_capture_files():
+    confirmed = True
+    for path in (stdout_path, stderr_path):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            confirmed = False
+    return confirmed
+
+
+def wait_status_to_exit_code(wait_status):
+    if os.WIFEXITED(wait_status):
+        return os.WEXITSTATUS(wait_status)
+    return 125
+
+
+def recorded_owned_processes_absent():
+    pid_states = [process_exists(pid) for pid in recorded_pids]
+    group_states = [group_exists(group) for group in recorded_groups]
+    return observations_confirmed and all(
+        state is False for state in pid_states + group_states
+    )
+
+
+try:
+    previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, handled_signals)
+    deadline = time.monotonic() + timeout_seconds
+    deadline_milliseconds = int(deadline * 1000)
+    worker_deadline_milliseconds = (
+        deadline_milliseconds - finalization_reserve_milliseconds
+    )
+    if worker_deadline_milliseconds <= int(time.monotonic() * 1000):
+        raise RuntimeError
+    cleanup_start = deadline - 1.0
+    if cleanup_start <= time.monotonic():
+        raise RuntimeError
+    for handled_signal_number in handled_signals:
+        signal.signal(handled_signal_number, handled_signal)
+    worker_pid = os.fork()
+    if worker_pid == 0:
+        try:
+            for signal_name in ("SIGHUP", "SIGINT", "SIGTERM"):
+                if hasattr(signal, signal_name):
+                    signal.signal(getattr(signal, signal_name), signal.SIG_DFL)
+            signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+            os.setsid()
+            stdout_descriptor = os.open(stdout_path, os.O_WRONLY | os.O_TRUNC)
+            stderr_descriptor = os.open(stderr_path, os.O_WRONLY | os.O_TRUNC)
+            os.dup2(stdout_descriptor, 1)
+            os.dup2(stderr_descriptor, 2)
+            os.close(stdout_descriptor)
+            os.close(stderr_descriptor)
+            environment = {
+                **os.environ,
+                "UUREMOTE_ASSIST_INTERNAL_DEBUG_LEVEL": debug_level,
+                "UUREMOTE_ASSIST_INTERNAL_CONSOLE_UID": console_uid,
+                "UUREMOTE_ASSIST_INTERNAL_DEADLINE_MILLISECONDS": str(
+                    worker_deadline_milliseconds
+                ),
+            }
+            os.execve(
+                worker_bash,
+                [worker_bash, worker_script, "assist-allow-worker"],
+                environment,
+            )
+        except BaseException:
+            os._exit(125)
+    recorded_pids.add(worker_pid)
+    recorded_groups.add(worker_pid)
+    signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+    wait_status = None
+    while time.monotonic() < cleanup_start:
+        current_time = time.monotonic()
+        snapshot_timeout = min(0.2, max(0, cleanup_start - current_time))
+        observe_worker_descendants(snapshot_timeout)
+        wait_status = reap_worker_nonblocking()
+        if wait_status is not None:
+            break
+        remaining = cleanup_start - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(0.01, remaining))
+    if wait_status is None:
+        cleanup_worker(deadline)
+        remove_capture_files()
+        raise SystemExit(125)
+    if time.monotonic() >= deadline or not recorded_owned_processes_absent():
+        cleanup_worker(min(deadline, time.monotonic() + 1.0))
+        remove_capture_files()
+        raise SystemExit(125)
+    exit_code = wait_status_to_exit_code(wait_status)
+    stdout_bytes = stdout_path.read_bytes()
+    stderr_bytes = stderr_path.read_bytes()
+    if not remove_capture_files():
+        raise SystemExit(125)
+    if time.monotonic() >= deadline:
+        raise SystemExit(125)
+    precommit_mask = signal.pthread_sigmask(signal.SIG_BLOCK, handled_signals)
+    signal.pthread_sigmask(signal.SIG_SETMASK, precommit_mask)
+    try:
+        os.link(commit_source_path, decision_path)
+    except FileExistsError:
+        if not decision_is(commit_source_path):
+            raise HandledSignal
+    except OSError:
+        raise HandledSignal
+    try:
+        sys.stdout.buffer.write(stdout_bytes)
+        sys.stdout.buffer.flush()
+        sys.stderr.buffer.write(stderr_bytes)
+        sys.stderr.buffer.flush()
+    except BaseException:
+        pass
+    os._exit(exit_code)
+except SystemExit:
+    raise
+except BaseException:
+    if "previous_mask" in globals():
+        try:
+            signal.pthread_sigmask(signal.SIG_BLOCK, handled_signals)
+        except BaseException:
+            pass
+    cleanup_worker(
+        min(globals().get("deadline", float("inf")), time.monotonic() + 1.0)
+    )
+    remove_capture_files()
+    raise SystemExit(125)
+PYTHON
+    supervisor_pid="$!"
+    if [ "$supervisor_interrupted" -eq 1 ]; then
+        /bin/kill -TERM "$supervisor_pid" 2>/dev/null || true
+    fi
+    while :; do
+        if wait "$supervisor_pid"; then
+            supervisor_status=0
+        else
+            supervisor_status="$?"
+        fi
+        if ! /bin/kill -0 "$supervisor_pid" 2>/dev/null; then
+            break
+        fi
+    done
+    supervisor_pid=""
+    trap - HUP INT TERM
+    if [ "$supervisor_interrupted" -eq 1 ] &&
+        ! [ "$supervisor_decision_path" -ef "$supervisor_commit_source" ]; then
+        supervisor_status=125
+    fi
+    return "$supervisor_status"
+)
+
+
+
+
+<!-- END_ASSIST_SUPERVISOR_IMPLEMENTATION -->
+
+The `assist-allow-worker` internal route validates only the inherited debug
+level and console UID, unsets those internal variables, invokes the real
+`ensure_assist_allowed`, and returns its status. `enable_assist_or_fail` invokes
+the supervisor and retains the existing generic failure and success strings.
 
 ---
 

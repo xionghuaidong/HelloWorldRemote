@@ -46,6 +46,57 @@ No behavior fix is implemented until the diagnostic gate identifies the failure 
 
 The fix gate requires the feature workflow to pass the permission step and all later unchanged steps.
 
+### 4.3 Native run #155 wall-clock amendment
+
+Native run #155 reached `CLI_STATUS_STATE=ready` and then produced no further
+output for more than the documented permission window. The run was canceled
+after 1 hour 53 minutes. Phase-1 causal tests proved that the original
+deadline was sampled only after synchronous boundaries returned: child startup
+and `preexec_fn`, the initial monotonic-clock read, and the poll helper could
+each block before another deadline check.
+
+The approved Option 2 policy therefore includes an outer wall-clock
+supervisor. It starts the 60-second deadline before forking an isolated worker
+that runs the complete `ensure_assist_allowed` route. The worker receives that
+same absolute deadline with a fixed 1,500-millisecond finalization reserve, so
+its business/classification window ends at 58.5 seconds. The reserve is used
+only for inner `TERM`→`KILL` cleanup, fixed-field reporting, and private capture
+closure. The supervisor begins forced cleanup no later than 59 seconds and
+caps both cleanup phases at the outer deadline; the reserve never extends the
+outer 60-second hard deadline. Signals are blocked until
+the parent records worker ownership. On expiry or interruption, the supervisor
+repeatedly snapshots the worker's descendant PID/PPID/PGID relationships,
+sends `TERM` and then `KILL` to every recorded direct PID and process group,
+reaps the worker, and confirms absence with direct PID and PGID probes. Each
+signal phase is bounded to 500 milliseconds. An observation or cleanup failure
+remains fail-closed.
+
+The shell backgrounds the resolved external Python executable directly, with
+no shell-function or subshell indirection, so `$!` is the actual supervisor PID
+that receives relayed signals and owns worker cleanup. Test shims replace that
+explicit executable path rather than wrapping the background command.
+
+Worker stdout and stderr remain in private mode-`0600` files. The supervisor
+replays them only after the worker exits before the wall-clock deadline and the
+capture files are removed successfully. Before replay commits, timeout, interruption, startup
+failure, unconfirmed cleanup, or capture cleanup failure discards the worker
+output; the existing outer caller prints only its generic failure.
+
+Replay has one explicit commit point. After reading and removing both capture
+files, the supervisor blocks handled signals, rechecks the outer deadline,
+then safely restores the prior mask while the fail-closed handler remains
+installed so a pending pre-commit signal is handled synchronously. It does not
+block handled signals again; while they remain unblocked, either the handler or
+the main path atomically links the mode-`0600` interrupt source or mode-`0600`
+commit source to one private decision path. The first link wins and linearizes
+interruption against replay. Before the commit-source link wins,
+every handled signal or exception discards all worker output. After it wins,
+replay is committed: handled signals do not reclassify the result, and a replay
+I/O failure cannot add a second supervisor failure. The shell preserves the
+worker status only when the decision path names the commit source, then removes
+all private decision files and the directory on exit. This prevents a partial
+replay from being followed by a contradictory supervisor failure.
+
 ## 5. Components and Data Flow
 
 ### 5.1 Bounded GUI CLI boundary
@@ -102,7 +153,7 @@ The reporter does not run when debug is `0`, and no new diagnostic data is writt
 
 ## 6. Timing and Error Handling
 
-- Establish one 60-second monotonic deadline immediately before the first attempt.
+- Establish the outer 60-second monotonic deadline before worker creation; pass the same absolute value to the worker and subtract the fixed 1,500-millisecond finalization reserve from only the worker's business/classification cutoff.
 - Limit each CLI call to the smaller of 3,000 milliseconds and the remaining overall time.
 - After a failed attempt, wait for the smaller of 500 milliseconds and the remaining overall time.
 - Recheck the deadline after child completion, after parsing, and immediately before accepting `enabled-true`.
@@ -136,6 +187,7 @@ The implementation must add executable tests for:
 - debug `0` generic-only failure;
 - debug `1`, `2`, and `3` complete fixed summaries;
 - a real controlled hanging child, per-call timeout, total deadline, the bounded `TERM`→`KILL`→reap/PGID probe, and confirmed cleanup;
+- native causal blocks at child startup/`preexec_fn`, the initial clock read, and polling; each must return through the generic failure within the external wall-clock bound and leave every recorded PID and PGID absent;
 - native-macOS matrix cases where cleanup is false or raises for timeout, a completed leader with a live descendant, and handled signals; each must produce exit `125`, no final status, and the outer generic failure only; no subsequent normal or provisioning operation may continue, while only the existing `always()` finalization/artifact-upload steps and hosted-runner teardown may execute;
 - late-success rejection;
 - response-file and temporary-directory cleanup;

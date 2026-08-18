@@ -771,6 +771,194 @@ case "$mode" in
         ' "$subject" >"$subject.swapped"
         mv "$subject.swapped" "$subject"
         ;;
+    startup-preexec-block)
+        awk '
+            /^        def restore_child_signal_mask\(\):$/ {
+                print
+                print "            pathlib.Path(os.environ[\"UUREMOTE_TEST_PYTHON_STAGE_PATH\"]).write_text(\"startup-preexec-block\")"
+                print "            pathlib.Path(os.environ[\"UUREMOTE_TEST_PYTHON_PID_PATH\"]).write_text(f\"{os.getpid()} {os.getpgrp()}\")"
+                print "            while True:"
+                print "                time.sleep(30)"
+                next
+            }
+            { print }
+        ' "$subject" >"$subject.startup-block"
+        mv "$subject.startup-block" "$subject"
+        ;;
+esac
+case "$mode" in
+    startup-preexec-block|absolute-clock-block|absolute-poll-block|absolute-worker-summary|absolute-root-reap|absolute-precommit-signal|absolute-shell-signal-relay)
+        sed 's/ASSIST_ALLOW_DEADLINE_MILLISECONDS=60000/ASSIST_ALLOW_DEADLINE_MILLISECONDS=2500/' \
+            "$subject" >"$subject.short-deadline"
+        mv "$subject.short-deadline" "$subject"
+        ;;
+esac
+if [ "$mode" = "absolute-shell-signal-relay" ]; then
+    sed 's/ASSIST_ALLOW_DEADLINE_MILLISECONDS=2500/ASSIST_ALLOW_DEADLINE_MILLISECONDS=6000/' \
+        "$subject" >"$subject.signal-relay-deadline"
+    mv "$subject.signal-relay-deadline" "$subject"
+fi
+case "$mode" in
+    absolute-clock-block|absolute-poll-block|absolute-shell-signal-relay)
+        awk -v block_mode="$mode" '
+            /^uuremote_now_milliseconds\(\) \{$/ {
+                print "record_absolute_deadline_test_block() {"
+                print "    local stage=\"$1\""
+                print "    local blocker_pid"
+                print "    printf \047%s\\n\047 \"$stage\" >\"${UUREMOTE_TEST_SHELL_STAGE_PATH:?}\""
+                print "    uuremote_python3 - \"${UUREMOTE_TEST_PYTHON_PID_PATH:?}\" <<\047PYTHON\047 &"
+                print "import os"
+                print "import pathlib"
+                print "import sys"
+                print "import time"
+                print "pathlib.Path(sys.argv[1]).write_text(f\"{os.getpid()} {os.getpgrp()}\", encoding=\"ascii\")"
+                print "blocker_ready_path = os.environ.get(\"UUREMOTE_TEST_BLOCKER_READY_PATH\")"
+                print "if blocker_ready_path:"
+                print "    pathlib.Path(blocker_ready_path).write_text(\"blocker-ready\", encoding=\"ascii\")"
+                print "time.sleep(30)"
+                print "PYTHON"
+                print "    blocker_pid=\"$!\""
+                print "    wait \"$blocker_pid\""
+                print "}"
+                print ""
+                if (block_mode == "absolute-clock-block") {
+                    print "uuremote_now_milliseconds() {"
+                    print "    record_absolute_deadline_test_block clock-block"
+                    print "    return 1"
+                    print "}"
+                    skipping_clock = 1
+                    next
+                }
+            }
+            skipping_clock && /^}$/ {
+                skipping_clock = 0
+                next
+            }
+            skipping_clock { next }
+            (block_mode == "absolute-poll-block" || block_mode == "absolute-shell-signal-relay") && /^wait_uuremote_poll\(\) \{$/ {
+                print "wait_uuremote_poll() {"
+                print "    record_absolute_deadline_test_block poll-block"
+                print "    return 1"
+                print "}"
+                skipping_poll = 1
+                next
+            }
+            skipping_poll && /^}$/ {
+                skipping_poll = 0
+                next
+            }
+            skipping_poll { next }
+            { print }
+        ' "$subject" >"$subject.absolute-block"
+        mv "$subject.absolute-block" "$subject"
+        ;;
+esac
+case "$mode" in
+    startup-preexec-block|absolute-poll-block|absolute-worker-summary|absolute-precommit-signal|absolute-shell-signal-relay)
+        awk -v boundary_mode="$mode" '
+            /^run_bounded_gui_cli_to_file\(\) \{$/ {
+                print
+                if (boundary_mode == "startup-preexec-block") {
+                    print "    run_bounded_uuremote_cli_to_file_with_status \"$1\" \"$2\" \"$3\" /usr/bin/true"
+                } else if (boundary_mode == "absolute-precommit-signal") {
+                    print "    printf \047%s\\n\047 \047{\"success\":true,\"enabled\":true}\047 >\"$1\""
+                    print "    printf \047completed:0\\n\047 >\"$2\""
+                } else {
+                    print "    printf \047%s\\n\047 \047{\"success\":true,\"enabled\":false}\047 >\"$1\""
+                    print "    printf \047completed:0\\n\047 >\"$2\""
+                }
+                print "}"
+                skipping = 1
+                next
+            }
+            skipping && /^}$/ {
+                skipping = 0
+                next
+            }
+            !skipping { print }
+        ' "$subject" >"$subject.absolute-boundary"
+        mv "$subject.absolute-boundary" "$subject"
+        ;;
+esac
+if [ "$mode" = "absolute-shell-signal-relay" ]; then
+    awk '
+        /^    supervisor_pid="\$!"$/ {
+            print
+            print "    supervisor_group=\"$(/bin/ps -o pgid= -p \"$supervisor_pid\" | tr -d \047 \047)\""
+            print "    printf \047%s %s\\n\047 \"$supervisor_pid\" \"$supervisor_group\" >\"${UUREMOTE_TEST_SUPERVISOR_PID_PATH:?}\""
+            next
+        }
+        /^        observe_worker_descendants\(snapshot_timeout\)$/ && !ready_injected {
+            print
+            print "        blocker_ready = pathlib.Path(os.environ[\"UUREMOTE_TEST_BLOCKER_READY_PATH\"])"
+            print "        if blocker_ready.exists():"
+            print "            pathlib.Path(os.environ[\"UUREMOTE_TEST_RELAY_READY_PATH\"]).write_text(\"relay-ready\", encoding=\"ascii\")"
+            ready_injected = 1
+            next
+        }
+        { print }
+    ' "$subject" >"$subject.signal-relay"
+    mv "$subject.signal-relay" "$subject"
+fi
+if [ "$mode" = "absolute-precommit-signal" ]; then
+    awk '
+        /^    precommit_mask = signal\.pthread_sigmask\(signal\.SIG_BLOCK, handled_signals\)$/ && !injected {
+            print
+            print "    os.kill(os.getpid(), signal.SIGTERM)"
+            injected = 1
+            next
+        }
+        { print }
+        END {
+            if (!injected) {
+                exit 1
+            }
+        }
+    ' "$subject" >"$subject.precommit-signal"
+    mv "$subject.precommit-signal" "$subject"
+fi
+if [ "$mode" = "absolute-root-reap" ]; then
+    awk '
+        /^if \[ "\$mode" = "assist-allow-worker" \]; then$/ {
+            print
+            print "    if [ \"${UUREMOTE_TEST_ROOT_REAP_MODE:-0}\" = 1 ]; then"
+            print "        trap \047exit 0\047 USR1"
+            print "        uuremote_python3 - \"${UUREMOTE_TEST_PYTHON_STAGE_PATH:?}\" \"${UUREMOTE_TEST_PYTHON_PID_PATH:?}\" \"$$\" <<\047PYTHON\047 &"
+            print "import os"
+            print "import pathlib"
+            print "import signal"
+            print "import sys"
+            print "import time"
+            print "os.setsid()"
+            print "signal.signal(signal.SIGTERM, signal.SIG_IGN)"
+            print "signal.signal(signal.SIGHUP, signal.SIG_IGN)"
+            print "pathlib.Path(sys.argv[1]).write_text(\047root-exit-descendant\047, encoding=\047ascii\047)"
+            print "pathlib.Path(sys.argv[2]).write_text(f\047{os.getpid()} {os.getpgrp()}\047, encoding=\047ascii\047)"
+            print "time.sleep(0.2)"
+            print "os.kill(int(sys.argv[3]), signal.SIGUSR1)"
+            print "time.sleep(30)"
+            print "PYTHON"
+            print "        wait \"$!\""
+            print "    fi"
+            next
+        }
+        { print }
+    ' "$subject" >"$subject.root-reap"
+    mv "$subject.root-reap" "$subject"
+fi
+case "$mode" in
+    startup-preexec-block|absolute-clock-block|absolute-poll-block|absolute-worker-summary|absolute-root-reap|absolute-precommit-signal|absolute-shell-signal-relay)
+        awk '
+            /^if \[ "\$mode" = "assist-allow-worker" \]; then$/ {
+                print
+                print "    fixture_group=\"$(/bin/ps -o pgid= -p \"$$\" | tr -d \047 \047)\""
+                print "    printf \047%s %s\\n\047 \"$$\" \"$fixture_group\" >\"${UUREMOTE_TEST_PYTHON_PID_PATH:?}\""
+                next
+            }
+            { print }
+        ' "$subject" >"$subject.absolute-metadata"
+        mv "$subject.absolute-metadata" "$subject"
+        ;;
 esac
 if [ ! -x /usr/bin/python3 ]; then
     python_command="$(command -v python3 || command -v python)"
@@ -782,6 +970,25 @@ if [ ! -x /usr/bin/python3 ]; then
 fi
 
 scenario="${2:?}"
+
+case "$mode" in
+    startup-preexec-block|absolute-clock-block|absolute-poll-block|absolute-worker-summary|absolute-root-reap|absolute-precommit-signal|absolute-shell-signal-relay)
+        . "$subject"
+        if [ "$mode" = absolute-worker-summary ]; then
+            debug_level=1
+        else
+            debug_level=0
+        fi
+        console_uid=501
+        if [ "$mode" = absolute-root-reap ]; then
+            export UUREMOTE_TEST_ROOT_REAP_MODE=1
+        fi
+        if enable_assist_or_fail; then
+            exit 0
+        fi
+        exit "$?"
+        ;;
+esac
 
 case "$mode" in
     process|process-completed-diagnostic|process-completed-diagnostic-*|fault-*|block-*|probe-transient-error|probe-persistent-error|probe-persistent-oracle-delay|pending-finalization-swapped) ;;
@@ -1301,6 +1508,9 @@ case "$mode" in
     *) false ;;
 esac && {
     . "$subject"
+    run_assist_allow_with_absolute_deadline() {
+        ensure_assist_allowed
+    }
 
     debug_level=0
     console_uid=501

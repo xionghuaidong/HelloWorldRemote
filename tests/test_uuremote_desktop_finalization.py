@@ -2,6 +2,7 @@ from pathlib import Path
 import ast
 import os
 import plistlib
+import signal
 import subprocess
 import sys
 import tempfile
@@ -394,6 +395,34 @@ class MacOSAssistAllowSignalFinalizationSourceTests(unittest.TestCase):
         self.assertNotIn("do sleep", fixture)
         self.assertIn("trap 'exit 0' USR1", fixture)
         self.assertIn('wait "$child_pid"', fixture)
+
+    def test_shell_signal_relay_waits_for_owned_blocker_metadata(self):
+        harness = text(MACOS_ASSIST_ALLOW_HARNESS_PATH)
+        blocker_pid_write = "pathlib.Path(sys.argv[1]).write_text"
+        blocker_ready_write = "pathlib.Path(blocker_ready_path).write_text"
+        self.assertLess(
+            harness.index(blocker_pid_write),
+            harness.index(blocker_ready_write),
+        )
+        relay_region_start = harness.index(
+            'if [ "$mode" = "absolute-shell-signal-relay" ]'
+        )
+        relay_region_end = harness.index(
+            'if [ "$mode" = "absolute-precommit-signal" ]',
+            relay_region_start,
+        )
+        relay_region = harness[relay_region_start:relay_region_end]
+        self.assertIn("observe_worker_descendants", relay_region)
+        self.assertIn("blocker_ready.exists()", relay_region)
+        self.assertIn("UUREMOTE_TEST_RELAY_READY_PATH", relay_region)
+        self.assertLess(
+            relay_region.index("observe_worker_descendants"),
+            relay_region.index("UUREMOTE_TEST_RELAY_READY_PATH"),
+        )
+        self.assertIn(
+            "ASSIST_ALLOW_DEADLINE_MILLISECONDS=6000",
+            harness,
+        )
 
 
 @unittest.skipUnless(BASH_AVAILABLE, "requires /bin/bash")
@@ -902,6 +931,421 @@ class MacOSAssistAllowProcessTests(unittest.TestCase):
         _, value = result.stdout.strip().split("=", 1)
         with self.assertRaises(ProcessLookupError):
             os.kill(int(value), 0)
+
+
+@unittest.skipUnless(NATIVE_MACOS_BASH_AVAILABLE, "requires native macOS Bash")
+class MacOSAssistAbsoluteDeadlineBoundaryTests(unittest.TestCase):
+    def harness_command(self, mode: str, scenario: str) -> list[str]:
+        return ["/bin/bash", str(MACOS_ASSIST_ALLOW_HARNESS_PATH), mode, scenario]
+
+    @staticmethod
+    def process_exists(pid: int) -> bool:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        return True
+
+    @staticmethod
+    def process_group_exists(process_group: int) -> bool:
+        try:
+            os.killpg(process_group, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        return True
+
+    def cleanup_supervised_process(
+        self,
+        process: subprocess.Popen[str],
+        recorded_pids: list[int],
+        recorded_groups: set[int],
+    ) -> bool:
+        cleanup_confirmed = True
+        for pid in recorded_pids:
+            try:
+                recorded_groups.add(os.getpgid(pid))
+            except ProcessLookupError:
+                pass
+            except OSError:
+                cleanup_confirmed = False
+        recorded_groups.add(process.pid)
+        for process_group in recorded_groups:
+            if process_group == os.getpgrp():
+                continue
+            try:
+                os.killpg(process_group, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            except OSError:
+                cleanup_confirmed = False
+        for pid in recorded_pids:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            except OSError:
+                cleanup_confirmed = False
+
+        try:
+            process.communicate(timeout=0.5)
+        except subprocess.TimeoutExpired:
+            pass
+        for process_group in recorded_groups:
+            if process_group == os.getpgrp():
+                continue
+            try:
+                os.killpg(process_group, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            except OSError:
+                cleanup_confirmed = False
+        for pid in recorded_pids:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            except OSError:
+                cleanup_confirmed = False
+        try:
+            process.communicate(timeout=1)
+        except subprocess.TimeoutExpired:
+            try:
+                process.kill()
+            except OSError:
+                cleanup_confirmed = False
+            try:
+                process.communicate(timeout=1)
+            except subprocess.TimeoutExpired:
+                cleanup_confirmed = False
+
+        return cleanup_confirmed and self.wait_for_recorded_release(
+            recorded_pids, recorded_groups
+        )
+
+    def snapshot_supervised_tree(
+        self, root_pid: int
+    ) -> tuple[list[int], set[int], bool]:
+        try:
+            result = subprocess.run(
+                ["/bin/ps", "-axo", "pid=,ppid=,pgid="],
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=0.5,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return [root_pid], {root_pid}, False
+        if result.returncode != 0:
+            return [root_pid], {root_pid}, False
+        records: dict[int, tuple[int, int]] = {}
+        try:
+            for line in result.stdout.splitlines():
+                pid, parent_pid, process_group = (
+                    int(value) for value in line.split()
+                )
+                records[pid] = (parent_pid, process_group)
+        except ValueError:
+            return [root_pid], {root_pid}, False
+        descendants = {root_pid}
+        changed = True
+        while changed:
+            changed = False
+            for pid, (parent_pid, _process_group) in records.items():
+                if parent_pid in descendants and pid not in descendants:
+                    descendants.add(pid)
+                    changed = True
+        groups = {
+            records[pid][1]
+            for pid in descendants
+            if pid in records and records[pid][1] != os.getpgrp()
+        }
+        groups.add(root_pid)
+        return sorted(descendants), groups, True
+
+    def wait_for_recorded_release(
+        self,
+        recorded_pids: list[int],
+        recorded_groups: set[int],
+        timeout_seconds: float = 2,
+    ) -> bool:
+        cleanup_deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < cleanup_deadline:
+            pids_released = all(
+                not self.process_exists(pid) for pid in recorded_pids
+            )
+            groups_released = all(
+                not self.process_group_exists(process_group)
+                for process_group in recorded_groups
+            )
+            if pids_released and groups_released:
+                return True
+            time.sleep(0.01)
+        return False
+
+    def run_with_external_supervisor(
+        self,
+        mode: str,
+        scenario: str,
+        expected_stage: str,
+        signal_supervisor: bool = False,
+    ) -> tuple[str, str, str]:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_root = Path(temporary_directory)
+            stage_path = temporary_root / "stage"
+            pid_path = temporary_root / "pids"
+            supervisor_pid_path = temporary_root / "supervisor-pid"
+            blocker_ready_path = temporary_root / "blocker-ready"
+            relay_ready_path = temporary_root / "relay-ready"
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "UUREMOTE_TEST_PYTHON_STAGE_PATH": str(stage_path),
+                    "UUREMOTE_TEST_PYTHON_PID_PATH": str(pid_path),
+                    "UUREMOTE_TEST_SHELL_STAGE_PATH": str(stage_path),
+                    "UUREMOTE_TEST_SUPERVISOR_PID_PATH": str(
+                        supervisor_pid_path
+                    ),
+                    "UUREMOTE_TEST_BLOCKER_READY_PATH": str(
+                        blocker_ready_path
+                    ),
+                    "UUREMOTE_TEST_RELAY_READY_PATH": str(relay_ready_path),
+                }
+            )
+            popen_options = {
+                "cwd": ROOT,
+                "text": True,
+                "stdout": subprocess.PIPE,
+                "stderr": subprocess.PIPE,
+                "env": environment,
+            }
+            popen_options["start_new_session"] = True
+            process = subprocess.Popen(
+                self.harness_command(mode, scenario),
+                **popen_options,
+            )
+            try:
+                runner_group = os.getpgid(process.pid)
+            except OSError:
+                runner_group = 0
+            supervisor_state = "unavailable"
+            stdout = ""
+            stderr = ""
+            cleanup_released = False
+            metadata_confirmed = False
+            relay_metadata_confirmed = not signal_supervisor
+            pre_signal_pids: list[int] = []
+            pre_signal_groups: set[int] = set()
+            try:
+                if signal_supervisor:
+                    relay_deadline = time.monotonic() + 2
+                    while (
+                        not (
+                            supervisor_pid_path.exists()
+                            and relay_ready_path.exists()
+                        )
+                        and time.monotonic() < relay_deadline
+                    ):
+                        time.sleep(0.01)
+                    try:
+                        supervisor_values = tuple(
+                            int(value)
+                            for value in supervisor_pid_path.read_text(
+                                encoding="ascii"
+                            ).split()
+                        )
+                        if (
+                            len(supervisor_values) != 2
+                            or min(supervisor_values) <= 0
+                        ):
+                            raise ValueError
+                        supervisor_process, supervisor_group = supervisor_values
+                        pre_signal_pids, pre_signal_groups, snapshot_confirmed = (
+                            self.snapshot_supervised_tree(process.pid)
+                        )
+                        pre_signal_pids.append(supervisor_process)
+                        pre_signal_groups.add(supervisor_group)
+                        relay_metadata_confirmed = snapshot_confirmed
+                        os.kill(supervisor_process, signal.SIGTERM)
+                    except (OSError, ValueError):
+                        relay_metadata_confirmed = False
+                try:
+                    stdout, stderr = process.communicate(timeout=3)
+                    supervisor_state = "completed"
+                except subprocess.TimeoutExpired:
+                    supervisor_state = "timeout"
+            finally:
+                records = [(process.pid, runner_group)]
+                fixture_metadata_confirmed = False
+                if pid_path.exists():
+                    try:
+                        fixture_records = []
+                        for line in pid_path.read_text(
+                            encoding="ascii"
+                        ).splitlines():
+                            values = tuple(
+                                int(value) for value in line.split()
+                            )
+                            if len(values) != 2:
+                                raise ValueError
+                            pid, process_group = values
+                            if pid <= 0 or process_group <= 0:
+                                raise ValueError
+                            fixture_records.append(values)
+                        if not fixture_records:
+                            raise ValueError
+                        records.extend(fixture_records)
+                        fixture_metadata_confirmed = True
+                    except (OSError, ValueError):
+                        fixture_metadata_confirmed = False
+                recorded_pids = [pid for pid, _group in records]
+                recorded_pids.extend(pre_signal_pids)
+                recorded_groups = {
+                    group for _pid, group in records if group > 0
+                }
+                recorded_groups.update(pre_signal_groups)
+                snapshot_confirmed = True
+                if process.poll() is None:
+                    tree_pids, tree_groups, snapshot_confirmed = (
+                        self.snapshot_supervised_tree(process.pid)
+                    )
+                    recorded_pids.extend(tree_pids)
+                    recorded_groups.update(tree_groups)
+                metadata_confirmed = (
+                    runner_group > 0
+                    and fixture_metadata_confirmed
+                    and snapshot_confirmed
+                    and relay_metadata_confirmed
+                )
+                production_cleanup_released = self.wait_for_recorded_release(
+                    sorted(set(recorded_pids)),
+                    recorded_groups,
+                    timeout_seconds=1.25 if signal_supervisor else 2,
+                )
+                fallback_cleanup_released = self.cleanup_supervised_process(
+                    process, sorted(set(recorded_pids)), recorded_groups
+                )
+                cleanup_released = (
+                    production_cleanup_released
+                    and fallback_cleanup_released
+                    and metadata_confirmed
+                )
+            self.assertTrue(
+                metadata_confirmed,
+                "validated runner and fixture PID/PGID metadata is required",
+            )
+            if supervisor_state == "completed":
+                self.assertEqual(process.returncode, 1, stdout + stderr)
+            else:
+                self.assertTrue(recorded_pids)
+            stage = (
+                stage_path.read_text(encoding="ascii").strip()
+                if stage_path.exists()
+                else "unavailable"
+            )
+            diagnostic = (
+                f"BOUNDARY_STAGE={stage}\n"
+                f"SUPERVISOR_STATE={supervisor_state}\n"
+                f"PROCESS_CLEANUP={'released' if cleanup_released else 'unconfirmed'}\n"
+            )
+            return diagnostic, stdout, stderr
+
+    def assert_boundary_obeys_absolute_deadline(
+        self, mode: str, scenario: str, expected_stage: str
+    ) -> None:
+        diagnostic, stdout, stderr = self.run_with_external_supervisor(
+            mode, scenario, expected_stage
+        )
+        self.assertEqual(
+            diagnostic,
+            f"BOUNDARY_STAGE={expected_stage}\n"
+            "SUPERVISOR_STATE=completed\n"
+            "PROCESS_CLEANUP=released\n",
+            stdout + stderr,
+        )
+        self.assertEqual(stdout, "")
+        self.assertEqual(
+            stderr,
+            "Could not enable unattended control within 60 seconds\n",
+        )
+
+    def test_startup_preexec_block_is_bounded_by_attempt_deadline(self):
+        self.assert_boundary_obeys_absolute_deadline(
+            "startup-preexec-block", "startup-boundary", "startup-preexec-block"
+        )
+
+    def test_initial_clock_block_is_bounded_by_absolute_deadline(self):
+        self.assert_boundary_obeys_absolute_deadline(
+            "absolute-clock-block", "clock-block", "clock-block"
+        )
+
+    def test_poll_block_is_bounded_by_absolute_deadline(self):
+        self.assert_boundary_obeys_absolute_deadline(
+            "absolute-poll-block", "poll-block", "poll-block"
+        )
+
+    def test_worker_uses_reserved_shared_deadline_to_emit_safe_summary(self):
+        diagnostic, stdout, stderr = self.run_with_external_supervisor(
+            "absolute-worker-summary", "worker-summary", "unavailable"
+        )
+        self.assertEqual(
+            diagnostic,
+            "BOUNDARY_STAGE=unavailable\n"
+            "SUPERVISOR_STATE=completed\n"
+            "PROCESS_CLEANUP=released\n",
+            stdout + stderr,
+        )
+        self.assertEqual(stdout, "")
+        lines = stderr.splitlines()
+        self.assertEqual(
+            lines[-1], "Could not enable unattended control within 60 seconds"
+        )
+        self.assertIn("ASSIST_DIAGNOSTIC_FINAL_CATEGORY=enabled-false", lines)
+        self.assertIn("ASSIST_DIAGNOSTIC_FINAL_CLI_EXIT=0", lines)
+        self.assertTrue(
+            all(
+                line.startswith("ASSIST_DIAGNOSTIC_")
+                or line == "Could not enable unattended control within 60 seconds"
+                for line in lines
+            )
+        )
+
+    def test_timely_worker_exit_cleans_recorded_new_session_descendant(self):
+        self.assert_boundary_obeys_absolute_deadline(
+            "absolute-root-reap",
+            "root-reap",
+            "root-exit-descendant",
+        )
+
+    def test_pending_signal_before_replay_commit_fails_closed(self):
+        self.assert_boundary_obeys_absolute_deadline(
+            "absolute-precommit-signal",
+            "precommit-signal",
+            "unavailable",
+        )
+
+    def test_shell_signal_relay_owns_the_python_supervisor(self):
+        diagnostic, stdout, stderr = self.run_with_external_supervisor(
+            "absolute-shell-signal-relay",
+            "shell-signal-relay",
+            "poll-block",
+            signal_supervisor=True,
+        )
+        self.assertEqual(
+            diagnostic,
+            "BOUNDARY_STAGE=poll-block\n"
+            "SUPERVISOR_STATE=completed\n"
+            "PROCESS_CLEANUP=released\n",
+            stdout + stderr,
+        )
+        self.assertEqual(stdout, "")
+        self.assertEqual(
+            stderr,
+            "Could not enable unattended control within 60 seconds\n",
+        )
 
 
 @unittest.skipUnless(BASH_AVAILABLE, "requires /bin/bash")

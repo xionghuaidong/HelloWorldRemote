@@ -46,6 +46,50 @@ macOS feature workflow 现在可以通过原生 device-ID 测试和 GameViewer �
 
 修复 gate 要求 feature workflow 通过权限步骤和其后所有未修改步骤。
 
+### 4.3 原生 run #155 wall-clock 修订
+
+原生 run #155 到达 `CLI_STATUS_STATE=ready` 后，在超过已记录 permission window
+的时间里没有产生任何进一步输出。该 run 在 1 小时 53 分钟后被取消。Phase-1
+causal tests 证明，原实现只有在 synchronous boundaries 返回后才采样 deadline：
+child startup 与 `preexec_fn`、第一次 monotonic-clock 读取以及 poll helper 都可能
+在下一次 deadline check 之前阻塞。
+
+因此，批准的 Option 2 policy 包含一个外层 wall-clock supervisor。它在 fork 一个
+隔离 worker 之前启动 60 秒 deadline；该 worker 运行完整的
+`ensure_assist_allowed` route。worker 接收同一个 absolute deadline，并使用固定
+1,500-millisecond finalization reserve，因此其 business/classification window 在
+58.5 秒结束。该 reserve 仅用于 inner `TERM`→`KILL` cleanup、fixed-field reporting
+和 private capture closure。supervisor 最迟在 59 秒开始 forced cleanup，并用
+outer deadline 限制两个 cleanup phases；reserve 绝不延长外层 60 秒 hard
+deadline。parent 记录
+worker ownership 前会屏蔽 signals。
+到期或被中断时，supervisor 会重复 snapshot worker 的 descendant PID/PPID/PGID
+关系，对所有已记录 direct PID 和 process group 先发送 `TERM`、再发送 `KILL`，
+回收 worker，并通过 direct PID 与 PGID probes 确认不存在残留。每个 signal phase
+最多 500 milliseconds。任何 observation 或 cleanup failure 仍然 fail-closed。
+
+shell 会直接在后台启动已解析的 external Python executable，不经过 shell function
+或 subshell indirection，因此 `$!` 就是接收 relay signals 并拥有 worker cleanup 的
+实际 supervisor PID。test shim 替换该明确的 executable path，而不是包装后台命令。
+
+worker stdout 和 stderr 保存在私有 mode-`0600` files 中。只有当 worker 在
+wall-clock deadline 前退出，且 capture files 已成功删除，supervisor 才会 replay
+这些输出。在 replay commit 前，timeout、interruption、startup failure、unconfirmed cleanup 或 capture
+cleanup failure 都会丢弃 worker output；现有 outer caller 只打印 generic failure。
+
+replay 使用一个明确 commit point。读取并删除两个 capture files 后，supervisor
+屏蔽 handled signals 并重新检查 outer deadline；在 fail-closed handler 仍安装时，
+它安全恢复先前 signal mask，使 pending pre-commit signal 同步进入 handler，并让
+handled signals 保持 unblocked。随后，handler 或 main path 分别以 atomic hard link
+把 mode-`0600` interrupt source 或 mode-`0600` commit source 链接到同一个 private
+decision path；第一个 link 获胜，并将
+interruption 与 replay 线性化。在 commit-source link 获胜前，任何 handled signal
+或 exception 都会丢弃全部 worker output。获胜后 replay 已经 committed：handled
+signals 不再重新分类结果，replay I/O failure 也不能增加第二个 supervisor failure。
+只有 decision path 指向 commit source 时，shell 才保留 worker status；退出时删除
+全部 private decision files 与 directory。这样可以防止 partial replay 后又出现
+相互矛盾的 supervisor failure。
+
 ## 5. 组件与数据流
 
 ### 5.1 Bounded GUI CLI boundary
@@ -102,7 +146,7 @@ debug 为 `0` 时不运行 reporter，新的诊断数据也不会写入 artifact
 
 ## 6. 时间和错误处理
 
-- 第一次 attempt 前立即建立一个 60 秒 monotonic deadline。
+- 在创建 worker 前建立外层 60 秒 monotonic deadline；把同一个 absolute value 传给 worker，并且只从 worker 的 business/classification cutoff 中减去固定 1,500-millisecond finalization reserve。
 - 每次 CLI call 最多运行 3,000 milliseconds 与剩余总时间中的较小值。
 - attempt 失败后，最多等待 500 milliseconds 与剩余总时间中的较小值。
 - child 完成后、解析后以及接受 `enabled-true` 前立即重新检查 deadline。
@@ -136,6 +180,7 @@ custom-code secret 仍保持 step-scoped，仅在之前的 custom-code step 中�
 - debug `0` 只产生通用失败；
 - debug `1`、`2`、`3` 产生完整固定汇总；
 - 真实受控 hanging child、单次 timeout、总 deadline、有界 `TERM`→`KILL`→回收/PGID 探测以及已确认清理；
+- child startup/`preexec_fn`、第一次 clock read 与 polling 的原生 causal blocks；每个场景都必须在 external wall-clock bound 内通过 generic failure 返回，并确认所有已记录 PID 和 PGID 均不存在；
 - 针对 timeout、leader 已完成但 descendant 仍存活及已处理 signal 的 cleanup 为 false 或 raises 的 native-macOS matrix case；每个 case 必须产生 exit `125`、无最终 status 和仅 outer generic failure；后续 normal 或 provisioning operation 不得继续，只有现有 `always()` finalization/artifact-upload step 和 hosted-runner teardown 可以执行；
 - late-success rejection；
 - response file 和 temporary directory cleanup；
