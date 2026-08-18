@@ -375,6 +375,19 @@ class MacOSAssistAllowSignalFinalizationSourceTests(unittest.TestCase):
             deadline_rewrite,
         )
         self.assertIn(
+            'if [ "$mode" = "absolute-real-poll-summary" ]; then',
+            deadline_rewrite,
+        )
+        self.assertIn(
+            "ASSIST_ALLOW_DEADLINE_MILLISECONDS=12000",
+            deadline_rewrite,
+        )
+        self.assertIn(
+            "ASSIST_ALLOW_DEADLINE_MILLISECONDS=6000/"
+            "ASSIST_ALLOW_DEADLINE_MILLISECONDS=12000",
+            deadline_rewrite,
+        )
+        self.assertIn(
             "startup-preexec-block|absolute-clock-block|absolute-poll-block|"
             "absolute-root-reap|absolute-precommit-signal)",
             deadline_rewrite,
@@ -403,6 +416,8 @@ class MacOSAssistAllowSignalFinalizationSourceTests(unittest.TestCase):
             'wait_uuremote_poll 1000 || return 1',
             finalization_barrier,
         )
+        self.assertIn("finalization-started", finalization_barrier)
+        self.assertIn("finalization-completed", finalization_barrier)
         self.assertNotIn("sleep ", finalization_barrier)
         summary_clock_start = harness.index(
             'if [ "$mode" = "absolute-worker-summary" ]; then',
@@ -440,6 +455,22 @@ class MacOSAssistAllowSignalFinalizationSourceTests(unittest.TestCase):
             summary_boundary,
         )
         self.assertIn(r'[ \"$3\" -eq 1000 ] || return 1', summary_boundary)
+        real_boundary_start = harness.index(
+            'case "$mode" in\n'
+            '    startup-preexec-block|absolute-poll-block|absolute-worker-summary',
+            summary_clock_end,
+        )
+        real_boundary_end = harness.index(
+            '\n        \' "$subject" >"$subject.absolute-boundary"',
+            real_boundary_start,
+        )
+        real_boundary = harness[real_boundary_start:real_boundary_end]
+        self.assertIn(
+            'boundary_mode == "absolute-real-poll-summary"',
+            real_boundary,
+        )
+        self.assertIn("UUREMOTE_TEST_REAL_POLL_ATTEMPT_PATH", real_boundary)
+        self.assertIn("attempt-started", real_boundary)
 
     def test_completed_failure_diagnostic_is_fixed_field_and_identifier_free(self):
         harness = text(MACOS_ASSIST_ALLOW_HARNESS_PATH)
@@ -1208,6 +1239,7 @@ class MacOSAssistAbsoluteDeadlineBoundaryTests(unittest.TestCase):
             blocker_ready_path = temporary_root / "blocker-ready"
             relay_ready_path = temporary_root / "relay-ready"
             summary_clock_path = temporary_root / "summary-clock"
+            real_poll_attempt_path = temporary_root / "real-poll-attempt-count"
             if mode == "absolute-worker-summary":
                 summary_clock_path.write_text("0\n", encoding="ascii")
             environment = os.environ.copy()
@@ -1225,6 +1257,9 @@ class MacOSAssistAbsoluteDeadlineBoundaryTests(unittest.TestCase):
                     "UUREMOTE_TEST_RELAY_READY_PATH": str(relay_ready_path),
                     "UUREMOTE_TEST_SUMMARY_CLOCK_PATH": str(
                         summary_clock_path
+                    ),
+                    "UUREMOTE_TEST_REAL_POLL_ATTEMPT_PATH": str(
+                        real_poll_attempt_path
                     ),
                 }
             )
@@ -1286,10 +1321,12 @@ class MacOSAssistAbsoluteDeadlineBoundaryTests(unittest.TestCase):
                     except (OSError, ValueError):
                         relay_metadata_confirmed = False
                 try:
-                    communicate_timeout = 7 if mode in (
-                        "absolute-worker-summary",
-                        "absolute-real-poll-summary",
-                    ) else 3
+                    if mode == "absolute-real-poll-summary":
+                        communicate_timeout = 13
+                    elif mode == "absolute-worker-summary":
+                        communicate_timeout = 7
+                    else:
+                        communicate_timeout = 3
                     stdout, stderr = process.communicate(
                         timeout=communicate_timeout
                     )
@@ -1360,6 +1397,11 @@ class MacOSAssistAbsoluteDeadlineBoundaryTests(unittest.TestCase):
                 self.assertEqual(
                     summary_clock_path.read_text(encoding="ascii"),
                     "5\n",
+                )
+            if mode == "absolute-real-poll-summary":
+                self.assertGreaterEqual(
+                    int(real_poll_attempt_path.read_text(encoding="ascii")),
+                    1,
                 )
             if supervisor_state == "completed":
                 self.assertEqual(process.returncode, 1, stdout + stderr)
@@ -1449,7 +1491,7 @@ class MacOSAssistAbsoluteDeadlineBoundaryTests(unittest.TestCase):
         )
         self.assertEqual(
             diagnostic,
-            "BOUNDARY_STAGE=unavailable\n"
+            "BOUNDARY_STAGE=finalization-completed\n"
             "SUPERVISOR_STATE=completed\n"
             "PROCESS_CLEANUP=released\n",
             stdout + stderr,

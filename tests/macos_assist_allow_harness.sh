@@ -808,10 +808,17 @@ if [ "$mode" = "absolute-worker-summary" ] ||
     mv "$subject.signal-relay-deadline" "$subject"
 fi
 if [ "$mode" = "absolute-real-poll-summary" ]; then
+    sed 's/ASSIST_ALLOW_DEADLINE_MILLISECONDS=6000/ASSIST_ALLOW_DEADLINE_MILLISECONDS=12000/' \
+        "$subject" >"$subject.real-poll-deadline"
+    mv "$subject.real-poll-deadline" "$subject"
+fi
+if [ "$mode" = "absolute-real-poll-summary" ]; then
     awk '
         { print }
         index($0, "ASSIST_DIAGNOSTIC_FINAL_CLI_EXIT") {
+            print "    printf \047finalization-started\\n\047 >\"${UUREMOTE_TEST_PYTHON_STAGE_PATH:?}\" || return 1"
             print "    wait_uuremote_poll 1000 || return 1"
+            print "    printf \047finalization-completed\\n\047 >\"${UUREMOTE_TEST_PYTHON_STAGE_PATH:?}\" || return 1"
         }
     ' "$subject" >"$subject.real-poll-finalization"
     mv "$subject.real-poll-finalization" "$subject"
@@ -931,6 +938,13 @@ case "$mode" in
                     print "    printf \047%s\\n\047 \047{\"success\":true,\"enabled\":true}\047 >\"$1\""
                     print "    printf \047completed:0\\n\047 >\"$2\""
                 } else {
+                    if (boundary_mode == "absolute-real-poll-summary") {
+                        print "    real_poll_attempt_count=\"${real_poll_attempt_count:-0}\""
+                        print "    case \"$real_poll_attempt_count\" in 0|[1-9]*) ;; *) return 1 ;; esac"
+                        print "    real_poll_attempt_count=\"$((real_poll_attempt_count + 1))\""
+                        print "    printf \047%s\\n\047 \"$real_poll_attempt_count\" >\"${UUREMOTE_TEST_REAL_POLL_ATTEMPT_PATH:?}\" || return 1"
+                        print "    printf \047attempt-started\\n\047 >\"${UUREMOTE_TEST_PYTHON_STAGE_PATH:?}\" || return 1"
+                    }
                     print "    printf \047%s\\n\047 \047{\"success\":true,\"enabled\":false}\047 >\"$1\""
                     print "    printf \047completed:0\\n\047 >\"$2\""
                 }
