@@ -814,12 +814,68 @@ if [ "$mode" = "absolute-real-poll-summary" ]; then
 fi
 if [ "$mode" = "absolute-real-poll-summary" ]; then
     awk '
-        { print }
+        /^uuremote_now_milliseconds\(\) \{$/ {
+            print
+            print "    real_poll_clock_path=\"${UUREMOTE_TEST_REAL_POLL_CLOCK_PATH:?}\""
+            print "    real_poll_clock_count=0"
+            print "    if [ -s \"$real_poll_clock_path\" ]; then"
+            print "        IFS= read -r real_poll_clock_count <\"$real_poll_clock_path\" || return 1"
+            print "    fi"
+            print "    case \"$real_poll_clock_count\" in 0|[1-9]*) ;; *) return 1 ;; esac"
+            print "    real_poll_clock_count=\"$((real_poll_clock_count + 1))\""
+            print "    printf \047%s\\n\047 \"$real_poll_clock_count\" >\"$real_poll_clock_path\" || return 1"
+            next
+        }
+        /^ensure_assist_allowed\(\) \($/ {
+            in_ensure = 1
+            clock_checkpoint = 0
+            print
+            next
+        }
+        in_ensure && index($0, "status_record=\"") {
+            print
+            print "        printf \047status-read\\n\047 >\"${UUREMOTE_TEST_PYTHON_STAGE_PATH:?}\" || return 1"
+            next
+        }
+        in_ensure && /read_assist_now \|\| return 1/ {
+            clock_checkpoint++
+            print
+            if (clock_checkpoint == 3) {
+                print "        printf \047post-boundary-clock\\n\047 >\"${UUREMOTE_TEST_PYTHON_STAGE_PATH:?}\" || return 1"
+            } else if (clock_checkpoint == 4) {
+                print "        printf \047post-classification-clock\\n\047 >\"${UUREMOTE_TEST_PYTHON_STAGE_PATH:?}\" || return 1"
+            }
+            next
+        }
+        in_ensure && /^        classify_assist_allow_response/ {
+            classifying = 1
+            print
+            next
+        }
+        in_ensure && classifying && /record_path.*\|\| return 1$/ {
+            print
+            print "        printf \047classified\\n\047 >\"${UUREMOTE_TEST_PYTHON_STAGE_PATH:?}\" || return 1"
+            classifying = 0
+            next
+        }
+        in_ensure && /^        1\|2\|3\)$/ {
+            print
+            print "            printf \047report-started\\n\047 >\"${UUREMOTE_TEST_PYTHON_STAGE_PATH:?}\" || return 1"
+            next
+        }
+        in_ensure && /^\)$/ {
+            in_ensure = 0
+            print
+            next
+        }
         index($0, "ASSIST_DIAGNOSTIC_FINAL_CLI_EXIT") {
+            print
             print "    printf \047finalization-started\\n\047 >\"${UUREMOTE_TEST_PYTHON_STAGE_PATH:?}\" || return 1"
             print "    wait_uuremote_poll 1000 || return 1"
             print "    printf \047finalization-completed\\n\047 >\"${UUREMOTE_TEST_PYTHON_STAGE_PATH:?}\" || return 1"
+            next
         }
+        { print }
     ' "$subject" >"$subject.real-poll-finalization"
     mv "$subject.real-poll-finalization" "$subject"
 fi
@@ -947,6 +1003,9 @@ case "$mode" in
                     }
                     print "    printf \047%s\\n\047 \047{\"success\":true,\"enabled\":false}\047 >\"$1\""
                     print "    printf \047completed:0\\n\047 >\"$2\""
+                    if (boundary_mode == "absolute-real-poll-summary") {
+                        print "    printf \047boundary-returned\\n\047 >\"${UUREMOTE_TEST_PYTHON_STAGE_PATH:?}\" || return 1"
+                    }
                 }
                 print "}"
                 skipping = 1
