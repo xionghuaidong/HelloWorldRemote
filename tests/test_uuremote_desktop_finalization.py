@@ -358,13 +358,15 @@ class MacOSAssistAllowSignalFinalizationSourceTests(unittest.TestCase):
             "sed 's/ASSIST_ALLOW_DEADLINE_MILLISECONDS=60000/"
         )
         deadline_rewrite_end = harness.index(
-            'case "$mode" in', deadline_rewrite_start
+            'if [ "$mode" = "absolute-worker-summary" ]; then',
+            deadline_rewrite_start,
         )
         deadline_rewrite = harness[
             deadline_rewrite_start:deadline_rewrite_end
         ]
         self.assertIn(
             'if [ "$mode" = "absolute-worker-summary" ] ||\n'
+            '    [ "$mode" = "absolute-real-poll-summary" ] ||\n'
             '    [ "$mode" = "absolute-shell-signal-relay" ]; then',
             deadline_rewrite,
         )
@@ -372,6 +374,36 @@ class MacOSAssistAllowSignalFinalizationSourceTests(unittest.TestCase):
             "ASSIST_ALLOW_DEADLINE_MILLISECONDS=6000",
             deadline_rewrite,
         )
+        self.assertIn(
+            "startup-preexec-block|absolute-clock-block|absolute-poll-block|"
+            "absolute-root-reap|absolute-precommit-signal)",
+            deadline_rewrite,
+        )
+        self.assertIn(
+            "ASSIST_ALLOW_FINALIZATION_RESERVE_MILLISECONDS=4000/"
+            "ASSIST_ALLOW_FINALIZATION_RESERVE_MILLISECONDS=1500",
+            deadline_rewrite,
+        )
+        finalization_barrier_start = harness.index(
+            'if [ "$mode" = "absolute-real-poll-summary" ]; then',
+            deadline_rewrite_start,
+        )
+        finalization_barrier_end = harness.index(
+            'if [ "$mode" = "absolute-worker-summary" ]; then',
+            finalization_barrier_start,
+        )
+        finalization_barrier = harness[
+            finalization_barrier_start:finalization_barrier_end
+        ]
+        self.assertIn(
+            'index($0, "ASSIST_DIAGNOSTIC_FINAL_CLI_EXIT")',
+            finalization_barrier,
+        )
+        self.assertIn(
+            'wait_uuremote_poll 1000 || return 1',
+            finalization_barrier,
+        )
+        self.assertNotIn("sleep ", finalization_barrier)
         summary_clock_start = harness.index(
             'if [ "$mode" = "absolute-worker-summary" ]; then',
             deadline_rewrite_start,
@@ -1254,9 +1286,10 @@ class MacOSAssistAbsoluteDeadlineBoundaryTests(unittest.TestCase):
                     except (OSError, ValueError):
                         relay_metadata_confirmed = False
                 try:
-                    communicate_timeout = (
-                        7 if mode == "absolute-worker-summary" else 3
-                    )
+                    communicate_timeout = 7 if mode in (
+                        "absolute-worker-summary",
+                        "absolute-real-poll-summary",
+                    ) else 3
                     stdout, stderr = process.communicate(
                         timeout=communicate_timeout
                     )
@@ -1398,6 +1431,46 @@ class MacOSAssistAbsoluteDeadlineBoundaryTests(unittest.TestCase):
         self.assertIn("ASSIST_DIAGNOSTIC_FINAL_CLI_EXIT=0", lines)
         self.assertIn("ASSIST_DIAGNOSTIC_ATTEMPTS=1", lines)
         self.assertIn("ASSIST_DIAGNOSTIC_ENABLED_FALSE_COUNT=1", lines)
+        self.assertEqual(
+            sum(line.startswith("ASSIST_DIAGNOSTIC_") for line in lines),
+            19,
+        )
+        self.assertTrue(
+            all(
+                line.startswith("ASSIST_DIAGNOSTIC_")
+                or line == "Could not enable unattended control within 60 seconds"
+                for line in lines
+            )
+        )
+
+    def test_real_polling_worker_has_time_to_emit_safe_summary(self):
+        diagnostic, stdout, stderr = self.run_with_external_supervisor(
+            "absolute-real-poll-summary", "real-poll-summary", "unavailable"
+        )
+        self.assertEqual(
+            diagnostic,
+            "BOUNDARY_STAGE=unavailable\n"
+            "SUPERVISOR_STATE=completed\n"
+            "PROCESS_CLEANUP=released\n",
+            stdout + stderr,
+        )
+        self.assertEqual(stdout, "")
+        lines = stderr.splitlines()
+        self.assertEqual(
+            lines[-1], "Could not enable unattended control within 60 seconds"
+        )
+        self.assertIn("ASSIST_DIAGNOSTIC_FINAL_CATEGORY=enabled-false", lines)
+        self.assertIn("ASSIST_DIAGNOSTIC_FINAL_CLI_EXIT=0", lines)
+        self.assertGreaterEqual(
+            int(
+                next(
+                    line.split("=", 1)[1]
+                    for line in lines
+                    if line.startswith("ASSIST_DIAGNOSTIC_ATTEMPTS=")
+                )
+            ),
+            1,
+        )
         self.assertEqual(
             sum(line.startswith("ASSIST_DIAGNOSTIC_") for line in lines),
             19,

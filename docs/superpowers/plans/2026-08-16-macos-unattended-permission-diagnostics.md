@@ -16,7 +16,7 @@
 - Use TDD for every runtime behavior change: observe RED, implement the minimum GREEN, refactor only while tests stay green.
 - Keep all source, test, workflow, and code-example comments in English.
 - Update English documentation first and keep the Simplified Chinese counterpart meaning-equivalent in the same commit.
-- Keep the outer hard deadline at exactly 60 seconds, reserve exactly 1,500 milliseconds inside it for cleanup/report/capture finalization, keep the per-call cap at exactly 3,000 milliseconds, and keep the poll interval at exactly 500 milliseconds.
+- Keep the outer hard deadline at exactly 60 seconds, reserve exactly 4,000 milliseconds inside it for worker cleanup/report/capture finalization, keep the per-call cap at exactly 3,000 milliseconds, and keep the poll interval at exactly 500 milliseconds.
 - Accept success only when strict JSON has Boolean `success=true` and Boolean `enabled=true` before the deadline.
 - Print `ASSIST_STATE=enabled` on success and retain `Could not enable unattended control within 60 seconds` plus exit `1` on failure.
 - Emit detailed fields only when `UUREMOTE_DEBUG` is `1`, `2`, or `3` and the unattended operation fails.
@@ -27,7 +27,7 @@
 - The helper uses the bounded fail-closed cleanup policy: `TERM`→`KILL`→reap/PGID probe, with at most 500 milliseconds of `TERM` grace and at most 500 milliseconds of `KILL`/reap/PGID-probe grace. Cleanup may add only the documented fixed cleanup grace beyond a CLI attempt; it never waits indefinitely.
 - The outer supervisor starts its deadline before worker creation, blocks handled signals until ownership is recorded, repeatedly snapshots descendant PID/PPID/PGID relationships during both cleanup phases, and signals recorded direct PIDs as well as process groups.
 - Background the resolved external Python executable directly, without shell-function or subshell indirection, so `$!` is the actual supervisor owner used for signal relay and cleanup; test shims replace that explicit executable path.
-- Pass the same outer absolute deadline to the worker and use `outer_deadline - 1500 milliseconds` as only the worker business/classification cutoff. The reserve never extends the outer deadline.
+- Pass the same outer absolute deadline to the worker and use `outer_deadline - 4000 milliseconds` as only the worker business/classification cutoff. This leaves three seconds for worker cleanup/report/capture finalization before forced supervisor cleanup starts, plus the final one second for the supervisor's bounded cleanup; the reserve never extends the outer deadline.
 - Begin forced supervisor cleanup no later than `outer_deadline - 1000 milliseconds`; cap both 500-millisecond phases at the outer deadline rather than starting fresh grace after it.
 - Worker output is replayed only after timely exit and confirmed capture-file removal. Every pre-commit supervisor timeout, exception, interruption, observation failure, or cleanup failure discards worker output and reaches only the generic outer failure.
 - Replay commits only after capture removal, handled-signal blocking, a fresh deadline check, synchronous delivery of pending signals while the fail-closed handler remains installed, and an atomic hard-link decision in which the interrupt source and commit source compete for one private path. Pre-commit failure discards output; post-commit signals and replay I/O errors preserve the already committed worker status so partial output cannot be followed by a contradictory supervisor failure.

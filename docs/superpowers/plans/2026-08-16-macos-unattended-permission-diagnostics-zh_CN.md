@@ -16,7 +16,7 @@
 - 每个 runtime behavior change 都使用 TDD：观察 RED，实施最小 GREEN，只在测试保持 green 时 refactor。
 - 所有 source、test、workflow 和 code-example comments 都使用 English。
 - 先更新 English documentation，并在同一 commit 中保持简体中文 counterpart 等义。
-- outer hard deadline 必须恰好为 60 秒，在其内部恰好预留 1,500 milliseconds 用于 cleanup/report/capture finalization；单次 call cap 必须恰好为 3,000 milliseconds，poll interval 必须恰好为 500 milliseconds。
+- outer hard deadline 必须恰好为 60 秒，在其内部恰好预留 4,000 milliseconds 用于 worker cleanup/report/capture finalization；单次 call cap 必须恰好为 3,000 milliseconds，poll interval 必须恰好为 500 milliseconds。
 - 只有 strict JSON 在 deadline 前包含 Boolean `success=true` 和 Boolean `enabled=true` 时才接受成功。
 - 成功时打印 `ASSIST_STATE=enabled`；失败时保留 `Could not enable unattended control within 60 seconds` 和 exit `1`。
 - 只有 `UUREMOTE_DEBUG` 为 `1`、`2` 或 `3`，且无人值守操作失败时才输出详细字段。
@@ -27,7 +27,7 @@
 - helper 使用有界 fail-closed 清理策略：`TERM`→`KILL`→回收/PGID 探测，`TERM` grace 最多 500 milliseconds，`KILL`/回收/PGID-probe grace 最多 500 milliseconds。清理最多只能在一次 CLI attempt 之外增加已记录的固定清理宽限；绝不无限等待。
 - outer supervisor 在创建 worker 前启动 deadline，在记录 ownership 前屏蔽 handled signals，在两个 cleanup phases 中重复 snapshot descendant PID/PPID/PGID 关系，并同时对已记录 direct PIDs 和 process groups 发送 signals。
 - 直接在后台启动已解析的 external Python executable，不经过 shell-function 或 subshell indirection，因此 `$!` 是 signal relay 与 cleanup 使用的实际 supervisor owner；test shim 替换该明确的 executable path。
-- 把同一个 outer absolute deadline 传给 worker，并仅把 `outer_deadline - 1500 milliseconds` 用作 worker business/classification cutoff。reserve 绝不延长 outer deadline。
+- 把同一个 outer absolute deadline 传给 worker，并仅把 `outer_deadline - 4000 milliseconds` 用作 worker business/classification cutoff。这样会在 forced supervisor cleanup 开始前为 worker cleanup/report/capture finalization 留出三秒，再为 supervisor 的 bounded cleanup 留出最后一秒；reserve 绝不延长 outer deadline。
 - 最迟在 `outer_deadline - 1000 milliseconds` 开始 forced supervisor cleanup；两个 500-millisecond phases 都必须受 outer deadline 限制，不得在其后重新开始 grace。
 - 只有在 worker timely exit 且 capture-file removal 已确认后才 replay worker output。任何 pre-commit supervisor timeout、exception、interruption、observation failure 或 cleanup failure 都丢弃 worker output，并且只到达 generic outer failure。
 - 只有在 capture removal、handled-signal blocking、fresh deadline check、fail-closed handler 仍安装时同步递送 pending signals，以及 interrupt source 与 commit source 竞争同一 private path 的 atomic hard-link decision 后，replay 才 commit。pre-commit failure 丢弃 output；post-commit signals 与 replay I/O errors 保留已经 committed 的 worker status，避免 partial output 后再出现相互矛盾的 supervisor failure。

@@ -58,10 +58,12 @@ each block before another deadline check.
 The approved Option 2 policy therefore includes an outer wall-clock
 supervisor. It starts the 60-second deadline before forking an isolated worker
 that runs the complete `ensure_assist_allowed` route. The worker receives that
-same absolute deadline with a fixed 1,500-millisecond finalization reserve, so
-its business/classification window ends at 58.5 seconds. The reserve is used
-only for inner `TERM`→`KILL` cleanup, fixed-field reporting, and private capture
-closure. The supervisor begins forced cleanup no later than 59 seconds and
+same absolute deadline with a fixed 4,000-millisecond finalization reserve, so
+its business/classification window ends at 56 seconds. The first three seconds
+of the reserve are available for bounded inner `TERM`→`KILL` cleanup,
+fixed-field reporting, and private capture closure before forced supervisor
+cleanup begins at 59 seconds. The last second remains available for the
+supervisor's bounded cleanup. The supervisor begins forced cleanup no later than 59 seconds and
 caps both cleanup phases at the outer deadline; the reserve never extends the
 outer 60-second hard deadline. Signals are blocked until
 the parent records worker ownership. On expiry or interruption, the supervisor
@@ -70,6 +72,23 @@ sends `TERM` and then `KILL` to every recorded direct PID and process group,
 reaps the worker, and confirms absence with direct PID and PGID probes. Each
 signal phase is bounded to 500 milliseconds. An observation or cleanup failure
 remains fail-closed.
+
+### 4.4 Native run #159 diagnostic-finalization amendment
+
+Native run #159 proved that a real enabled-false polling route could reach the
+worker cutoff yet lose all 19 safe diagnostic fields before the supervisor's
+59-second forced-cleanup boundary. With the earlier 1,500-millisecond reserve,
+only about 500 milliseconds remained between the worker cutoff and forced
+supervisor cleanup. That window had to cover the final clock/poll subprocess,
+fixed-field report generation, worker exit, capture reading, capture removal,
+and the atomic replay decision.
+
+The 4,000-millisecond reserve moves only the worker business/classification
+cutoff to 56 seconds. It leaves the outer 60-second hard deadline, the
+59-second forced-cleanup boundary, and both 500-millisecond supervisor cleanup
+phases unchanged. The additional bounded time is solely for cleanup, safe
+report finalization, and private capture closure; it does not expose raw CLI
+payload, device IDs, custom codes, or secrets.
 
 The shell backgrounds the resolved external Python executable directly, with
 no shell-function or subshell indirection, so `$!` is the actual supervisor PID
@@ -153,7 +172,7 @@ The reporter does not run when debug is `0`, and no new diagnostic data is writt
 
 ## 6. Timing and Error Handling
 
-- Establish the outer 60-second monotonic deadline before worker creation; pass the same absolute value to the worker and subtract the fixed 1,500-millisecond finalization reserve from only the worker's business/classification cutoff.
+- Establish the outer 60-second monotonic deadline before worker creation; pass the same absolute value to the worker and subtract the fixed 4,000-millisecond finalization reserve from only the worker's business/classification cutoff.
 - Limit each CLI call to the smaller of 3,000 milliseconds and the remaining overall time.
 - After a failed attempt, wait for the smaller of 500 milliseconds and the remaining overall time.
 - Recheck the deadline after child completion, after parsing, and immediately before accepting `enabled-true`.

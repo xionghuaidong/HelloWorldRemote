@@ -844,7 +844,7 @@ class AgentInstructionContractTests(unittest.TestCase):
 
         production_source = text(ROOT / ".github/workflows/apple.sh")
         self.assertIn(
-            "ASSIST_ALLOW_FINALIZATION_RESERVE_MILLISECONDS=1500",
+            "ASSIST_ALLOW_FINALIZATION_RESERVE_MILLISECONDS=4000",
             production_source,
         )
         self.assertIn(

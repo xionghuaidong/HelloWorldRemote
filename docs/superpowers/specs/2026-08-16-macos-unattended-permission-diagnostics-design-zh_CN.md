@@ -57,9 +57,10 @@ child startup 与 `preexec_fn`、第一次 monotonic-clock 读取以及 poll hel
 因此，批准的 Option 2 policy 包含一个外层 wall-clock supervisor。它在 fork 一个
 隔离 worker 之前启动 60 秒 deadline；该 worker 运行完整的
 `ensure_assist_allowed` route。worker 接收同一个 absolute deadline，并使用固定
-1,500-millisecond finalization reserve，因此其 business/classification window 在
-58.5 秒结束。该 reserve 仅用于 inner `TERM`→`KILL` cleanup、fixed-field reporting
-和 private capture closure。supervisor 最迟在 59 秒开始 forced cleanup，并用
+4,000-millisecond finalization reserve，因此其 business/classification window 在
+56 秒结束。在 forced supervisor cleanup 于第 59 秒开始前，reserve 的前三秒
+可用于 bounded inner `TERM`→`KILL` cleanup、fixed-field reporting 和 private
+capture closure。最后一秒保留给 supervisor 的 bounded cleanup。supervisor 最迟在 59 秒开始 forced cleanup，并用
 outer deadline 限制两个 cleanup phases；reserve 绝不延长外层 60 秒 hard
 deadline。parent 记录
 worker ownership 前会屏蔽 signals。
@@ -67,6 +68,21 @@ worker ownership 前会屏蔽 signals。
 关系，对所有已记录 direct PID 和 process group 先发送 `TERM`、再发送 `KILL`，
 回收 worker，并通过 direct PID 与 PGID probes 确认不存在残留。每个 signal phase
 最多 500 milliseconds。任何 observation 或 cleanup failure 仍然 fail-closed。
+
+### 4.4 原生 run #159 诊断 finalization 修订
+
+原生 run #159 证明，真实 enabled-false polling route 可以到达 worker cutoff，
+却在 supervisor 的第 59 秒 forced-cleanup boundary 前丢失全部 19 个 safe
+diagnostic fields。使用先前的 1,500-millisecond reserve 时，worker cutoff 与
+forced supervisor cleanup 之间只有约 500 milliseconds；该窗口必须完成最后的
+clock/poll subprocess、fixed-field report 生成、worker exit、capture 读取、capture
+删除以及 atomic replay decision。
+
+4,000-millisecond reserve 只把 worker business/classification cutoff 提前到第 56
+秒。外层 60 秒 hard deadline、第 59 秒 forced-cleanup boundary 和两个
+500-millisecond supervisor cleanup phases 均保持不变。新增的有界时间仅用于
+cleanup、safe report finalization 和 private capture closure；不会暴露 raw CLI
+payload、device ID、custom code 或 secrets。
 
 shell 会直接在后台启动已解析的 external Python executable，不经过 shell function
 或 subshell indirection，因此 `$!` 就是接收 relay signals 并拥有 worker cleanup 的
@@ -146,7 +162,7 @@ debug 为 `0` 时不运行 reporter，新的诊断数据也不会写入 artifact
 
 ## 6. 时间和错误处理
 
-- 在创建 worker 前建立外层 60 秒 monotonic deadline；把同一个 absolute value 传给 worker，并且只从 worker 的 business/classification cutoff 中减去固定 1,500-millisecond finalization reserve。
+- 在创建 worker 前建立外层 60 秒 monotonic deadline；把同一个 absolute value 传给 worker，并且只从 worker 的 business/classification cutoff 中减去固定 4,000-millisecond finalization reserve。
 - 每次 CLI call 最多运行 3,000 milliseconds 与剩余总时间中的较小值。
 - attempt 失败后，最多等待 500 milliseconds 与剩余总时间中的较小值。
 - child 完成后、解析后以及接受 `enabled-true` 前立即重新检查 deadline。

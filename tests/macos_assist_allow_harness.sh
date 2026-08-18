@@ -787,17 +787,34 @@ case "$mode" in
         ;;
 esac
 case "$mode" in
-    startup-preexec-block|absolute-clock-block|absolute-poll-block|absolute-worker-summary|absolute-root-reap|absolute-precommit-signal|absolute-shell-signal-relay)
+    startup-preexec-block|absolute-clock-block|absolute-poll-block|absolute-worker-summary|absolute-real-poll-summary|absolute-root-reap|absolute-precommit-signal|absolute-shell-signal-relay)
         sed 's/ASSIST_ALLOW_DEADLINE_MILLISECONDS=60000/ASSIST_ALLOW_DEADLINE_MILLISECONDS=2500/' \
             "$subject" >"$subject.short-deadline"
         mv "$subject.short-deadline" "$subject"
         ;;
 esac
+case "$mode" in
+    startup-preexec-block|absolute-clock-block|absolute-poll-block|absolute-root-reap|absolute-precommit-signal)
+        sed 's/ASSIST_ALLOW_FINALIZATION_RESERVE_MILLISECONDS=4000/ASSIST_ALLOW_FINALIZATION_RESERVE_MILLISECONDS=1500/' \
+            "$subject" >"$subject.short-reserve"
+        mv "$subject.short-reserve" "$subject"
+        ;;
+esac
 if [ "$mode" = "absolute-worker-summary" ] ||
+    [ "$mode" = "absolute-real-poll-summary" ] ||
     [ "$mode" = "absolute-shell-signal-relay" ]; then
     sed 's/ASSIST_ALLOW_DEADLINE_MILLISECONDS=2500/ASSIST_ALLOW_DEADLINE_MILLISECONDS=6000/' \
         "$subject" >"$subject.signal-relay-deadline"
     mv "$subject.signal-relay-deadline" "$subject"
+fi
+if [ "$mode" = "absolute-real-poll-summary" ]; then
+    awk '
+        { print }
+        index($0, "ASSIST_DIAGNOSTIC_FINAL_CLI_EXIT") {
+            print "    wait_uuremote_poll 1000 || return 1"
+        }
+    ' "$subject" >"$subject.real-poll-finalization"
+    mv "$subject.real-poll-finalization" "$subject"
 fi
 if [ "$mode" = "absolute-worker-summary" ]; then
     awk '
@@ -900,7 +917,7 @@ case "$mode" in
         ;;
 esac
 case "$mode" in
-    startup-preexec-block|absolute-poll-block|absolute-worker-summary|absolute-precommit-signal|absolute-shell-signal-relay)
+    startup-preexec-block|absolute-poll-block|absolute-worker-summary|absolute-real-poll-summary|absolute-precommit-signal|absolute-shell-signal-relay)
         awk -v boundary_mode="$mode" '
             /^run_bounded_gui_cli_to_file\(\) \{$/ {
                 print
@@ -997,7 +1014,7 @@ if [ "$mode" = "absolute-root-reap" ]; then
     mv "$subject.root-reap" "$subject"
 fi
 case "$mode" in
-    startup-preexec-block|absolute-clock-block|absolute-poll-block|absolute-worker-summary|absolute-root-reap|absolute-precommit-signal|absolute-shell-signal-relay)
+    startup-preexec-block|absolute-clock-block|absolute-poll-block|absolute-worker-summary|absolute-real-poll-summary|absolute-root-reap|absolute-precommit-signal|absolute-shell-signal-relay)
         awk '
             /^if \[ "\$mode" = "assist-allow-worker" \]; then$/ {
                 print
@@ -1022,9 +1039,10 @@ fi
 scenario="${2:?}"
 
 case "$mode" in
-    startup-preexec-block|absolute-clock-block|absolute-poll-block|absolute-worker-summary|absolute-root-reap|absolute-precommit-signal|absolute-shell-signal-relay)
+    startup-preexec-block|absolute-clock-block|absolute-poll-block|absolute-worker-summary|absolute-real-poll-summary|absolute-root-reap|absolute-precommit-signal|absolute-shell-signal-relay)
         . "$subject"
-        if [ "$mode" = absolute-worker-summary ]; then
+        if [ "$mode" = absolute-worker-summary ] ||
+            [ "$mode" = absolute-real-poll-summary ]; then
             debug_level=1
         else
             debug_level=0
