@@ -334,6 +334,24 @@ class MacOSAssistAllowSignalFinalizationSourceTests(unittest.TestCase):
         self.assertNotIn('case "$argument"', gui_region)
         self.assertIn('while IFS= read -r argument; do', gui_region)
 
+    def test_absolute_deadline_harness_preserves_enable_failure_status(self):
+        harness = text(MACOS_ASSIST_ALLOW_HARNESS_PATH)
+        execution_start = harness.index('scenario="${2:?}"')
+        route_start = harness.index(
+            "    startup-preexec-block|absolute-clock-block|absolute-poll-block|",
+            execution_start,
+        )
+        route_end = harness.index("\nesac\n", route_start)
+        route = harness[route_start:route_end]
+        self.assertIn(
+            "        if enable_assist_or_fail; then\n"
+            "            exit 0\n"
+            "        else\n"
+            "            exit \"$?\"\n"
+            "        fi",
+            route,
+        )
+
     def test_completed_failure_diagnostic_is_fixed_field_and_identifier_free(self):
         harness = text(MACOS_ASSIST_ALLOW_HARNESS_PATH)
         start = harness.index("emit_completed_failure_diagnostic()")

@@ -985,8 +985,9 @@ case "$mode" in
         fi
         if enable_assist_or_fail; then
             exit 0
+        else
+            exit "$?"
         fi
-        exit "$?"
         ;;
 esac
 
