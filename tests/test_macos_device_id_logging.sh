@@ -216,13 +216,13 @@ assert_diagnostic_fields() {
     fi
 
     for expected_field in "$@"; do
-        if ! printf '%s\n' "$actual" | grep -Fxq "DEVICE_ID_DIAGNOSTIC_$expected_field"; then
+        if ! grep -Fxq "DEVICE_ID_DIAGNOSTIC_$expected_field" <<<"$actual"; then
             echo "Device ID diagnostic output is missing expected structural metadata" >&2
             exit 1
         fi
     done
 
-    if printf '%s' "$actual" | grep -aEq 'raw-cli-device-output|FORGED_OUTPUT|device-id-fixture|RAW-MARKER12'; then
+    if grep -aEq 'raw-cli-device-output|FORGED_OUTPUT|device-id-fixture|RAW-MARKER12' <<<"$actual"; then
         echo "Device ID diagnostic output exposed raw CLI bytes" >&2
         exit 1
     fi
@@ -309,7 +309,7 @@ assert_diagnostic_fields category-rle-bound \
     PRINTABLE_RUN_CATEGORY_RLE_FIRST_8_SEGMENTS_16=L1,D1,L1,D1,L1,D1,L1,D1,L1,D1,L1,D1,L1,D1,L1,D1
 
 diagnostic_output="$(run_diagnostic failure-stdout)"
-if printf '%s' "$diagnostic_output" | grep -aEq 'raw-cli-device-output|FORGED_OUTPUT|device-id-fixture'; then
+if grep -aEq 'raw-cli-device-output|FORGED_OUTPUT|device-id-fixture' <<<"$diagnostic_output"; then
     echo "Device ID diagnostic output exposed raw CLI bytes" >&2
     exit 1
 fi

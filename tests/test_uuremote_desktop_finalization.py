@@ -379,6 +379,22 @@ class MacOSAssistAllowSignalFinalizationSourceTests(unittest.TestCase):
         self.assertIn("completed_command=/usr/bin/true", completed_region)
         self.assertNotIn("completed_command=/bin/true", completed_region)
 
+    def test_recorded_faults_wait_for_group_recording_before_injection(self):
+        harness = text(MACOS_ASSIST_ALLOW_HARNESS_PATH)
+        self.assertIn("UUREMOTE_TEST_GROUP_RECORDED_PATH", harness)
+        self.assertIn("wait_for_test_group_recording()", harness)
+        self.assertIn("fixture-leader-completes-recorded", harness)
+
+    def test_recorded_leader_handshake_does_not_poll_with_untracked_children(self):
+        harness = text(MACOS_ASSIST_ALLOW_HARNESS_PATH)
+        start = harness.index(
+            'if [ "${1:-}" = "fixture-leader-completes-recorded" ]'
+        )
+        fixture = harness[start : harness.index("\numask 077", start)]
+        self.assertNotIn("do sleep", fixture)
+        self.assertIn("trap 'exit 0' USR1", fixture)
+        self.assertIn('wait "$child_pid"', fixture)
+
 
 @unittest.skipUnless(BASH_AVAILABLE, "requires /bin/bash")
 class MacOSAssistAllowProcessTests(unittest.TestCase):
@@ -614,6 +630,20 @@ class MacOSAssistAllowProcessTests(unittest.TestCase):
         started = time.monotonic()
         result = self.run_harness(
             "probe-persistent-error", "persistent-probe-error"
+        )
+        elapsed = time.monotonic() - started
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertLess(elapsed, 2)
+        self.assertEqual(
+            result.stdout,
+            "EXIT=125\nSTATUS=absent\nPROBES_RETRIED=true\nLATE_PROBE=false\n",
+        )
+
+    def test_persistent_probe_started_before_deadline_is_not_reported_late(self):
+        started = time.monotonic()
+        result = self.run_harness(
+            "probe-persistent-oracle-delay",
+            "persistent-probe-error",
         )
         elapsed = time.monotonic() - started
         self.assertEqual(result.returncode, 0, result.stderr)

@@ -40,6 +40,15 @@ if [ "${1:-}" = "fixture-leader-completes" ]; then
     exit 0
 fi
 
+if [ "${1:-}" = "fixture-leader-completes-recorded" ]; then
+    printf '%s\n' "$$" >"${2:?}"
+    trap 'exit 0' USR1
+    /bin/bash -c 'trap "" TERM; printf "%s\n" "$$" >"$1"; exec /bin/sleep 30' \
+        fixture-child "${3:?}" &
+    child_pid="$!"
+    wait "$child_pid"
+fi
+
 umask 077
 
 root="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -51,6 +60,9 @@ response_path="$temporary_directory/response"
 fixture_pids=""
 fixture_pid_paths=""
 fixture_groups=""
+group_recorded_path="$temporary_directory/group-recorded"
+export UUREMOTE_TEST_GROUP_RECORDED_PATH="$group_recorded_path"
+release_recorded_fixture_leader=0
 
 is_native_macos() {
     [ "$(uname -s)" = Darwin ]
@@ -241,7 +253,7 @@ run_recorded_bounded_fixture() {
     local output_path="$1"
     local status_path="$2"
     local timeout_milliseconds="$3"
-    local runner_pid wait_attempt runner_exit
+    local recorded_leader_pid runner_pid wait_attempt runner_exit
     shift 3
 
     (
@@ -254,6 +266,16 @@ run_recorded_bounded_fixture() {
     while [ "$wait_attempt" -lt 40 ]; do
         if [ -s "$parent_pid_path" ] && [ -s "$child_pid_path" ]; then
             if record_fixture_group_when_known; then
+                : >"$group_recorded_path"
+                if [ "$release_recorded_fixture_leader" -eq 1 ]; then
+                    if ! recorded_leader_pid="$(read_recorded_pid_file "$parent_pid_path" 2>/dev/null)" || \
+                        ! /bin/kill -USR1 "$recorded_leader_pid" 2>/dev/null
+                    then
+                        /bin/kill -KILL "$runner_pid" 2>/dev/null || true
+                        wait "$runner_pid" 2>/dev/null || true
+                        return 125
+                    fi
+                fi
                 break
             fi
             if is_native_macos; then
@@ -433,8 +455,8 @@ case "$mode" in
         ' "$subject" >"$subject.probe"
         mv "$subject.probe" "$subject"
         ;;
-    probe-persistent-error)
-        awk '
+    probe-persistent-error|probe-persistent-oracle-delay)
+        awk -v probe_mode="$mode" '
             /^def process_group_alive\(\):$/ {
                 print "def process_group_alive_real():"
                 next
@@ -446,10 +468,12 @@ case "$mode" in
             }
             /^            if not process_group_alive\(\):$/ {
                 print "            globals()[\"UUREMOTE_TEST_PROBE_IN_RETRY\"] = True"
+                print "            globals()[\"UUREMOTE_TEST_PROBE_AUTHORIZED\"] = time.monotonic() < cleanup_deadline"
                 print "            try:"
                 print "                group_absent = not process_group_alive()"
                 print "            finally:"
                 print "                globals()[\"UUREMOTE_TEST_PROBE_IN_RETRY\"] = False"
+                print "                globals()[\"UUREMOTE_TEST_PROBE_AUTHORIZED\"] = False"
                 print "            if group_absent:"
                 next
             }
@@ -462,11 +486,10 @@ case "$mode" in
                 print "    global process_group_probe_calls"
                 print "    process_group_probe_calls += 1"
                 print "    pathlib.Path(os.environ[\"UUREMOTE_TEST_PROBE_COUNT_PATH\"]).write_text(str(process_group_probe_calls))"
+                print "    if \"" probe_mode "\" == \"probe-persistent-oracle-delay\" and globals().get(\"UUREMOTE_TEST_PROBE_IN_RETRY\", False):"
+                print "        time.sleep(0.55)"
                 print "    cleanup_deadline = globals().get(\"UUREMOTE_TEST_CLEANUP_DEADLINE\")"
-                print "    if cleanup_deadline is not None and ("
-                print "        not globals().get(\"UUREMOTE_TEST_PROBE_IN_RETRY\", False)"
-                print "        or time.monotonic() >= cleanup_deadline"
-                print "    ):"
+                print "    if cleanup_deadline is not None and not globals().get(\"UUREMOTE_TEST_PROBE_AUTHORIZED\", False):"
                 print "        pathlib.Path(os.environ[\"UUREMOTE_TEST_LATE_PROBE_MARKER\"]).touch()"
                 print "    raise OSError"
                 print ""
@@ -670,10 +693,32 @@ case "$mode" in
         ;;
 esac
 case "$mode" in
+    fault-post-unmask|outer-post-unmask|fault-first-wait|outer-first-wait|block-false-post-fault|block-raises-post-fault)
+        awk '
+            /^exit_code = 125$/ {
+                print "def wait_for_test_group_recording():"
+                print "    marker = pathlib.Path(os.environ[\"UUREMOTE_TEST_GROUP_RECORDED_PATH\"])"
+                print "    marker_deadline = time.monotonic() + 2"
+                print "    while time.monotonic() < marker_deadline:"
+                print "        if marker.exists():"
+                print "            return"
+                print "        time.sleep(0.01)"
+                print "    raise RuntimeError"
+                print ""
+                print
+                next
+            }
+            { print }
+        ' "$subject" >"$subject.group-handshake"
+        mv "$subject.group-handshake" "$subject"
+        ;;
+esac
+case "$mode" in
     fault-post-unmask|outer-post-unmask)
         awk '
             /^        previous_signal_mask = None$/ {
                 print
+                print "    wait_for_test_group_recording()"
                 print "    raise RuntimeError"
                 next
             }
@@ -684,6 +729,7 @@ case "$mode" in
     fault-first-wait|outer-first-wait|block-false-post-fault|block-raises-post-fault)
         awk '
             /^        return_code = process\.wait\(timeout=timeout_seconds\)$/ {
+                print "        wait_for_test_group_recording()"
                 print "        raise RuntimeError"
             }
             { print }
@@ -738,7 +784,7 @@ fi
 scenario="${2:?}"
 
 case "$mode" in
-    process|process-completed-diagnostic|process-completed-diagnostic-*|fault-*|block-*|probe-transient-error|probe-persistent-error|pending-finalization-swapped) ;;
+    process|process-completed-diagnostic|process-completed-diagnostic-*|fault-*|block-*|probe-transient-error|probe-persistent-error|probe-persistent-oracle-delay|pending-finalization-swapped) ;;
     *) false ;;
 esac && {
     status_path="$temporary_directory/status"
@@ -1210,8 +1256,9 @@ esac && {
                 [ "$mode" != block-false ] && [ "$mode" != block-raises ]; then
                 exit 2
             fi
+            release_recorded_fixture_leader=1
             if run_recorded_bounded_fixture \
-                "$output_path" "$status_path" 3000 /bin/bash "$0" fixture-leader-completes \
+                "$output_path" "$status_path" 3000 /bin/bash "$0" fixture-leader-completes-recorded \
                 "$parent_pid_path" "$child_pid_path"
             then
                 echo "Fault leader unexpectedly succeeded" >&2

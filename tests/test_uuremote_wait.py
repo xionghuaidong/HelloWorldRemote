@@ -78,6 +78,16 @@ class WaitWorkflowContractTests(unittest.TestCase):
             workflow.index("      - name: Configure macOS host"),
         )
 
+    def test_diagnostic_searches_have_no_early_closing_pipe_consumer(self):
+        harness = text(DEVICE_ID_LOGGING_HARNESS_PATH)
+        self.assertNotIn("printf '%s\\n' \"$actual\" | grep -Fxq", harness)
+        self.assertNotIn("printf '%s' \"$actual\" | grep -aEq", harness)
+        self.assertNotIn(
+            "printf '%s' \"$diagnostic_output\" | grep -aEq", harness
+        )
+        self.assertIn("grep -Fxq", harness)
+        self.assertIn("grep -aEq", harness)
+
 
 @unittest.skipUnless(BASH_AVAILABLE, "requires /bin/bash")
 class WaitShellContractTests(unittest.TestCase):
