@@ -1176,7 +1176,7 @@ emit("enabled-true")
 PYTHON
 }
 
-report_assist_allow_diagnostics() {
+validate_assist_allow_diagnostics() {
     [ "$#" -eq 19 ] || return 2
     local attempts="$1" timeout_count="$2" cli_nonzero_count="$3"
     local empty_count="$4" invalid_utf8_count="$5" invalid_json_count="$6"
@@ -1273,6 +1273,84 @@ report_assist_allow_diagnostics() {
         timeout|cli-nonzero) ;;
         *) [ "$final_cli_exit" = 0 ] || return 2 ;;
     esac
+}
+
+validate_assist_diagnostic_state_values() {
+    [ "$#" -eq 21 ] || return 2
+    local generation="$1" state="$2" attempts value
+    shift 2
+
+    case "$generation" in
+        [1-9]|[1-9][0-9]*) ;;
+        *) return 2 ;;
+    esac
+    attempts="$1"
+    case "$state" in
+        open)
+            if [ "$attempts" = 0 ]; then
+                [ "$generation" = 1 ] || return 2
+                for value in \
+                    "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" \
+                    "${10}" "${11}" "${12}" "${13}" "${14}" "${15}" \
+                    "${16}" "${17}"
+                do
+                    [ "$value" = 0 ] || return 2
+                done
+                [ "${18}" = unavailable ] || return 2
+                [ "${19}" = unavailable ] || return 2
+                return 0
+            fi
+            validate_assist_allow_diagnostics "$@" || return 2
+            [ "$generation" -eq "$((10#$attempts + 1))" ] || return 2
+            ;;
+        committed)
+            validate_assist_allow_diagnostics "$@" || return 2
+            [ "$generation" -eq "$((10#$attempts))" ] || return 2
+            ;;
+        *) return 2 ;;
+    esac
+}
+
+write_assist_diagnostic_state() {
+    local state_path="$1" generation="$2" state="$3"
+    shift 3
+    local temporary_path="${state_path}.tmp"
+
+    validate_assist_diagnostic_state_values "$generation" "$state" "$@" || return 1
+    umask 077
+    : >"$temporary_path" || return 1
+    /bin/chmod 0600 "$temporary_path" || {
+        /bin/rm -f -- "$temporary_path" 2>/dev/null
+        return 1
+    }
+    {
+        printf 'v1\t%s\t%s' "$generation" "$state"
+        printf '\t%s' "$@"
+        printf '\n'
+    } >"$temporary_path" || {
+        /bin/rm -f -- "$temporary_path" 2>/dev/null
+        return 1
+    }
+    /bin/mv -f -- "$temporary_path" "$state_path" || {
+        /bin/rm -f -- "$temporary_path" 2>/dev/null
+        return 1
+    }
+}
+
+report_assist_allow_diagnostics() {
+    validate_assist_allow_diagnostics "$@" || return "$?"
+    local attempts="$1" timeout_count="$2" cli_nonzero_count="$3"
+    local empty_count="$4" invalid_utf8_count="$5" invalid_json_count="$6"
+    local not_object_count="$7" success_missing_count="$8"
+    local success_wrong_type_count="$9"
+    shift 9
+    local success_false_count="$1" enabled_missing_count="$2"
+    local enabled_wrong_type_count="$3" enabled_false_count="$4"
+    local enabled_true_count="$5" response_bytes_min="$6"
+    local response_bytes_max="$7" response_bytes_final="$8"
+    local final_category="$9"
+    shift 9
+    local final_cli_exit="$1"
 
     printf 'ASSIST_DIAGNOSTIC_ATTEMPTS=%s\n' "$attempts"
     printf 'ASSIST_DIAGNOSTIC_TIMEOUT_COUNT=%s\n' "$timeout_count"

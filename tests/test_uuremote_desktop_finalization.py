@@ -233,6 +233,122 @@ class MacOSAssistAllowClassifierTests(unittest.TestCase):
             check=False,
         )
 
+    def run_state_scenario(
+        self, scenario: str, state_path: Path
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [
+                "/bin/bash",
+                str(MACOS_ASSIST_ALLOW_HARNESS_PATH),
+                "state",
+                scenario,
+                str(state_path),
+            ],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+    def run_state_fault(
+        self, fault: str, state_path: Path
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [
+                "/bin/bash",
+                str(MACOS_ASSIST_ALLOW_HARNESS_PATH),
+                f"state-fault-{fault}",
+                "baseline",
+                str(state_path),
+            ],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+    @staticmethod
+    def baseline_state_bytes() -> bytes:
+        return (
+            b"v1\t1\tcommitted\t1\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t1\t0"
+            b"\t84\t84\t84\tenabled-false\t0\n"
+        )
+
+    def test_first_open_state_is_atomic_private_and_strict(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            state_path = Path(temporary_directory) / "diagnostic-state"
+            result = self.run_state_scenario("first-open", state_path)
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            expected = (
+                b"v1\t1\topen\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0"
+                b"\t0\t0\tunavailable\tunavailable\n"
+            )
+            state = state_path.read_bytes()
+            self.assertEqual(state, expected)
+            self.assertTrue(state.endswith(b"\n"))
+            self.assertEqual(state.count(b"\n"), 1)
+            self.assertEqual(len(state.rstrip(b"\n").split(b"\t")), 22)
+            self.assertEqual(os.stat(state_path.parent).st_mode & 0o777, 0o700)
+            self.assertEqual(os.stat(state_path).st_mode & 0o777, 0o600)
+            self.assertFalse(state_path.with_name("diagnostic-state.tmp").exists())
+
+    def test_committed_state_preserves_the_exact_19_value_order(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            state_path = Path(temporary_directory) / "diagnostic-state"
+            result = self.run_state_scenario("committed", state_path)
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertEqual(state_path.read_bytes(), self.baseline_state_bytes())
+            fields = state_path.read_bytes().rstrip(b"\n").split(b"\t")
+            self.assertEqual(fields, self.baseline_state_bytes().rstrip(b"\n").split(b"\t"))
+            self.assertEqual(fields[3], b"1")
+            self.assertEqual(fields[15], b"1")
+            self.assertEqual(fields[17:20], [b"84", b"84", b"84"])
+            self.assertEqual(fields[20:], [b"enabled-false", b"0"])
+
+    def test_state_writer_rejects_invalid_generation_state_and_values(self):
+        scenarios = (
+            "invalid-generation-zero",
+            "invalid-generation-leading-zero",
+            "invalid-open-generation",
+            "invalid-state",
+            "invalid-negative-count",
+            "invalid-category",
+            "invalid-total",
+            "invalid-exit",
+        )
+        for scenario in scenarios:
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as temporary_directory:
+                state_path = Path(temporary_directory) / "diagnostic-state"
+                result = self.run_state_scenario(scenario, state_path)
+
+                self.assertNotEqual(result.returncode, 0, result.stderr + result.stdout)
+                self.assertEqual(state_path.read_bytes(), self.baseline_state_bytes())
+                self.assertFalse(state_path.with_name("diagnostic-state.tmp").exists())
+
+    def test_state_writer_failure_leaves_no_partial_record(self):
+        for fault in ("chmod", "write", "move"):
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory() as temporary_directory:
+                state_path = Path(temporary_directory) / "diagnostic-state"
+                result = self.run_state_fault(fault, state_path)
+
+                self.assertNotEqual(result.returncode, 0, result.stderr + result.stdout)
+                self.assertEqual(state_path.read_bytes(), self.baseline_state_bytes())
+                self.assertFalse(state_path.with_name("diagnostic-state.tmp").exists())
+
+    def test_hostile_payload_markers_never_enter_state_or_output(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            state_path = Path(temporary_directory) / "diagnostic-state"
+            result = self.run_state_scenario("hostile-payload", state_path)
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            output = result.stdout + result.stderr
+            state = state_path.read_bytes().decode("ascii")
+            for marker in ("device-id-fixture", "CustomCodeFixture", "FORGED_OUTPUT"):
+                self.assertNotIn(marker, state)
+                self.assertNotIn(marker, output)
+
     def test_every_response_shape_has_one_safe_category(self):
         cases = {
             "timeout": ("timeout", "timeout"),

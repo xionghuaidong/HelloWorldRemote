@@ -2033,6 +2033,94 @@ esac && {
     exit "$status"
 }
 
+case "$mode" in
+    state|state-fault-*)
+        state_path="${3:?}"
+        . "$subject"
+        baseline_values=(
+            1 0 0 0 0 0 0 0 0 0 0 0 1 0 84 84 84 enabled-false 0
+        )
+        case "$scenario" in
+            first-open|hostile-payload)
+                hostile_payload='device-id-fixture CustomCodeFixture FORGED_OUTPUT'
+                write_assist_diagnostic_state \
+                    "$state_path" 1 open \
+                    0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 unavailable unavailable
+                exit "$?"
+                ;;
+            committed)
+                write_assist_diagnostic_state \
+                    "$state_path" 1 committed "${baseline_values[@]}"
+                exit "$?"
+                ;;
+            invalid-generation-zero|invalid-generation-leading-zero|invalid-open-generation|invalid-state|invalid-negative-count|invalid-category|invalid-total|invalid-exit)
+                write_assist_diagnostic_state \
+                    "$state_path" 1 committed "${baseline_values[@]}" || exit "$?"
+                case "$scenario" in
+                    invalid-generation-zero)
+                        write_assist_diagnostic_state "$state_path" 0 committed "${baseline_values[@]}"
+                        ;;
+                    invalid-generation-leading-zero)
+                        write_assist_diagnostic_state "$state_path" 01 committed "${baseline_values[@]}"
+                        ;;
+                    invalid-open-generation)
+                        write_assist_diagnostic_state \
+                            "$state_path" 2 open \
+                            0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 unavailable unavailable
+                        ;;
+                    invalid-state)
+                        write_assist_diagnostic_state "$state_path" 1 pending "${baseline_values[@]}"
+                        ;;
+                    invalid-negative-count)
+                        write_assist_diagnostic_state \
+                            "$state_path" 1 committed \
+                            1 0 0 0 0 0 0 0 0 0 0 0 -1 0 84 84 84 enabled-false 0
+                        ;;
+                    invalid-category)
+                        write_assist_diagnostic_state \
+                            "$state_path" 1 committed \
+                            1 0 0 0 0 0 0 0 0 0 0 0 1 0 84 84 84 unavailable 0
+                        ;;
+                    invalid-total)
+                        write_assist_diagnostic_state \
+                            "$state_path" 1 committed \
+                            1 0 0 0 0 0 0 0 0 0 0 0 0 0 84 84 84 enabled-false 0
+                        ;;
+                    invalid-exit)
+                        write_assist_diagnostic_state \
+                            "$state_path" 1 committed \
+                            1 0 0 0 0 0 0 0 0 0 0 0 1 0 84 84 84 enabled-false 1
+                        ;;
+                esac
+                exit "$?"
+                ;;
+            baseline)
+                write_assist_diagnostic_state \
+                    "$state_path" 1 committed "${baseline_values[@]}" || exit "$?"
+                case "$mode" in
+                    state-fault-chmod)
+                        /usr/bin/sed 's#/bin/chmod 0600 "\$temporary_path"#/bin/false#' \
+                            "$subject" >"$subject.state-fault"
+                        ;;
+                    state-fault-write)
+                        /usr/bin/sed 's#} >"\$temporary_path" || {#} >"\$temporary_path/" || {#' \
+                            "$subject" >"$subject.state-fault"
+                        ;;
+                    state-fault-move)
+                        /usr/bin/sed 's#/bin/mv -f -- "\$temporary_path" "\$state_path"#/bin/false#' \
+                            "$subject" >"$subject.state-fault"
+                        ;;
+                esac
+                . "$subject.state-fault"
+                write_assist_diagnostic_state \
+                    "$state_path" 1 committed "${baseline_values[@]}"
+                exit "$?"
+                ;;
+            *) exit 2 ;;
+        esac
+        ;;
+esac
+
 if [ "$mode" != "classify" ]; then
     exit 2
 fi
