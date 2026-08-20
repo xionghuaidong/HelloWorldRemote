@@ -2225,7 +2225,7 @@ class MacOSAssistAtomicSnapshotNativeTests(unittest.TestCase):
     def run_native(
         self, scenario: str, mutation: str | None = None
     ) -> tuple[
-        subprocess.CompletedProcess[str], float, list[tuple[int, int]], str, str, str, str
+        subprocess.CompletedProcess[str], float, list[tuple[int, int]], str, str, str, str, str
     ]:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary_root = Path(temporary_directory)
@@ -2234,6 +2234,7 @@ class MacOSAssistAtomicSnapshotNativeTests(unittest.TestCase):
             state_path = temporary_root / "state-observed"
             route_path = temporary_root / "route-reached"
             output_probe_path = temporary_root / "output-probe"
+            partial_path = temporary_root / "partial-window"
             environment = os.environ.copy()
             environment.update(
                 {
@@ -2243,6 +2244,7 @@ class MacOSAssistAtomicSnapshotNativeTests(unittest.TestCase):
                     "UUREMOTE_TEST_NATIVE_STATE_PATH": str(state_path),
                     "UUREMOTE_TEST_NATIVE_ROUTE_PATH": str(route_path),
                     "UUREMOTE_TEST_NATIVE_OUTPUT_PROBE_PATH": str(output_probe_path),
+                    "UUREMOTE_TEST_NATIVE_PARTIAL_PATH": str(partial_path),
                 }
             )
             if mutation is not None:
@@ -2280,8 +2282,12 @@ class MacOSAssistAtomicSnapshotNativeTests(unittest.TestCase):
             if output_probe_path.exists():
                 output_probe = output_probe_path.read_text(encoding="ascii")
                 output_probe_path.unlink()
+            partial_window = ""
+            if partial_path.exists():
+                partial_window = partial_path.read_text(encoding="ascii")
+                partial_path.unlink()
             self.assertEqual(list(temporary_root.iterdir()), [])
-        return result, elapsed, records, marker, state, route, output_probe
+        return result, elapsed, records, marker, state, route, output_probe, partial_window
 
     def assert_native_release(self, records: list[tuple[int, int]]) -> None:
         self.assertTrue(records, "native fixture must record a PID and PGID")
@@ -2307,11 +2313,12 @@ class MacOSAssistAtomicSnapshotNativeTests(unittest.TestCase):
         )
 
     def test_native_first_open_timeout_is_reported_and_reaped(self):
-        result, elapsed, records, marker, state, route, output_probe = self.run_native("first-open-timeout")
+        result, elapsed, records, marker, state, route, output_probe, partial_window = self.run_native("first-open-timeout")
         self.assertEqual(marker, "")
         self.assertEqual(state, "open\n")
         self.assertEqual(route, "cli-blocking-path-entered\n")
         self.assertEqual(output_probe, "absent")
+        self.assertEqual(partial_window, "")
         expected = "".join(
             (
                 "ASSIST_DIAGNOSTIC_ATTEMPTS=1\n",
@@ -2339,11 +2346,12 @@ class MacOSAssistAtomicSnapshotNativeTests(unittest.TestCase):
         self.assert_native_release(records)
 
     def test_native_committed_then_open_preserves_counts_and_adds_timeout(self):
-        result, elapsed, records, marker, state, route, output_probe = self.run_native("committed-then-open")
+        result, elapsed, records, marker, state, route, output_probe, partial_window = self.run_native("committed-then-open")
         self.assertEqual(marker, "")
         self.assertEqual(state, "")
         self.assertEqual(route, "")
         self.assertEqual(output_probe, "absent")
+        self.assertEqual(partial_window, "")
         self.assert_failure_output(
             result,
             elapsed,
@@ -2358,11 +2366,12 @@ class MacOSAssistAtomicSnapshotNativeTests(unittest.TestCase):
         self.assert_native_release(records)
 
     def test_native_committed_failure_outputs_exact_19_fields(self):
-        result, elapsed, records, marker, state, route, output_probe = self.run_native("committed-failure")
+        result, elapsed, records, marker, state, route, output_probe, partial_window = self.run_native("committed-failure")
         self.assertEqual(marker, "")
         self.assertEqual(state, "")
         self.assertEqual(route, "")
         self.assertEqual(output_probe, "absent")
+        self.assertEqual(partial_window, "")
         self.assert_failure_output(
             result,
             elapsed,
@@ -2377,13 +2386,14 @@ class MacOSAssistAtomicSnapshotNativeTests(unittest.TestCase):
         self.assert_native_release(records)
 
     def test_native_cleanup_unconfirmed_is_generic_only(self):
-        result, elapsed, records, marker, state, route, output_probe = self.run_native(
+        result, elapsed, records, marker, state, route, output_probe, partial_window = self.run_native(
             "cleanup-unconfirmed", "cleanup-unconfirmed"
         )
         self.assertEqual(marker, "cleanup-confirmation-forced\n")
         self.assertEqual(state, "open\n")
         self.assertEqual(route, "cli-blocking-path-entered\n")
         self.assertEqual(output_probe, "")
+        self.assertEqual(partial_window, "")
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertLess(elapsed, 7)
         self.assertEqual(result.stdout, "")
@@ -2391,11 +2401,12 @@ class MacOSAssistAtomicSnapshotNativeTests(unittest.TestCase):
         self.assert_native_release(records)
 
     def test_native_enabled_success_is_exact_and_clean(self):
-        result, elapsed, records, marker, state, route, output_probe = self.run_native("enabled-success")
+        result, elapsed, records, marker, state, route, output_probe, partial_window = self.run_native("enabled-success")
         self.assertEqual(marker, "")
         self.assertEqual(state, "")
         self.assertEqual(route, "")
         self.assertEqual(output_probe, "absent")
+        self.assertEqual(partial_window, "")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertLess(elapsed, 7)
         self.assertEqual(result.stdout, "ASSIST_STATE=enabled\n")
@@ -2413,7 +2424,7 @@ class MacOSAssistAtomicSnapshotNativeTests(unittest.TestCase):
     def test_native_causal_mutations_reach_the_real_supervisor_boundary(self):
         cases = (
             ("open", "first-open-timeout", "open-commit-bypassed\n"),
-            ("atomic", "enabled-success", "atomic-replacement-bypassed\n"),
+            ("atomic", "enabled-success", "committed-replacement-reached\n"),
             ("cleanup-bypass", "first-open-timeout", "cleanup-confirmation-forced\n"),
             ("synthesis", "first-open-timeout", "open-timeout-synthesis-bypassed\n"),
             ("deletion", "enabled-success", "state-removal-bypassed\n"),
@@ -2421,7 +2432,7 @@ class MacOSAssistAtomicSnapshotNativeTests(unittest.TestCase):
         for mutation, scenario, expected_marker in cases:
             with self.subTest(mutation=mutation):
                 self.assert_unmodified_native_baseline(scenario)
-                result, elapsed, records, marker, state, route, output_probe = self.run_native(
+                result, elapsed, records, marker, state, route, output_probe, partial_window = self.run_native(
                     scenario, mutation
                 )
                 self.assertLess(elapsed, 7)
@@ -2429,35 +2440,54 @@ class MacOSAssistAtomicSnapshotNativeTests(unittest.TestCase):
                 if mutation == "open":
                     self.assertEqual(state, "missing-or-invalid\n")
                     self.assertEqual(route, "cli-blocking-path-entered\n")
+                    self.assertEqual(partial_window, "")
                     self.assert_native_release(records)
+                    self.assertEqual(
+                        (result.returncode, result.stdout, result.stderr),
+                        (1, "", self.generic_failure),
+                    )
                     with self.assertRaises(AssertionError):
                         self.assertIn("ASSIST_DIAGNOSTIC_TIMEOUT_COUNT=1\n", result.stderr)
                 elif mutation == "atomic":
                     self.assertEqual(state, "")
                     self.assertEqual(route, "")
                     self.assertEqual(output_probe, "")
+                    self.assertEqual(partial_window, "partial-window-observed\n")
                     self.assert_native_release(records)
+                    self.assertEqual((result.returncode, result.stdout, result.stderr), (125, "", ""))
                     with self.assertRaises(AssertionError):
                         self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "ASSIST_STATE=enabled\n", ""))
                 elif mutation == "cleanup-bypass":
                     self.assertEqual(state, "open\n")
                     self.assertEqual(route, "cli-blocking-path-entered\n")
                     self.assertEqual(output_probe, "absent")
+                    self.assertEqual(partial_window, "")
                     self.assert_native_release(records)
+                    self.assertIn("ASSIST_DIAGNOSTIC_TIMEOUT_COUNT=1\n", result.stderr)
                     with self.assertRaises(AssertionError):
                         self.assertEqual(result.stderr, self.generic_failure)
                 elif mutation == "synthesis":
                     self.assertEqual(state, "open\n")
                     self.assertEqual(route, "cli-blocking-path-entered\n")
                     self.assertEqual(output_probe, "")
+                    self.assertEqual(partial_window, "")
                     self.assert_native_release(records)
+                    self.assertEqual(
+                        (result.returncode, result.stdout, result.stderr),
+                        (1, "", self.generic_failure),
+                    )
                     with self.assertRaises(AssertionError):
                         self.assertIn("ASSIST_DIAGNOSTIC_FINAL_CATEGORY=timeout\n", result.stderr)
                 else:
                     self.assertEqual(state, "")
                     self.assertEqual(route, "")
                     self.assertEqual(output_probe, "present")
+                    self.assertEqual(partial_window, "")
                     self.assert_native_release(records)
+                    self.assertEqual(
+                        (result.returncode, result.stdout, result.stderr),
+                        (0, "ASSIST_STATE=enabled\n", ""),
+                    )
                     with self.assertRaises(AssertionError):
                         self.assertEqual(output_probe, "absent")
 

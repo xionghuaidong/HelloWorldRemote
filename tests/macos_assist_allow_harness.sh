@@ -1082,21 +1082,16 @@ case "$mode" in
             atomic)
                 awk '
                     /^[[:space:]]*\/bin\/mv -f -- "\$temporary_path" "\$state_path" \|\| \{$/ {
-                        print "    if ! /bin/mv -f -- \"$temporary_path\" \"$state_path\"; then"
-                        print "        /bin/rm -f -- \"$temporary_path\" 2>/dev/null"
+                        print "    if [ \"$state\" = committed ]; then"
+                        print "        : >\"$state_path\" || return 1"
+                        print "        printf \047v1\\tpartial\\n\047 >\"$state_path\" || return 1"
+                        print "        printf \047committed-replacement-reached\\n\047 >\"${UUREMOTE_TEST_NATIVE_MUTATION_PATH:?}\""
+                        print "        [ \"$(/bin/cat \"$state_path\")\" = $\047v1\\tpartial\047 ] || return 1"
+                        print "        printf \047partial-window-observed\\n\047 >\"${UUREMOTE_TEST_NATIVE_PARTIAL_PATH:?}\""
+                        print "        native_fixture_record"
                         print "        return 1"
                         print "    fi"
-                        print "    if [ \"$state\" = committed ]; then"
-                        print "        printf \047atomic-replacement-bypassed\\n\047 >\"${UUREMOTE_TEST_NATIVE_MUTATION_PATH:?}\""
-                        print "        printf \047\\tpartial\047 >>\"$state_path\" || return 1"
-                        print "    fi"
-                        skipping_move_failure = 1
-                        next
-                    }
-                    skipping_move_failure {
-                        if (/^    }$/) {
-                            skipping_move_failure = 0
-                        }
+                        print
                         next
                     }
                     { print }
@@ -1149,7 +1144,7 @@ if [ "$mode" = native-transform-check ]; then
     done
     for native_marker in \
         open-commit-bypassed \
-        atomic-replacement-bypassed \
+        committed-replacement-reached \
         cleanup-confirmation-forced \
         open-timeout-synthesis-bypassed \
         state-removal-bypassed
@@ -1157,13 +1152,18 @@ if [ "$mode" = native-transform-check ]; then
         case "${UUREMOTE_TEST_NATIVE_MUTATION:-}" in
             '') continue ;;
             open) [ "$native_marker" = open-commit-bypassed ] || continue ;;
-            atomic) [ "$native_marker" = atomic-replacement-bypassed ] || continue ;;
+            atomic) [ "$native_marker" = committed-replacement-reached ] || continue ;;
             cleanup-unconfirmed|cleanup-bypass) [ "$native_marker" = cleanup-confirmation-forced ] || continue ;;
             synthesis) [ "$native_marker" = open-timeout-synthesis-bypassed ] || continue ;;
             deletion) [ "$native_marker" = state-removal-bypassed ] || continue ;;
         esac
         [ "$(/usr/bin/grep -F -c "$native_marker" "$subject")" -eq 1 ] || exit 1
     done
+    if [ "${UUREMOTE_TEST_NATIVE_MUTATION:-}" = atomic ]; then
+        [ "$(/usr/bin/grep -F -c 'if [ "$state" = committed ]; then' "$subject")" -eq 1 ] || exit 1
+        [ "$(/usr/bin/grep -F -c "printf 'v1\\tpartial\\n'" "$subject")" -eq 1 ] || exit 1
+        [ "$(/usr/bin/grep -F -c '/bin/mv -f -- "$temporary_path" "$state_path" || {' "$subject")" -eq 1 ] || exit 1
+    fi
     printf 'NATIVE_TRANSFORM=valid\n'
     exit 0
 fi
