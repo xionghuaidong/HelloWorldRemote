@@ -1826,6 +1826,200 @@ class MacOSAssistAllowAggregationTests(unittest.TestCase):
         subject.write_text(source.replace(old, new, 1), encoding="utf-8")
         return subject
 
+    @staticmethod
+    def git_bash_environment_path(path: Path) -> str:
+        resolved = path.resolve()
+        value = resolved.as_posix()
+        if len(value) >= 3 and value[1:3] == ":/":
+            return f"/{value[0].lower()}{value[2:]}"
+        return value
+
+    def entrypoint_observer_subject(
+        self,
+        temporary_directory: str,
+        *,
+        disable_private_mode: bool = False,
+        disable_unset: bool = False,
+    ) -> Path:
+        source = text(SCRIPT_PATH)
+        private_mode_gate = '''    assist_diagnostic_state_mode="$(
+        /usr/bin/stat -f '%Lp' "$assist_diagnostic_state_directory" 2>/dev/null
+    )" || exit 2
+    [ "$assist_diagnostic_state_mode" = 700 ] || exit 2
+'''
+        if disable_private_mode:
+            self.assertIn(private_mode_gate, source)
+            source = source.replace(private_mode_gate, "", 1)
+        if disable_unset:
+            self.assertIn("unset UUREMOTE_ASSIST_INTERNAL_STATE_PATH", source)
+            source = source.replace("unset UUREMOTE_ASSIST_INTERNAL_STATE_PATH", ":", 1)
+        observer = '''ensure_assist_allowed() {
+    case "${UUREMOTE_ASSIST_INTERNAL_STATE_PATH+x}" in
+        '') ;;
+        *) return 77 ;;
+    esac
+    printf 'ENTRYPOINT_HELPER=called\\n'
+}
+
+ensure_assist_allowed_real() ('''
+        self.assertIn("ensure_assist_allowed() (", source)
+        subject = Path(temporary_directory) / "apple.sh"
+        subject.write_text(source.replace("ensure_assist_allowed() (", observer, 1), encoding="utf-8")
+        return subject
+
+    def run_worker_entrypoint(
+        self, subject: Path, state_path: str | None
+    ) -> subprocess.CompletedProcess[str]:
+        environment = os.environ.copy()
+        environment.update(
+            {
+                "UUREMOTE_ASSIST_INTERNAL_DEBUG_LEVEL": "0",
+                "UUREMOTE_ASSIST_INTERNAL_CONSOLE_UID": "501",
+                "UUREMOTE_ASSIST_INTERNAL_DEADLINE_MILLISECONDS": "1",
+            }
+        )
+        if state_path is None:
+            environment.pop("UUREMOTE_ASSIST_INTERNAL_STATE_PATH", None)
+        else:
+            environment["UUREMOTE_ASSIST_INTERNAL_STATE_PATH"] = state_path
+        return subprocess.run(
+            macos_assist_bash_command(str(subject), "assist-allow-worker"),
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+            env=environment,
+        )
+
+    def test_worker_entrypoint_rejects_hostile_state_paths_before_helper_dispatch(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            subject = self.entrypoint_observer_subject(temporary_directory)
+            private_parent = temporary_path / "private-state"
+            nested_parent = private_parent / "nested"
+            private_parent.mkdir()
+            nested_parent.mkdir()
+            os.chmod(private_parent, 0o700)
+            cases = {
+                "missing": None,
+                "relative": "diagnostic-state",
+                "carriage-return": self.git_bash_environment_path(private_parent / "diagnostic-state") + "\r",
+                "line-feed": self.git_bash_environment_path(private_parent / "diagnostic-state") + "\n",
+                "traversal": self.git_bash_environment_path(nested_parent) + "/../diagnostic-state",
+            }
+            for name, state_path in cases.items():
+                with self.subTest(name=name):
+                    result = self.run_worker_entrypoint(subject, state_path)
+                    self.assertEqual(result.returncode, 2)
+                    self.assertEqual(result.stdout, "")
+                    self.assertEqual(result.stderr, "")
+
+    @unittest.skipUnless(NATIVE_MACOS_BASH_AVAILABLE, "requires native macOS mode checks")
+    def test_worker_entrypoint_requires_an_exact_private_parent_mode(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            private_parent = temporary_path / "private-state"
+            nonprivate_parent = temporary_path / "nonprivate-state"
+            private_parent.mkdir()
+            nonprivate_parent.mkdir()
+            os.chmod(private_parent, 0o700)
+            os.chmod(nonprivate_parent, 0o755)
+            subject = self.entrypoint_observer_subject(temporary_directory)
+            valid_result = self.run_worker_entrypoint(
+                subject, self.git_bash_environment_path(private_parent / "diagnostic-state")
+            )
+            rejected_result = self.run_worker_entrypoint(
+                subject, self.git_bash_environment_path(nonprivate_parent / "diagnostic-state")
+            )
+
+        self.assertEqual(valid_result.returncode, 0, valid_result.stderr + valid_result.stdout)
+        self.assertEqual(valid_result.stdout, "ENTRYPOINT_HELPER=called\n")
+        self.assertEqual(valid_result.stderr, "")
+        self.assertEqual(rejected_result.returncode, 2)
+        self.assertEqual(rejected_result.stdout, "")
+        self.assertEqual(rejected_result.stderr, "")
+
+    @unittest.skipUnless(NATIVE_MACOS_BASH_AVAILABLE, "requires POSIX symlinks")
+    def test_worker_entrypoint_rejects_parent_and_state_symlinks(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            subject = self.entrypoint_observer_subject(temporary_directory)
+            private_parent = temporary_path / "private-state"
+            private_parent.mkdir()
+            os.chmod(private_parent, 0o700)
+            parent_link = temporary_path / "state-parent-link"
+            state_link = private_parent / "state-link"
+            os.symlink(private_parent, parent_link, target_is_directory=True)
+            os.symlink(private_parent / "state-target", state_link)
+            for name, state_path in {
+                "parent-symlink": self.git_bash_environment_path(parent_link / "diagnostic-state"),
+                "state-symlink": self.git_bash_environment_path(state_link),
+            }.items():
+                with self.subTest(name=name):
+                    result = self.run_worker_entrypoint(subject, state_path)
+                    self.assertEqual(result.returncode, 2)
+                    self.assertEqual(result.stdout, "")
+                    self.assertEqual(result.stderr, "")
+
+    def test_worker_entrypoint_os_boundary_rejects_nul_state_path(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            subject = self.entrypoint_observer_subject(
+                temporary_directory, disable_private_mode=True
+            )
+            with self.assertRaises(ValueError):
+                self.run_worker_entrypoint(subject, "\0")
+
+    def test_worker_entrypoint_routes_a_private_path_after_unsetting_it(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            private_parent = Path(temporary_directory) / "private-state"
+            private_parent.mkdir()
+            os.chmod(private_parent, 0o700)
+            subject = self.entrypoint_observer_subject(
+                temporary_directory, disable_private_mode=True
+            )
+            result = self.run_worker_entrypoint(
+                subject, self.git_bash_environment_path(private_parent / "diagnostic-state")
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertEqual(result.stdout, "ENTRYPOINT_HELPER=called\n")
+        self.assertEqual(result.stderr, "")
+
+    def test_worker_entrypoint_mutations_break_mode_and_unset_contracts(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            private_parent = temporary_path / "private-state"
+            nonprivate_parent = temporary_path / "nonprivate-state"
+            private_parent.mkdir()
+            nonprivate_parent.mkdir()
+            os.chmod(private_parent, 0o700)
+            os.chmod(nonprivate_parent, 0o755)
+            mode_subject = self.entrypoint_observer_subject(
+                temporary_directory, disable_private_mode=True
+            )
+            mode_result = self.run_worker_entrypoint(
+                mode_subject,
+                self.git_bash_environment_path(nonprivate_parent / "diagnostic-state"),
+            )
+            unset_directory = temporary_path / "unset"
+            unset_directory.mkdir()
+            unset_subject = self.entrypoint_observer_subject(
+                str(unset_directory),
+                disable_private_mode=True,
+                disable_unset=True,
+            )
+            unset_result = self.run_worker_entrypoint(
+                unset_subject,
+                self.git_bash_environment_path(private_parent / "diagnostic-state"),
+            )
+
+        self.assertEqual(mode_result.returncode, 0)
+        self.assertEqual(mode_result.stdout, "ENTRYPOINT_HELPER=called\n")
+        self.assertEqual(mode_result.stderr, "")
+        self.assertEqual(unset_result.returncode, 77)
+        self.assertEqual(unset_result.stdout, "")
+        self.assertEqual(unset_result.stderr, "")
+
     def test_worker_commits_open_before_invoking_the_cli(self):
         result = self.run_harness("worker-open-before-cli")
 

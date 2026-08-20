@@ -3342,12 +3342,16 @@ if [ "$mode" = "assist-allow-worker" ]; then
     esac
     [ -d "$assist_diagnostic_state_directory" ] || exit 2
     [ ! -L "$assist_diagnostic_state_directory" ] || exit 2
-    [ -O "$assist_diagnostic_state_directory" ] || exit 2
     assist_diagnostic_state_directory="$(
         CDPATH= cd -P -- "$assist_diagnostic_state_directory" 2>/dev/null && pwd -P
     )" || exit 2
     [ "$assist_diagnostic_state_path" = \
         "$assist_diagnostic_state_directory/$assist_diagnostic_state_name" ] || exit 2
+    [ -O "$assist_diagnostic_state_directory" ] || exit 2
+    assist_diagnostic_state_mode="$(
+        /usr/bin/stat -f '%Lp' "$assist_diagnostic_state_directory" 2>/dev/null
+    )" || exit 2
+    [ "$assist_diagnostic_state_mode" = 700 ] || exit 2
     [ ! -L "$assist_diagnostic_state_path" ] || exit 2
     unset UUREMOTE_ASSIST_INTERNAL_DEBUG_LEVEL UUREMOTE_ASSIST_INTERNAL_CONSOLE_UID
     unset UUREMOTE_ASSIST_INTERNAL_DEADLINE_MILLISECONDS
