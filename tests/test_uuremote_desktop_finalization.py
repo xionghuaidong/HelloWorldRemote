@@ -1800,7 +1800,7 @@ class MacOSAssistAbsoluteDeadlineBoundaryTests(unittest.TestCase):
         )
 
 
-@unittest.skipUnless(BASH_AVAILABLE, "requires /bin/bash")
+@unittest.skipUnless(MACOS_ASSIST_BASH_AVAILABLE, "requires Bash")
 class MacOSAssistAllowAggregationTests(unittest.TestCase):
     def run_harness(
         self, scenario: str, extra_environment: dict[str, str] | None = None
@@ -1809,7 +1809,9 @@ class MacOSAssistAllowAggregationTests(unittest.TestCase):
         if extra_environment:
             environment.update(extra_environment)
         return subprocess.run(
-            ["/bin/bash", str(MACOS_ASSIST_ALLOW_HARNESS_PATH), "aggregate", scenario],
+            macos_assist_bash_command(
+                str(MACOS_ASSIST_ALLOW_HARNESS_PATH), "aggregate", scenario
+            ),
             cwd=ROOT,
             text=True,
             capture_output=True,
@@ -1817,16 +1819,139 @@ class MacOSAssistAllowAggregationTests(unittest.TestCase):
             env=environment,
         )
 
+    def mutated_source(self, temporary_directory: str, old: str, new: str) -> Path:
+        source = text(SCRIPT_PATH)
+        self.assertIn(old, source)
+        subject = Path(temporary_directory) / "apple.sh"
+        subject.write_text(source.replace(old, new, 1), encoding="utf-8")
+        return subject
+
+    def test_worker_commits_open_before_invoking_the_cli(self):
+        result = self.run_harness("worker-open-before-cli")
+
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertEqual(
+            result.stdout, "ASSIST_STATE=enabled\nWORKER_STATE=committed-enabled-true\n"
+        )
+        self.assertEqual(result.stderr, "")
+
+    def test_worker_replaces_open_with_committed_after_classification(self):
+        result = self.run_harness("worker-commits-enabled-false")
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "WORKER_STATE=committed-enabled-false\n")
+        self.assertEqual(result.stderr, "")
+
+    def test_second_open_contains_only_the_previous_committed_aggregate(self):
+        result = self.run_harness("worker-second-open-aggregate")
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "WORKER_STATE=committed-second-enabled-false\n")
+        self.assertEqual(result.stderr, "")
+
+    def test_enabled_true_is_committed_before_worker_success(self):
+        result = self.run_harness("worker-enabled-true-committed")
+
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertEqual(result.stdout, "ASSIST_STATE=enabled\nWORKER_STATE=committed-enabled-true\n")
+        self.assertEqual(result.stderr, "")
+
+    def test_open_write_failure_prevents_cli_invocation(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            subject = self.mutated_source(
+                temporary_directory,
+                '/bin/mv -f -- "$temporary_path" "$state_path"',
+                "/bin/false",
+            )
+            result = self.run_harness(
+                "worker-open-write-failure",
+                {"MACOS_ASSIST_ALLOW_SUBJECT_SOURCE": str(subject)},
+            )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "WORKER_CLI_CALLS=0\n")
+        self.assertEqual(result.stderr, "")
+
+    def test_committed_write_failure_leaves_open_timeout_projection(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            subject = self.mutated_source(
+                temporary_directory,
+                '/bin/mv -f -- "$temporary_path" "$state_path"',
+                'if [ "${UUREMOTE_TEST_FAIL_COMMITTED_MOVE:-0}" = 1 ] && [ "$state" = committed ]; then\n'
+                '        /bin/rm -f -- "$temporary_path"\n'
+                "        return 1\n"
+                "    fi\n"
+                '/bin/mv -f -- "$temporary_path" "$state_path"',
+            )
+            result = self.run_harness(
+                "worker-committed-write-failure",
+                {
+                    "MACOS_ASSIST_ALLOW_SUBJECT_SOURCE": str(subject),
+                    "UUREMOTE_TEST_FAIL_COMMITTED_MOVE": "1",
+                },
+            )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "WORKER_STATE=open-timeout-projection\n")
+        self.assertEqual(result.stderr, "")
+
+    def test_worker_never_prints_the_failure_summary(self):
+        result = self.run_harness("worker-failure-output-empty")
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "WORKER_OUTPUT=empty\n")
+        self.assertEqual(result.stderr, "")
+
+    def test_pre_cli_open_write_mutation_breaks_the_cli_entry_contract(self):
+        old = '''        write_assist_diagnostic_state \\
+            "$diagnostic_state_path" "$generation" open \\
+            "$attempts" "$timeout_count" "$cli_nonzero_count" "$empty_count" \\
+            "$invalid_utf8_count" "$invalid_json_count" "$not_object_count" \\
+            "$success_missing_count" "$success_wrong_type_count" "$success_false_count" \\
+            "$enabled_missing_count" "$enabled_wrong_type_count" \\
+            "$enabled_false_count" "$enabled_true_count" \\
+            "${response_bytes_min:-0}" "$response_bytes_max" "$response_bytes_final" \\
+            "$final_category" "$final_cli_exit" || return 1
+'''
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            subject = self.mutated_source(temporary_directory, old, "        :\n")
+            result = self.run_harness(
+                "worker-open-before-cli",
+                {"MACOS_ASSIST_ALLOW_SUBJECT_SOURCE": str(subject)},
+            )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("WORKER_STATE=committed-enabled-true", result.stdout)
+
+    def test_pre_success_committed_write_mutation_breaks_the_success_contract(self):
+        old = '''        write_assist_diagnostic_state \\
+            "$diagnostic_state_path" "$attempts" committed \\
+            "$attempts" "$timeout_count" "$cli_nonzero_count" "$empty_count" \\
+            "$invalid_utf8_count" "$invalid_json_count" "$not_object_count" \\
+            "$success_missing_count" "$success_wrong_type_count" "$success_false_count" \\
+            "$enabled_missing_count" "$enabled_wrong_type_count" \\
+            "$enabled_false_count" "$enabled_true_count" \\
+            "$response_bytes_min" "$response_bytes_max" "$response_bytes_final" \\
+            "$final_category" "$final_cli_exit" || return 1
+'''
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            subject = self.mutated_source(temporary_directory, old, "        :\n")
+            result = self.run_harness(
+                "worker-enabled-true-committed",
+                {"MACOS_ASSIST_ALLOW_SUBJECT_SOURCE": str(subject)},
+            )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("WORKER_STATE=committed-enabled-true", result.stdout)
+
     def assert_timeout_checkpoint_contract(
         self, result: subprocess.CompletedProcess[str]
     ) -> None:
         self.assertEqual(result.returncode, 1)
         self.assertEqual(result.stdout, "TEMPORARY_TREE_EMPTY=true\n")
-        self.assertIn("ASSIST_DIAGNOSTIC_ATTEMPTS=1", result.stderr)
-        self.assertIn("ASSIST_DIAGNOSTIC_TIMEOUT_COUNT=1", result.stderr)
-        self.assertIn("ASSIST_DIAGNOSTIC_ENABLED_TRUE_COUNT=0", result.stderr)
-        self.assertIn("ASSIST_DIAGNOSTIC_FINAL_CATEGORY=timeout", result.stderr)
-        self.assertIn("ASSIST_DIAGNOSTIC_FINAL_CLI_EXIT=timeout", result.stderr)
+        self.assertEqual(
+            result.stderr, "Could not enable unattended control within 60 seconds\n"
+        )
         self.assertNotIn("device-id-fixture", result.stdout + result.stderr)
         self.assertNotIn("CustomCodeFixture", result.stdout + result.stderr)
 
@@ -1848,7 +1973,9 @@ class MacOSAssistAllowAggregationTests(unittest.TestCase):
             with self.subTest(mode=mode):
                 started = time.monotonic()
                 result = subprocess.run(
-                    ["/bin/bash", str(MACOS_ASSIST_ALLOW_HARNESS_PATH), mode, mode],
+                    macos_assist_bash_command(
+                        str(MACOS_ASSIST_ALLOW_HARNESS_PATH), mode, mode
+                    ),
                     cwd=ROOT,
                     text=True,
                     capture_output=True,
@@ -1886,65 +2013,24 @@ class MacOSAssistAllowAggregationTests(unittest.TestCase):
             "Could not enable unattended control within 60 seconds\n",
         )
 
-    def test_debug_levels_emit_complete_fixed_summary(self):
-        field_names = [
-            "ASSIST_DIAGNOSTIC_ATTEMPTS",
-            "ASSIST_DIAGNOSTIC_TIMEOUT_COUNT",
-            "ASSIST_DIAGNOSTIC_CLI_NONZERO_COUNT",
-            "ASSIST_DIAGNOSTIC_EMPTY_COUNT",
-            "ASSIST_DIAGNOSTIC_INVALID_UTF8_COUNT",
-            "ASSIST_DIAGNOSTIC_INVALID_JSON_COUNT",
-            "ASSIST_DIAGNOSTIC_NOT_OBJECT_COUNT",
-            "ASSIST_DIAGNOSTIC_SUCCESS_MISSING_COUNT",
-            "ASSIST_DIAGNOSTIC_SUCCESS_WRONG_TYPE_COUNT",
-            "ASSIST_DIAGNOSTIC_SUCCESS_FALSE_COUNT",
-            "ASSIST_DIAGNOSTIC_ENABLED_MISSING_COUNT",
-            "ASSIST_DIAGNOSTIC_ENABLED_WRONG_TYPE_COUNT",
-            "ASSIST_DIAGNOSTIC_ENABLED_FALSE_COUNT",
-            "ASSIST_DIAGNOSTIC_ENABLED_TRUE_COUNT",
-            "ASSIST_DIAGNOSTIC_RESPONSE_BYTES_MIN",
-            "ASSIST_DIAGNOSTIC_RESPONSE_BYTES_MAX",
-            "ASSIST_DIAGNOSTIC_RESPONSE_BYTES_FINAL",
-            "ASSIST_DIAGNOSTIC_FINAL_CATEGORY",
-            "ASSIST_DIAGNOSTIC_FINAL_CLI_EXIT",
-        ]
+    def test_worker_debug_levels_do_not_emit_a_failure_summary(self):
         for level in (1, 2, 3):
             with self.subTest(level=level):
                 result = self.run_harness(f"debug{level}-failure")
                 self.assertEqual(result.returncode, 1)
-                lines = result.stderr.splitlines()
+                self.assertEqual(result.stdout, "")
                 self.assertEqual(
-                    [line.split("=", 1)[0] for line in lines[:-1]], field_names
+                    result.stderr,
+                    "Could not enable unattended control within 60 seconds\n",
                 )
-                self.assertEqual(
-                    lines[-1], "Could not enable unattended control within 60 seconds"
-                )
-                counts = {
-                    line.split("=", 1)[0]: line.split("=", 1)[1]
-                    for line in lines[:-1]
-                }
-                category_total = sum(
-                    int(value)
-                    for key, value in counts.items()
-                    if key.endswith("_COUNT")
-                )
-                self.assertEqual(category_total, int(counts["ASSIST_DIAGNOSTIC_ATTEMPTS"]))
 
     def test_late_success_fails_and_temporary_tree_is_empty(self):
         result = self.run_harness("late-success")
         self.assertEqual(result.returncode, 1)
-        self.assertIn("ASSIST_DIAGNOSTIC_ATTEMPTS=1", result.stderr)
-        self.assertIn("ASSIST_DIAGNOSTIC_TIMEOUT_COUNT=1", result.stderr)
-        self.assertIn("ASSIST_DIAGNOSTIC_ENABLED_TRUE_COUNT=0", result.stderr)
-        self.assertIn("ASSIST_DIAGNOSTIC_FINAL_CATEGORY=timeout", result.stderr)
-        self.assertIn("ASSIST_DIAGNOSTIC_FINAL_CLI_EXIT=timeout", result.stderr)
-        counts = [
-            int(line.split("=", 1)[1])
-            for line in result.stderr.splitlines()
-            if line.startswith("ASSIST_DIAGNOSTIC_") and "_COUNT=" in line
-        ]
-        self.assertEqual(sum(counts), 1)
-        self.assertIn("TEMPORARY_TREE_EMPTY=true", result.stdout)
+        self.assertEqual(result.stdout, "TEMPORARY_TREE_EMPTY=true\n")
+        self.assertEqual(
+            result.stderr, "Could not enable unattended control within 60 seconds\n"
+        )
 
     def test_deadline_checkpoints_sanitize_expired_attempts_as_timeout(self):
         for scenario in (
@@ -1971,57 +2057,6 @@ class MacOSAssistAllowAggregationTests(unittest.TestCase):
         ):
             self.assertNotIn(marker, result.stdout + result.stderr)
 
-    def test_deadline_checkpoint_mutations_break_the_timeout_contract(self):
-        source = text(SCRIPT_PATH)
-        mutations = (
-            (
-                "deadline-after-child",
-                'if [ "$remaining" -le 0 ]; then\n'
-                "            execution_state=timeout\n"
-                "            execution_exit=timeout",
-                "if false; then\n"
-                "            execution_state=timeout\n"
-                "            execution_exit=timeout",
-            ),
-            (
-                "deadline-after-record",
-                'read_assist_now || return 1\n'
-                '        remaining="$((deadline - now))"\n'
-                '        if [ "$remaining" -le 0 ]; then\n'
-                "            category=timeout\n"
-                "            safe_exit=timeout\n"
-                "        fi",
-                'read_assist_now || return 1\n'
-                '        remaining="$((deadline - now))"\n'
-                "        if false; then\n"
-                "            category=timeout\n"
-                "            safe_exit=timeout\n"
-                "        fi",
-            ),
-            (
-                "deadline-before-enabled",
-                'if [ "$remaining" -gt 0 ]; then\n'
-                "                trap - EXIT HUP INT TERM\n"
-                "                printf 'ASSIST_STATE=enabled\\n'",
-                "if true; then\n"
-                "                trap - EXIT HUP INT TERM\n"
-                "                printf 'ASSIST_STATE=enabled\\n'",
-            ),
-        )
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            for scenario, old, new in mutations:
-                with self.subTest(scenario=scenario):
-                    mutated = source.replace(old, new, 1)
-                    self.assertNotEqual(mutated, source)
-                    subject = Path(temporary_directory) / f"{scenario}.sh"
-                    subject.write_text(mutated, encoding="utf-8")
-                    result = self.run_harness(
-                        scenario,
-                        {"MACOS_ASSIST_ALLOW_SUBJECT_SOURCE": str(subject)},
-                    )
-                    with self.assertRaises(AssertionError):
-                        self.assert_timeout_checkpoint_contract(result)
-
     def test_poll_failure_stops_after_one_attempt_without_leaking_stderr(self):
         result = self.run_harness("poll-failure")
         self.assertEqual(result.returncode, 1)
@@ -2039,7 +2074,10 @@ class MacOSAssistAllowAggregationTests(unittest.TestCase):
     def test_per_call_timeout_and_poll_are_bounded_by_remaining_deadline(self):
         result = self.run_harness("deadline-bounds")
         self.assertEqual(result.returncode, 1)
-        self.assertIn("ASSIST_DIAGNOSTIC_ATTEMPTS=2", result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(
+            result.stderr, "Could not enable unattended control within 60 seconds\n"
+        )
 
     def test_invalid_diagnostic_record_fails_closed(self):
         result = self.run_harness("internal-invalid-record")

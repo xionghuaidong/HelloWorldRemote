@@ -1662,6 +1662,7 @@ esac && {
     boundary_calls=0
     boundary_count_path="$temporary_directory/boundary-count"
     printf '0\n' >"$boundary_count_path"
+    diagnostic_state_path="$temporary_directory/diagnostic-state"
     temporary_tree="$temporary_directory/assist-tree"
     mkdir -m 700 "$temporary_tree"
     TMPDIR="$temporary_tree"
@@ -1734,8 +1735,30 @@ esac && {
             echo "Polling interval exceeded the remaining deadline" >&2
             exit 1
         fi
-        controlled_now="$((controlled_now + $1))"
+        case "$scenario:$boundary_calls" in
+            worker-commits-enabled-false:1|worker-failure-output-empty:1|worker-committed-write-failure:1)
+                controlled_now=60000
+                ;;
+            worker-second-open-aggregate:2)
+                controlled_now=60000
+                ;;
+            *) controlled_now="$((controlled_now + $1))" ;;
+        esac
     }
+
+    require_worker_state() {
+        local expected_state actual_state
+
+        expected_state="$1"
+        actual_state="$(/bin/cat "$diagnostic_state_path" 2>/dev/null)" || return 1
+        [ "$actual_state" = "$expected_state" ]
+    }
+
+    worker_first_open_state=$'v1\t1\topen\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\tunavailable\tunavailable'
+    worker_first_enabled_false_state=$'v1\t1\tcommitted\t1\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t1\t0\t32\t32\t32\tenabled-false\t0'
+    worker_second_open_state=$'v1\t2\topen\t1\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t1\t0\t32\t32\t32\tenabled-false\t0'
+    worker_second_enabled_false_state=$'v1\t2\tcommitted\t2\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t2\t0\t32\t32\t32\tenabled-false\t0'
+    worker_enabled_true_state=$'v1\t1\tcommitted\t1\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t1\t31\t31\t31\tenabled-true\t0'
 
     run_bounded_gui_cli_to_file() {
         local output_path="$1"
@@ -1769,6 +1792,29 @@ esac && {
         fi
         printf 'completed:0\n' >"$status_path"
         case "$scenario:$boundary_calls" in
+            worker-open-before-cli:1)
+                require_worker_state "$worker_first_open_state" || return 1
+                printf '{"success":true,"enabled":true}' >"$output_path"
+                controlled_now=100
+                ;;
+            worker-commits-enabled-false:1|worker-committed-write-failure:1|worker-failure-output-empty:1)
+                printf '{"success":true,"enabled":false}' >"$output_path"
+                controlled_now=100
+                ;;
+            worker-second-open-aggregate:1)
+                printf '{"success":true,"enabled":false}' >"$output_path"
+                controlled_now=100
+                ;;
+            worker-second-open-aggregate:2)
+                require_worker_state "$worker_second_open_state" || return 1
+                printf '{"success":true,"enabled":false}' >"$output_path"
+                controlled_now=700
+                ;;
+            worker-enabled-true-committed:1)
+                printf '{"success":true,"enabled":true}' >"$output_path"
+                controlled_now=100
+                ;;
+            worker-open-write-failure:*) exit 2 ;;
             deadline-bounds:1)
                 [ "$timeout_milliseconds" -eq 3000 ] || exit 1
                 printf '{"success":true,"enabled":false}' >"$output_path"
@@ -1830,6 +1876,7 @@ esac && {
     }
 
     case "$scenario" in
+        worker-failure-output-empty) debug_level=1 ;;
         deadline-bounds|debug1-failure|hostile-failure|late-success|expired-no-status|deadline-after-record|deadline-before-enabled|invalid-clock|invalid-clock-loop|invalid-clock-post-call|clock-status-start|clock-status-loop|clock-status-post-call) debug_level=1 ;;
         debug2-failure) debug_level=2 ;;
         debug3-failure) debug_level=3 ;;
@@ -1976,7 +2023,7 @@ esac && {
                 return 0
             }
             ;;
-        transient-success|debug0-failure|poll-failure|outer-cleanup-false|outer-cleanup-raises|outer-post-unmask|outer-first-wait|outer-block-false|outer-block-raises) ;;
+        transient-success|debug0-failure|poll-failure|worker-open-before-cli|worker-commits-enabled-false|worker-second-open-aggregate|worker-enabled-true-committed|worker-open-write-failure|worker-committed-write-failure|outer-cleanup-false|outer-cleanup-raises|outer-post-unmask|outer-first-wait|outer-block-false|outer-block-raises) ;;
         *) exit 2 ;;
     esac
 
@@ -2009,7 +2056,64 @@ esac && {
         exit "$status"
     fi
 
-    if ensure_assist_allowed; then
+    case "$scenario" in
+        worker-open-before-cli|worker-commits-enabled-false|worker-second-open-aggregate|worker-enabled-true-committed|worker-open-write-failure|worker-committed-write-failure|worker-failure-output-empty)
+            worker_stdout="$temporary_directory/worker-stdout"
+            worker_stderr="$temporary_directory/worker-stderr"
+            if ensure_assist_allowed "$diagnostic_state_path" >"$worker_stdout" 2>"$worker_stderr"; then
+                status=0
+            else
+                status="$?"
+            fi
+            case "$scenario" in
+                worker-open-before-cli|worker-enabled-true-committed)
+                    [ "$status" -eq 0 ] || exit 1
+                    [ "$(/bin/cat "$worker_stdout")" = "ASSIST_STATE=enabled" ] || exit 1
+                    [ ! -s "$worker_stderr" ] || exit 1
+                    require_worker_state "$worker_enabled_true_state" || exit 1
+                    /bin/cat "$worker_stdout"
+                    printf 'WORKER_STATE=committed-enabled-true\n'
+                    ;;
+                worker-commits-enabled-false)
+                    [ "$status" -eq 1 ] || exit 1
+                    [ ! -s "$worker_stdout" ] || exit 1
+                    [ ! -s "$worker_stderr" ] || exit 1
+                    require_worker_state "$worker_first_enabled_false_state" || exit 1
+                    printf 'WORKER_STATE=committed-enabled-false\n'
+                    ;;
+                worker-second-open-aggregate)
+                    [ "$status" -eq 1 ] || exit 1
+                    [ ! -s "$worker_stdout" ] || exit 1
+                    [ ! -s "$worker_stderr" ] || exit 1
+                    require_worker_state "$worker_second_enabled_false_state" || exit 1
+                    printf 'WORKER_STATE=committed-second-enabled-false\n'
+                    ;;
+                worker-open-write-failure)
+                    [ "$status" -eq 1 ] || exit 1
+                    [ ! -s "$worker_stdout" ] || exit 1
+                    [ ! -s "$worker_stderr" ] || exit 1
+                    [ "$(/bin/cat "$boundary_count_path")" -eq 0 ] || exit 1
+                    printf 'WORKER_CLI_CALLS=0\n'
+                    ;;
+                worker-committed-write-failure)
+                    [ "$status" -eq 1 ] || exit 1
+                    [ ! -s "$worker_stdout" ] || exit 1
+                    [ ! -s "$worker_stderr" ] || exit 1
+                    require_worker_state "$worker_first_open_state" || exit 1
+                    printf 'WORKER_STATE=open-timeout-projection\n'
+                    ;;
+                worker-failure-output-empty)
+                    [ "$status" -eq 1 ] || exit 1
+                    [ ! -s "$worker_stdout" ] || exit 1
+                    [ ! -s "$worker_stderr" ] || exit 1
+                    printf 'WORKER_OUTPUT=empty\n'
+                    ;;
+            esac
+            exit "$status"
+            ;;
+    esac
+
+    if ensure_assist_allowed "$diagnostic_state_path"; then
         exit 0
     else
         status="$?"

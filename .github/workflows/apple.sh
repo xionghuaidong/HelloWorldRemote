@@ -1436,9 +1436,11 @@ uuremote_assist_remove_files() {
 }
 
 ensure_assist_allowed() (
+    [ "$#" -eq 1 ] || return 1
+    local diagnostic_state_path="$1"
     local deadline now remaining attempt_timeout sleep_timeout record record_path record_lines
     local category response_bytes safe_exit tabless category_total
-    local execution_state execution_exit status_record
+    local execution_state execution_exit status_record generation
     local assist_temp_dir="" response_path="" status_path="" record_path=""
     local attempts=0
     local timeout_count=0 cli_nonzero_count=0 empty_count=0
@@ -1508,7 +1510,17 @@ ensure_assist_allowed() (
         read_assist_now || return 1
         remaining="$((deadline - now))"
         [ "$remaining" -gt 0 ] || break
-        attempts="$((attempts + 1))"
+        generation="$((attempts + 1))"
+        write_assist_diagnostic_state \
+            "$diagnostic_state_path" "$generation" open \
+            "$attempts" "$timeout_count" "$cli_nonzero_count" "$empty_count" \
+            "$invalid_utf8_count" "$invalid_json_count" "$not_object_count" \
+            "$success_missing_count" "$success_wrong_type_count" "$success_false_count" \
+            "$enabled_missing_count" "$enabled_wrong_type_count" \
+            "$enabled_false_count" "$enabled_true_count" \
+            "${response_bytes_min:-0}" "$response_bytes_max" "$response_bytes_final" \
+            "$final_category" "$final_cli_exit" || return 1
+        attempts="$generation"
         attempt_timeout=3000
         [ "$remaining" -ge "$attempt_timeout" ] || attempt_timeout="$remaining"
         uuremote_assist_truncate_file "$response_path" 2>/dev/null || return 1
@@ -1620,6 +1632,16 @@ ensure_assist_allowed() (
         final_category="$category"
         final_cli_exit="$safe_exit"
 
+        write_assist_diagnostic_state \
+            "$diagnostic_state_path" "$attempts" committed \
+            "$attempts" "$timeout_count" "$cli_nonzero_count" "$empty_count" \
+            "$invalid_utf8_count" "$invalid_json_count" "$not_object_count" \
+            "$success_missing_count" "$success_wrong_type_count" "$success_false_count" \
+            "$enabled_missing_count" "$enabled_wrong_type_count" \
+            "$enabled_false_count" "$enabled_true_count" \
+            "$response_bytes_min" "$response_bytes_max" "$response_bytes_final" \
+            "$final_category" "$final_cli_exit" || return 1
+
         if [ "$category" = enabled-true ]; then
             cleanup_assist_attempt || return 1
             read_assist_now || return 1
@@ -1635,6 +1657,15 @@ ensure_assist_allowed() (
             safe_exit=timeout
             final_category=timeout
             final_cli_exit=timeout
+            write_assist_diagnostic_state \
+                "$diagnostic_state_path" "$attempts" committed \
+                "$attempts" "$timeout_count" "$cli_nonzero_count" "$empty_count" \
+                "$invalid_utf8_count" "$invalid_json_count" "$not_object_count" \
+                "$success_missing_count" "$success_wrong_type_count" "$success_false_count" \
+                "$enabled_missing_count" "$enabled_wrong_type_count" \
+                "$enabled_false_count" "$enabled_true_count" \
+                "$response_bytes_min" "$response_bytes_max" "$response_bytes_final" \
+                "$final_category" "$final_cli_exit" || return 1
         fi
         [ "$remaining" -gt 0 ] || break
         sleep_timeout=500
@@ -1652,20 +1683,6 @@ ensure_assist_allowed() (
     ))"
     [ "$category_total" -eq "$attempts" ] || return 1
 
-    case "$debug_level" in
-        0) ;;
-        1|2|3)
-            report_assist_allow_diagnostics \
-                "$attempts" "$timeout_count" "$cli_nonzero_count" "$empty_count" \
-                "$invalid_utf8_count" "$invalid_json_count" "$not_object_count" \
-                "$success_missing_count" "$success_wrong_type_count" "$success_false_count" \
-                "$enabled_missing_count" "$enabled_wrong_type_count" \
-                "$enabled_false_count" "$enabled_true_count" \
-                "$response_bytes_min" "$response_bytes_max" "$response_bytes_final" \
-                "$final_category" "$final_cli_exit" >&2 || return 1
-            ;;
-        *) return 1 ;;
-    esac
     cleanup_assist_attempt || return 1
     trap - EXIT HUP INT TERM
     return 1
@@ -2127,6 +2144,16 @@ enable_assist_or_fail() {
 
 self_test_cli_output_redaction() {
     local test_cli="${UUREMOTE_CLI_OUTPUT_TEST_CLI:-}"
+    local diagnostic_state_dir="" diagnostic_state_path="" diagnostic_state_status
+
+    cleanup_self_test_diagnostic_state() {
+        if [ -n "$diagnostic_state_path" ]; then
+            /bin/rm -f -- "$diagnostic_state_path" 2>/dev/null || true
+        fi
+        if [ -n "$diagnostic_state_dir" ]; then
+            /bin/rmdir "$diagnostic_state_dir" 2>/dev/null || true
+        fi
+    }
 
     if [ -z "$test_cli" ] || [ ! -r "$test_cli" ]; then
         echo "UUREMOTE_CLI_OUTPUT_TEST_CLI must name a readable Bash fixture" >&2
@@ -2156,7 +2183,18 @@ self_test_cli_output_redaction() {
     }
 
     wait_for_cli || return 1
-    ensure_assist_allowed || return 1
+    umask 077
+    diagnostic_state_dir="$(uuremote_assist_mktemp_directory \
+        "${TMPDIR:-/tmp}/uuremote-assist-self-test.XXXXXX" 2>/dev/null)" || return 1
+    uuremote_assist_chmod 0700 "$diagnostic_state_dir" 2>/dev/null || return 1
+    diagnostic_state_path="$diagnostic_state_dir/diagnostic-state"
+    if ensure_assist_allowed "$diagnostic_state_path"; then
+        diagnostic_state_status=0
+    else
+        diagnostic_state_status="$?"
+    fi
+    cleanup_self_test_diagnostic_state
+    [ "$diagnostic_state_status" -eq 0 ] || return "$diagnostic_state_status"
     echo "CLI output redaction self-test passed"
 }
 
@@ -3279,6 +3317,7 @@ if [ "$mode" = "assist-allow-worker" ]; then
     debug_level="${UUREMOTE_ASSIST_INTERNAL_DEBUG_LEVEL:-}"
     console_uid="${UUREMOTE_ASSIST_INTERNAL_CONSOLE_UID:-}"
     assist_allow_absolute_deadline_milliseconds="${UUREMOTE_ASSIST_INTERNAL_DEADLINE_MILLISECONDS:-}"
+    assist_diagnostic_state_path="${UUREMOTE_ASSIST_INTERNAL_STATE_PATH:-}"
     case "$debug_level" in 0|1|2|3) ;; *) exit 2 ;; esac
     case "$console_uid" in ''|*[!0-9]*) exit 2 ;; esac
     case "$assist_allow_absolute_deadline_milliseconds" in
@@ -3289,9 +3328,31 @@ if [ "$mode" = "assist-allow-worker" ]; then
             ;;
         *) exit 2 ;;
     esac
+    case "$assist_diagnostic_state_path" in
+        /*) ;;
+        *) exit 2 ;;
+    esac
+    case "$assist_diagnostic_state_path" in
+        *$'\r'*|*$'\n'*|*'//'*|*/./*|*/../*|*/.|*/..) exit 2 ;;
+    esac
+    assist_diagnostic_state_directory="${assist_diagnostic_state_path%/*}"
+    assist_diagnostic_state_name="${assist_diagnostic_state_path##*/}"
+    case "$assist_diagnostic_state_directory:$assist_diagnostic_state_name" in
+        :*|*:|*:.) exit 2 ;;
+    esac
+    [ -d "$assist_diagnostic_state_directory" ] || exit 2
+    [ ! -L "$assist_diagnostic_state_directory" ] || exit 2
+    [ -O "$assist_diagnostic_state_directory" ] || exit 2
+    assist_diagnostic_state_directory="$(
+        CDPATH= cd -P -- "$assist_diagnostic_state_directory" 2>/dev/null && pwd -P
+    )" || exit 2
+    [ "$assist_diagnostic_state_path" = \
+        "$assist_diagnostic_state_directory/$assist_diagnostic_state_name" ] || exit 2
+    [ ! -L "$assist_diagnostic_state_path" ] || exit 2
     unset UUREMOTE_ASSIST_INTERNAL_DEBUG_LEVEL UUREMOTE_ASSIST_INTERNAL_CONSOLE_UID
     unset UUREMOTE_ASSIST_INTERNAL_DEADLINE_MILLISECONDS
-    ensure_assist_allowed
+    unset UUREMOTE_ASSIST_INTERNAL_STATE_PATH
+    ensure_assist_allowed "$assist_diagnostic_state_path"
     exit $?
 fi
 
