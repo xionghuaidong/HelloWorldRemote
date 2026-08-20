@@ -787,135 +787,16 @@ case "$mode" in
         ;;
 esac
 case "$mode" in
-    startup-preexec-block|absolute-clock-block|absolute-poll-block|absolute-worker-summary|absolute-real-poll-summary|absolute-root-reap|absolute-precommit-signal|absolute-shell-signal-relay)
+    startup-preexec-block|absolute-clock-block|absolute-poll-block|absolute-root-reap|absolute-precommit-signal|absolute-shell-signal-relay)
         sed 's/ASSIST_ALLOW_DEADLINE_MILLISECONDS=60000/ASSIST_ALLOW_DEADLINE_MILLISECONDS=2500/' \
             "$subject" >"$subject.short-deadline"
         mv "$subject.short-deadline" "$subject"
         ;;
 esac
-if [ "$mode" = "absolute-worker-summary" ] ||
-    [ "$mode" = "absolute-real-poll-summary" ] ||
-    [ "$mode" = "absolute-shell-signal-relay" ]; then
+if [ "$mode" = "absolute-shell-signal-relay" ]; then
     sed 's/ASSIST_ALLOW_DEADLINE_MILLISECONDS=2500/ASSIST_ALLOW_DEADLINE_MILLISECONDS=6000/' \
         "$subject" >"$subject.signal-relay-deadline"
     mv "$subject.signal-relay-deadline" "$subject"
-fi
-if [ "$mode" = "absolute-real-poll-summary" ]; then
-    sed 's/ASSIST_ALLOW_DEADLINE_MILLISECONDS=6000/ASSIST_ALLOW_DEADLINE_MILLISECONDS=12000/' \
-        "$subject" >"$subject.real-poll-deadline"
-    mv "$subject.real-poll-deadline" "$subject"
-fi
-if [ "$mode" = "absolute-real-poll-summary" ]; then
-    awk '
-        /^uuremote_now_milliseconds\(\) \{$/ {
-            print
-            print "    real_poll_clock_path=\"${UUREMOTE_TEST_REAL_POLL_CLOCK_PATH:?}\""
-            print "    real_poll_clock_count=0"
-            print "    if [ -s \"$real_poll_clock_path\" ]; then"
-            print "        IFS= read -r real_poll_clock_count <\"$real_poll_clock_path\" || return 1"
-            print "    fi"
-            print "    case \"$real_poll_clock_count\" in 0|[1-9]*) ;; *) return 1 ;; esac"
-            print "    real_poll_clock_count=\"$((real_poll_clock_count + 1))\""
-            print "    printf \047%s\\n\047 \"$real_poll_clock_count\" >\"$real_poll_clock_path\" || return 1"
-            next
-        }
-        /^ensure_assist_allowed\(\) \($/ {
-            in_ensure = 1
-            clock_checkpoint = 0
-            print
-            next
-        }
-        in_ensure && index($0, "status_record=\"") {
-            print
-            print "        printf \047status-read\\n\047 >\"${UUREMOTE_TEST_PYTHON_STAGE_PATH:?}\" || return 1"
-            next
-        }
-        in_ensure && /read_assist_now \|\| return 1/ {
-            clock_checkpoint++
-            print
-            if (clock_checkpoint == 3) {
-                print "        printf \047post-boundary-clock\\n\047 >\"${UUREMOTE_TEST_PYTHON_STAGE_PATH:?}\" || return 1"
-            } else if (clock_checkpoint == 4) {
-                print "        printf \047post-classification-clock\\n\047 >\"${UUREMOTE_TEST_PYTHON_STAGE_PATH:?}\" || return 1"
-            }
-            next
-        }
-        in_ensure && /^        classify_assist_allow_response/ {
-            classifying = 1
-            print
-            next
-        }
-        in_ensure && classifying && /record_path.*\|\| return 1$/ {
-            print
-            print "        printf \047classified\\n\047 >\"${UUREMOTE_TEST_PYTHON_STAGE_PATH:?}\" || return 1"
-            classifying = 0
-            next
-        }
-        in_ensure && /^        1\|2\|3\)$/ {
-            print
-            print "            printf \047report-started\\n\047 >\"${UUREMOTE_TEST_PYTHON_STAGE_PATH:?}\" || return 1"
-            next
-        }
-        in_ensure && /^\)$/ {
-            in_ensure = 0
-            print
-            next
-        }
-        index($0, "ASSIST_DIAGNOSTIC_FINAL_CLI_EXIT") {
-            print
-            print "    printf \047finalization-started\\n\047 >\"${UUREMOTE_TEST_PYTHON_STAGE_PATH:?}\" || return 1"
-            print "    wait_uuremote_poll 1000 || return 1"
-            print "    printf \047finalization-completed\\n\047 >\"${UUREMOTE_TEST_PYTHON_STAGE_PATH:?}\" || return 1"
-            next
-        }
-        { print }
-    ' "$subject" >"$subject.real-poll-finalization"
-    mv "$subject.real-poll-finalization" "$subject"
-fi
-if [ "$mode" = "absolute-worker-summary" ]; then
-    awk '
-        /^uuremote_now_milliseconds\(\) \{$/ {
-            print "uuremote_now_milliseconds() {"
-            print "    local summary_clock_path=\"${UUREMOTE_TEST_SUMMARY_CLOCK_PATH:?}\""
-            print "    local summary_clock_count"
-            print "    IFS= read -r summary_clock_count <\"$summary_clock_path\" || return 1"
-            print "    case \"$summary_clock_count\" in"
-            print "        0) ;;"
-            print "        [1-9]*)"
-            print "            case \"$summary_clock_count\" in *[!0-9]*) return 1 ;; esac"
-            print "            ;;"
-            print "        *) return 1 ;;"
-            print "    esac"
-            print "    summary_clock_count=\"$((summary_clock_count + 1))\""
-            print "    printf \047%s\\n\047 \"$summary_clock_count\" >\"$summary_clock_path\" || return 1"
-            print "    if [ \"$summary_clock_count\" -le 4 ]; then"
-            print "        printf \047%s\\n\047 \"$((assist_allow_absolute_deadline_milliseconds - 1000))\""
-            print "    else"
-            print "        printf \047%s\\n\047 \"$assist_allow_absolute_deadline_milliseconds\""
-            print "    fi"
-            print "}"
-            skipping_clock = 1
-            next
-        }
-        skipping_clock && /^}$/ {
-            skipping_clock = 0
-            next
-        }
-        /^wait_uuremote_poll\(\) \{$/ {
-            print "wait_uuremote_poll() {"
-            print "    [ \"$1\" -eq 500 ] || return 1"
-            print "    return 0"
-            print "}"
-            skipping_poll = 1
-            next
-        }
-        skipping_poll && /^}$/ {
-            skipping_poll = 0
-            next
-        }
-        !skipping_clock && !skipping_poll { print }
-    ' "$subject" >"$subject.summary-clock"
-    mv "$subject.summary-clock" "$subject"
 fi
 case "$mode" in
     absolute-clock-block|absolute-poll-block|absolute-shell-signal-relay)
@@ -973,32 +854,18 @@ case "$mode" in
         ;;
 esac
 case "$mode" in
-    startup-preexec-block|absolute-poll-block|absolute-worker-summary|absolute-real-poll-summary|absolute-precommit-signal|absolute-shell-signal-relay)
+    startup-preexec-block|absolute-poll-block|absolute-precommit-signal|absolute-shell-signal-relay)
         awk -v boundary_mode="$mode" '
             /^run_bounded_gui_cli_to_file\(\) \{$/ {
                 print
                 if (boundary_mode == "startup-preexec-block") {
                     print "    run_bounded_uuremote_cli_to_file_with_status \"$1\" \"$2\" \"$3\" /usr/bin/true"
-                } else if (boundary_mode == "absolute-worker-summary") {
-                    print "    [ \"$3\" -eq 1000 ] || return 1"
-                    print "    printf \047%s\\n\047 \047{\"success\":true,\"enabled\":false}\047 >\"$1\""
-                    print "    printf \047completed:0\\n\047 >\"$2\""
                 } else if (boundary_mode == "absolute-precommit-signal") {
                     print "    printf \047%s\\n\047 \047{\"success\":true,\"enabled\":true}\047 >\"$1\""
                     print "    printf \047completed:0\\n\047 >\"$2\""
                 } else {
-                    if (boundary_mode == "absolute-real-poll-summary") {
-                        print "    real_poll_attempt_count=\"${real_poll_attempt_count:-0}\""
-                        print "    case \"$real_poll_attempt_count\" in 0|[1-9]*) ;; *) return 1 ;; esac"
-                        print "    real_poll_attempt_count=\"$((real_poll_attempt_count + 1))\""
-                        print "    printf \047%s\\n\047 \"$real_poll_attempt_count\" >\"${UUREMOTE_TEST_REAL_POLL_ATTEMPT_PATH:?}\" || return 1"
-                        print "    printf \047attempt-started\\n\047 >\"${UUREMOTE_TEST_PYTHON_STAGE_PATH:?}\" || return 1"
-                    }
                     print "    printf \047%s\\n\047 \047{\"success\":true,\"enabled\":false}\047 >\"$1\""
                     print "    printf \047completed:0\\n\047 >\"$2\""
-                    if (boundary_mode == "absolute-real-poll-summary") {
-                        print "    printf \047boundary-returned\\n\047 >\"${UUREMOTE_TEST_PYTHON_STAGE_PATH:?}\" || return 1"
-                    }
                 }
                 print "}"
                 skipping = 1
@@ -1080,7 +947,7 @@ if [ "$mode" = "absolute-root-reap" ]; then
     mv "$subject.root-reap" "$subject"
 fi
 case "$mode" in
-    startup-preexec-block|absolute-clock-block|absolute-poll-block|absolute-worker-summary|absolute-real-poll-summary|absolute-root-reap|absolute-precommit-signal|absolute-shell-signal-relay)
+    startup-preexec-block|absolute-clock-block|absolute-poll-block|absolute-root-reap|absolute-precommit-signal|absolute-shell-signal-relay)
         awk '
             /^if \[ "\$mode" = "assist-allow-worker" \]; then$/ {
                 print
@@ -1102,17 +969,156 @@ if [ ! -x /usr/bin/python3 ]; then
     mv "$subject.portable" "$subject"
 fi
 
+case "$mode" in
+    native-atomic)
+        native_scenario="${2:?}"
+        /usr/bin/sed 's/ASSIST_ALLOW_DEADLINE_MILLISECONDS=60000/ASSIST_ALLOW_DEADLINE_MILLISECONDS=4000/' \
+            "$subject" >"$subject.native-deadline"
+        mv "$subject.native-deadline" "$subject"
+        awk '
+            /^if \[ "\$mode" = "assist-allow-worker" \]; then$/ {
+                print "native_fixture_record() {"
+                print "    local child_pid child_group"
+                print "    /bin/bash -c \047trap \"\" TERM; exec /bin/sleep 30\047 &"
+                print "    child_pid=\"$!\""
+                print "    child_group=\"$(/bin/ps -o pgid= -p \"$child_pid\" | /usr/bin/tr -d \047[:space:]\047)\""
+                print "    printf \047%s %s\\n\047 \"$child_pid\" \"$child_group\" >>\"${UUREMOTE_TEST_NATIVE_PID_PATH:?}\""
+                print "    wait \"$child_pid\""
+                print "}"
+                print "native_fixture_record_completed() {"
+                print "    local child_pid child_group"
+                print "    /bin/sleep 0.05 &"
+                print "    child_pid=\"$!\""
+                print "    child_group=\"$(/bin/ps -o pgid= -p \"$child_pid\" | /usr/bin/tr -d \047[:space:]\047)\""
+                print "    printf \047%s %s\\n\047 \"$child_pid\" \"$child_group\" >>\"${UUREMOTE_TEST_NATIVE_PID_PATH:?}\""
+                print "    wait \"$child_pid\""
+                print "}"
+                print "native_require_state() {"
+                print "    [ \"$(/bin/cat \"${UUREMOTE_ASSIST_INTERNAL_STATE_PATH:?}\")\" = \"$1\" ]"
+                print "}"
+                print "run_bounded_gui_cli_to_file() {"
+                print "    local output_path=\"$1\" status_path=\"$2\""
+                print "    native_attempt=\"${native_attempt:-0}\""
+                print "    native_attempt=\"$((native_attempt + 1))\""
+                print "    case \"${UUREMOTE_TEST_NATIVE_SCENARIO:?}:$native_attempt\" in"
+                print "        first-open-timeout:1|cleanup-unconfirmed:1)"
+                print "            native_require_state $\047v1\\t1\\topen\\t0\\t0\\t0\\t0\\t0\\t0\\t0\\t0\\t0\\t0\\t0\\t0\\t0\\t0\\t0\\t0\\t0\\tunavailable\\tunavailable\047 || return 125"
+                print "            native_fixture_record"
+                print "            ;;"
+                print "        committed-then-open:1|committed-failure:1)"
+                print "            native_fixture_record_completed"
+                print "            printf \047{\\\"success\\\":true,\\\"enabled\\\":false}\047 >\"$output_path\""
+                print "            printf \047completed:0\\n\047 >\"$status_path\""
+                print "            ;;"
+                print "        committed-then-open:2)"
+                print "            native_require_state $\047v1\\t2\\topen\\t1\\t0\\t0\\t0\\t0\\t0\\t0\\t0\\t0\\t0\\t0\\t0\\t1\\t0\\t32\\t32\\t32\\tenabled-false\\t0\047 || return 125"
+                print "            native_fixture_record"
+                print "            ;;"
+                print "        enabled-success:1)"
+                print "            native_fixture_record_completed"
+                print "            printf \047{\\\"success\\\":true,\\\"enabled\\\":true}\047 >\"$output_path\""
+                print "            printf \047completed:0\\n\047 >\"$status_path\""
+                print "            ;;"
+                print "        *) return 125 ;;"
+                print "    esac"
+                print "}"
+                print "wait_uuremote_poll() {"
+                print "    [ \"${UUREMOTE_TEST_NATIVE_SCENARIO:-}\" != committed-failure ] || return 1"
+                print "    /usr/bin/python3 - \"$1\" <<\047PYTHON\047"
+                print "import sys"
+                print "import time"
+                print "time.sleep(int(sys.argv[1]) / 1000)"
+                print "PYTHON"
+                print "}"
+                print
+            }
+            { print }
+        ' "$subject" >"$subject.native-fixture"
+        mv "$subject.native-fixture" "$subject"
+        case "${UUREMOTE_TEST_NATIVE_MUTATION:-}" in
+            '') ;;
+            open)
+                awk '
+                    /^[[:space:]]*write_assist_diagnostic_state \\$/ {
+                        first_line = $0
+                        getline
+                        if ($0 ~ /"\$diagnostic_state_path" "\$generation" open/) {
+                            print "        printf \047open-commit-bypassed\\n\047 >\"${UUREMOTE_TEST_NATIVE_MUTATION_PATH:?}\""
+                            print "        :"
+                            skipping = 1
+                            next
+                        }
+                        print first_line
+                        print
+                        next
+                    }
+                    skipping {
+                        if (/^        attempts="\$generation"$/) {
+                            print
+                            skipping = 0
+                        }
+                        next
+                    }
+                    { print }
+                ' "$subject" >"$subject.native-open"
+                mv "$subject.native-open" "$subject"
+                ;;
+            atomic)
+                /usr/bin/sed \
+                    's#/bin/mv -f -- "\$temporary_path" "\$state_path"#printf '\''atomic-replacement-bypassed\\n'\'' >"${UUREMOTE_TEST_NATIVE_MUTATION_PATH:?}"; /bin/cat "\$temporary_path" >"\$state_path"; return 1#' \
+                    "$subject" >"$subject.native-atomic"
+                mv "$subject.native-atomic" "$subject"
+                ;;
+            cleanup)
+                awk '
+                    /cleanup_confirmed = cleanup_worker\(cleanup_deadline\)/ {
+                        print
+                        print "        pathlib.Path(os.environ[\"UUREMOTE_TEST_NATIVE_MUTATION_PATH\"]).write_text(\"cleanup-confirmation-bypassed\\n\", encoding=\"ascii\")"
+                        print "        cleanup_confirmed = False"
+                        next
+                    }
+                    { print }
+                ' "$subject" >"$subject.native-cleanup"
+                mv "$subject.native-cleanup" "$subject"
+                ;;
+            synthesis)
+                /usr/bin/sed \
+                    's#snapshot = synthesize_open_timeout(snapshot)#pathlib.Path(os.environ["UUREMOTE_TEST_NATIVE_MUTATION_PATH"]).write_text("open-timeout-synthesis-bypassed\\n", encoding="ascii"); raise ValueError#' \
+                    "$subject" >"$subject.native-synthesis"
+                mv "$subject.native-synthesis" "$subject"
+                ;;
+            deletion)
+                /usr/bin/sed \
+                    's#    state_path.unlink()#    pathlib.Path(os.environ["UUREMOTE_TEST_NATIVE_MUTATION_PATH"]).write_text("state-removal-bypassed\\n", encoding="ascii")\n    return#' \
+                    "$subject" >"$subject.native-deletion"
+                mv "$subject.native-deletion" "$subject"
+                ;;
+            *) exit 2 ;;
+        esac
+        ;;
+esac
+
 scenario="${2:?}"
 
+if [ "$mode" = native-atomic ]; then
+    export UUREMOTE_TEST_NATIVE_SCENARIO="$scenario"
+    . "$subject"
+    debug_level=1
+    console_uid=501
+    if [ "$scenario" = enabled-success ]; then
+        run_assist_allow_with_absolute_deadline
+        exit "$?"
+    fi
+    if enable_assist_or_fail; then
+        exit 0
+    fi
+    exit "$?"
+fi
+
 case "$mode" in
-    startup-preexec-block|absolute-clock-block|absolute-poll-block|absolute-worker-summary|absolute-real-poll-summary|absolute-root-reap|absolute-precommit-signal|absolute-shell-signal-relay)
+    startup-preexec-block|absolute-clock-block|absolute-poll-block|absolute-root-reap|absolute-precommit-signal|absolute-shell-signal-relay)
         . "$subject"
-        if [ "$mode" = absolute-worker-summary ] ||
-            [ "$mode" = absolute-real-poll-summary ]; then
-            debug_level=1
-        else
-            debug_level=0
-        fi
+        debug_level=0
         console_uid=501
         if [ "$mode" = absolute-root-reap ]; then
             export UUREMOTE_TEST_ROOT_REAP_MODE=1

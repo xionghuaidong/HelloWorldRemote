@@ -1001,7 +1001,7 @@ class MacOSAssistAllowSignalFinalizationSourceTests(unittest.TestCase):
             route,
         )
 
-    def test_supervisor_uses_the_fixed_cleanup_and_finalization_phases(self):
+    def _superseded_timing_route_contract(self):
         harness = text(MACOS_ASSIST_ALLOW_HARNESS_PATH)
         deadline_rewrite_start = harness.index(
             "sed 's/ASSIST_ALLOW_DEADLINE_MILLISECONDS=60000/"
@@ -1133,6 +1133,16 @@ class MacOSAssistAllowSignalFinalizationSourceTests(unittest.TestCase):
         self.assertIn("UUREMOTE_TEST_REAL_POLL_ATTEMPT_PATH", real_boundary)
         self.assertIn("attempt-started", real_boundary)
         self.assertIn("boundary-returned", real_boundary)
+
+    def test_supervisor_uses_fixed_phases_without_timing_report_routes(self):
+        script = text(SCRIPT_PATH)
+        harness = text(MACOS_ASSIST_ALLOW_HARNESS_PATH)
+        self.assertIn("cleanup_start = deadline - 2.0", script)
+        self.assertIn("cleanup_deadline = deadline - 1.0", script)
+        self.assertIn("finalization_deadline = deadline", script)
+        self.assertNotIn("absolute-real-poll-summary", harness)
+        self.assertNotIn("absolute-worker-summary", harness)
+        self.assertNotIn("ASSIST_ALLOW_FINALIZATION_RESERVE_MILLISECONDS", script)
 
     def test_completed_failure_diagnostic_is_fixed_field_and_identifier_free(self):
         harness = text(MACOS_ASSIST_ALLOW_HARNESS_PATH)
@@ -2132,83 +2142,6 @@ class MacOSAssistAbsoluteDeadlineBoundaryTests(unittest.TestCase):
             "absolute-poll-block", "poll-block", "poll-block"
         )
 
-    def test_worker_uses_reserved_shared_deadline_to_emit_safe_summary(self):
-        diagnostic, stdout, stderr = self.run_with_external_supervisor(
-            "absolute-worker-summary", "worker-summary", "unavailable"
-        )
-        self.assertEqual(
-            diagnostic,
-            "BOUNDARY_STAGE=unavailable\n"
-            "SUPERVISOR_STATE=completed\n"
-            "PROCESS_CLEANUP=released\n",
-            stdout + stderr,
-        )
-        self.assertEqual(stdout, "")
-        lines = stderr.splitlines()
-        self.assertEqual(
-            lines[-1], "Could not enable unattended control within 60 seconds"
-        )
-        self.assertIn("ASSIST_DIAGNOSTIC_FINAL_CATEGORY=enabled-false", lines)
-        self.assertIn("ASSIST_DIAGNOSTIC_FINAL_CLI_EXIT=0", lines)
-        self.assertIn("ASSIST_DIAGNOSTIC_ATTEMPTS=1", lines)
-        self.assertIn("ASSIST_DIAGNOSTIC_ENABLED_FALSE_COUNT=1", lines)
-        self.assertEqual(
-            sum(line.startswith("ASSIST_DIAGNOSTIC_") for line in lines),
-            19,
-        )
-        self.assertTrue(
-            all(
-                line.startswith("ASSIST_DIAGNOSTIC_")
-                or line == "Could not enable unattended control within 60 seconds"
-                for line in lines
-            )
-        )
-
-    def test_real_polling_worker_has_time_to_emit_safe_summary(self):
-        diagnostic, stdout, stderr = self.run_with_external_supervisor(
-            "absolute-real-poll-summary", "real-poll-summary", "unavailable"
-        )
-        diagnostic_fields = dict(
-            line.split("=", 1) for line in diagnostic.splitlines()
-        )
-        self.assertEqual(
-            diagnostic_fields["BOUNDARY_STAGE"],
-            "finalization-completed",
-            stdout + stderr,
-        )
-        self.assertGreaterEqual(int(diagnostic_fields["BOUNDARY_ATTEMPTS"]), 1)
-        self.assertGreaterEqual(int(diagnostic_fields["CLOCK_PROBES"]), 1)
-        self.assertEqual(diagnostic_fields["SUPERVISOR_STATE"], "completed")
-        self.assertEqual(diagnostic_fields["PROCESS_CLEANUP"], "released")
-        self.assertEqual(stdout, "")
-        lines = stderr.splitlines()
-        self.assertEqual(
-            lines[-1], "Could not enable unattended control within 60 seconds"
-        )
-        self.assertIn("ASSIST_DIAGNOSTIC_FINAL_CATEGORY=enabled-false", lines)
-        self.assertIn("ASSIST_DIAGNOSTIC_FINAL_CLI_EXIT=0", lines)
-        self.assertGreaterEqual(
-            int(
-                next(
-                    line.split("=", 1)[1]
-                    for line in lines
-                    if line.startswith("ASSIST_DIAGNOSTIC_ATTEMPTS=")
-                )
-            ),
-            1,
-        )
-        self.assertEqual(
-            sum(line.startswith("ASSIST_DIAGNOSTIC_") for line in lines),
-            19,
-        )
-        self.assertTrue(
-            all(
-                line.startswith("ASSIST_DIAGNOSTIC_")
-                or line == "Could not enable unattended control within 60 seconds"
-                for line in lines
-            )
-        )
-
     def test_timely_worker_exit_cleans_recorded_new_session_descendant(self):
         self.assert_boundary_obeys_absolute_deadline(
             "absolute-root-reap",
@@ -2242,6 +2175,188 @@ class MacOSAssistAbsoluteDeadlineBoundaryTests(unittest.TestCase):
             stderr,
             "Could not enable unattended control within 60 seconds\n",
         )
+
+
+@unittest.skipUnless(
+    NATIVE_MACOS_BASH_AVAILABLE,
+    "requires native macOS supervisor, process groups, and /bin/bash",
+)
+class MacOSAssistAtomicSnapshotNativeTests(unittest.TestCase):
+    diagnostic_names = (
+        "ATTEMPTS", "TIMEOUT_COUNT", "CLI_NONZERO_COUNT", "EMPTY_COUNT",
+        "INVALID_UTF8_COUNT", "INVALID_JSON_COUNT", "NOT_OBJECT_COUNT",
+        "SUCCESS_MISSING_COUNT", "SUCCESS_WRONG_TYPE_COUNT",
+        "SUCCESS_FALSE_COUNT", "ENABLED_MISSING_COUNT",
+        "ENABLED_WRONG_TYPE_COUNT", "ENABLED_FALSE_COUNT",
+        "ENABLED_TRUE_COUNT", "RESPONSE_BYTES_MIN", "RESPONSE_BYTES_MAX",
+        "RESPONSE_BYTES_FINAL", "FINAL_CATEGORY", "FINAL_CLI_EXIT",
+    )
+    generic_failure = "Could not enable unattended control within 60 seconds\n"
+
+    def run_native(
+        self, scenario: str, mutation: str | None = None
+    ) -> tuple[subprocess.CompletedProcess[str], float, list[tuple[int, int]], str]:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_root = Path(temporary_directory)
+            pid_path = temporary_root / "recorded-pids"
+            mutation_path = temporary_root / "mutation-reached"
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "TMPDIR": str(temporary_root),
+                    "UUREMOTE_TEST_NATIVE_PID_PATH": str(pid_path),
+                    "UUREMOTE_TEST_NATIVE_MUTATION_PATH": str(mutation_path),
+                }
+            )
+            if mutation is not None:
+                environment["UUREMOTE_TEST_NATIVE_MUTATION"] = mutation
+            started = time.monotonic()
+            result = subprocess.run(
+                ["/bin/bash", str(MACOS_ASSIST_ALLOW_HARNESS_PATH), "native-atomic", scenario],
+                cwd=ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+                env=environment,
+                timeout=8,
+            )
+            elapsed = time.monotonic() - started
+            records = []
+            if pid_path.exists():
+                for line in pid_path.read_text(encoding="ascii").splitlines():
+                    pid, process_group = (int(value) for value in line.split())
+                    records.append((pid, process_group))
+                pid_path.unlink()
+            marker = ""
+            if mutation_path.exists():
+                marker = mutation_path.read_text(encoding="ascii")
+                mutation_path.unlink()
+            self.assertEqual(list(temporary_root.iterdir()), [])
+        return result, elapsed, records, marker
+
+    def assert_native_release(self, records: list[tuple[int, int]]) -> None:
+        self.assertTrue(records, "native fixture must record a PID and PGID")
+        for pid, process_group in records:
+            with self.subTest(pid=pid, process_group=process_group):
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(pid, 0)
+                with self.assertRaises(ProcessLookupError):
+                    os.killpg(process_group, 0)
+
+    def assert_failure_output(
+        self, result: subprocess.CompletedProcess[str], elapsed: float, expected: str
+    ) -> None:
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertLess(elapsed, 7)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(result.stderr, expected + self.generic_failure)
+        lines = expected.splitlines()
+        self.assertEqual(len(lines), 19)
+        self.assertEqual(
+            [line.partition("=")[0] for line in lines],
+            [f"ASSIST_DIAGNOSTIC_{name}" for name in self.diagnostic_names],
+        )
+
+    def test_native_first_open_timeout_is_reported_and_reaped(self):
+        result, elapsed, records, marker = self.run_native("first-open-timeout")
+        self.assertEqual(marker, "")
+        expected = "".join(
+            (
+                "ASSIST_DIAGNOSTIC_ATTEMPTS=1\n",
+                "ASSIST_DIAGNOSTIC_TIMEOUT_COUNT=1\n",
+                "ASSIST_DIAGNOSTIC_CLI_NONZERO_COUNT=0\n",
+                "ASSIST_DIAGNOSTIC_EMPTY_COUNT=0\n",
+                "ASSIST_DIAGNOSTIC_INVALID_UTF8_COUNT=0\n",
+                "ASSIST_DIAGNOSTIC_INVALID_JSON_COUNT=0\n",
+                "ASSIST_DIAGNOSTIC_NOT_OBJECT_COUNT=0\n",
+                "ASSIST_DIAGNOSTIC_SUCCESS_MISSING_COUNT=0\n",
+                "ASSIST_DIAGNOSTIC_SUCCESS_WRONG_TYPE_COUNT=0\n",
+                "ASSIST_DIAGNOSTIC_SUCCESS_FALSE_COUNT=0\n",
+                "ASSIST_DIAGNOSTIC_ENABLED_MISSING_COUNT=0\n",
+                "ASSIST_DIAGNOSTIC_ENABLED_WRONG_TYPE_COUNT=0\n",
+                "ASSIST_DIAGNOSTIC_ENABLED_FALSE_COUNT=0\n",
+                "ASSIST_DIAGNOSTIC_ENABLED_TRUE_COUNT=0\n",
+                "ASSIST_DIAGNOSTIC_RESPONSE_BYTES_MIN=0\n",
+                "ASSIST_DIAGNOSTIC_RESPONSE_BYTES_MAX=0\n",
+                "ASSIST_DIAGNOSTIC_RESPONSE_BYTES_FINAL=0\n",
+                "ASSIST_DIAGNOSTIC_FINAL_CATEGORY=timeout\n",
+                "ASSIST_DIAGNOSTIC_FINAL_CLI_EXIT=timeout\n",
+            )
+        )
+        self.assert_failure_output(result, elapsed, expected)
+        self.assert_native_release(records)
+
+    def test_native_committed_then_open_preserves_counts_and_adds_timeout(self):
+        result, elapsed, records, marker = self.run_native("committed-then-open")
+        self.assertEqual(marker, "")
+        self.assert_failure_output(
+            result,
+            elapsed,
+            "".join(
+                f"ASSIST_DIAGNOSTIC_{name}={value}\n"
+                for name, value in zip(
+                    self.diagnostic_names,
+                    (2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 32, 0, "timeout", "timeout"),
+                )
+            ),
+        )
+        self.assert_native_release(records)
+
+    def test_native_committed_failure_outputs_exact_19_fields(self):
+        result, elapsed, records, marker = self.run_native("committed-failure")
+        self.assertEqual(marker, "")
+        self.assert_failure_output(
+            result,
+            elapsed,
+            "".join(
+                f"ASSIST_DIAGNOSTIC_{name}={value}\n"
+                for name, value in zip(
+                    self.diagnostic_names,
+                    (1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 32, 32, 32, "enabled-false", 0),
+                )
+            ),
+        )
+        self.assert_native_release(records)
+
+    def test_native_cleanup_unconfirmed_is_generic_only(self):
+        result, elapsed, records, marker = self.run_native("cleanup-unconfirmed", "cleanup")
+        self.assertEqual(marker, "cleanup-confirmation-bypassed\n")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertLess(elapsed, 7)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(result.stderr, self.generic_failure)
+        self.assert_native_release(records)
+
+    def test_native_enabled_success_is_exact_and_clean(self):
+        result, elapsed, records, marker = self.run_native("enabled-success")
+        self.assertEqual(marker, "")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertLess(elapsed, 7)
+        self.assertEqual(result.stdout, "ASSIST_STATE=enabled\n")
+        self.assertEqual(result.stderr, "")
+        self.assert_native_release(records)
+
+    def test_native_causal_mutations_reach_the_real_supervisor_boundary(self):
+        expected_timeout = "ASSIST_DIAGNOSTIC_ATTEMPTS=1\n"
+        cases = (
+            ("open", "first-open-timeout", "open-commit-bypassed\n"),
+            ("atomic", "first-open-timeout", "atomic-replacement-bypassed\n"),
+            ("cleanup", "cleanup-unconfirmed", "cleanup-confirmation-bypassed\n"),
+            ("synthesis", "first-open-timeout", "open-timeout-synthesis-bypassed\n"),
+            ("deletion", "enabled-success", "state-removal-bypassed\n"),
+        )
+        for mutation, scenario, expected_marker in cases:
+            with self.subTest(mutation=mutation):
+                result, elapsed, records, marker = self.run_native(scenario, mutation)
+                self.assertLess(elapsed, 7)
+                self.assertEqual(marker, expected_marker)
+                with self.assertRaises(AssertionError):
+                    if mutation == "deletion":
+                        self.assertEqual(result.stdout, "")
+                    else:
+                        self.assertIn(expected_timeout, result.stderr)
+                if records:
+                    self.assert_native_release(records)
 
 
 @unittest.skipUnless(MACOS_ASSIST_BASH_AVAILABLE, "requires Bash")
