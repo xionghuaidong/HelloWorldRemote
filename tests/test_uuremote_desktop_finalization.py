@@ -3,6 +3,7 @@ import ast
 import os
 import plistlib
 import signal
+import types
 import subprocess
 import sys
 import tempfile
@@ -486,13 +487,171 @@ class MacOSAssistSupervisorSnapshotTests(unittest.TestCase):
         try:
             sys.argv = [
                 "snapshot_probe", "/tmp/stdout", "/tmp/stderr", "/tmp/decision",
-                "/tmp/commit", "/tmp/interrupt", "60000", "1000", "bash",
-                "script", "1", "501",
+                "/tmp/commit", "/tmp/interrupt", "60000", "bash", "script",
+                "1", "501", "/tmp/diagnostic-state",
             ]
             exec(compile(supervisor[:definitions_end], "snapshot_probe", "exec"), namespace)
         finally:
             sys.argv = original_argv
         return namespace
+
+    @classmethod
+    def load_supervisor_main(cls, source_path: Path = SCRIPT_PATH) -> dict[str, object]:
+        script = text(source_path)
+        runner_start = script.index("run_assist_allow_with_absolute_deadline() (")
+        python_start = script.index("<<'PYTHON' &\n", runner_start) + len("<<'PYTHON' &\n")
+        python_end = script.index("\nPYTHON\n", python_start)
+        supervisor = script[python_start:python_end]
+        main_start = supervisor.rfind("\ntry:\n")
+        transformed = supervisor[:main_start] + (
+            "\ndef production_supervisor_main():\n"
+            "    global worker_pid, worker_reaped, recorded_pids, recorded_groups\n"
+            "    global observations_confirmed, deadline\n"
+        ) + "\n".join(
+            f"    {line}" for line in supervisor[main_start:].splitlines()
+        ) + "\n"
+        namespace: dict[str, object] = {"__name__": "snapshot_probe"}
+        original_argv = sys.argv
+        try:
+            sys.argv = [
+                "snapshot_probe", "/tmp/stdout", "/tmp/stderr", "/tmp/decision",
+                "/tmp/commit", "/tmp/interrupt", "60000", "bash", "script",
+                "1", "501", "/tmp/diagnostic-state",
+            ]
+            exec(compile(transformed, "snapshot_main_probe", "exec"), namespace)
+        finally:
+            sys.argv = original_argv
+        return namespace
+
+    def run_controlled_supervisor(
+        self,
+        state: bytes,
+        worker_status: int,
+        cleanup_start: bool = False,
+        debug_level: str = "1",
+        cleanup_confirmed: bool = True,
+        interruption_wins: bool = False,
+        source_path: Path = SCRIPT_PATH,
+    ) -> tuple[int, bytes, bytes, tuple[bool, bool, bool, tuple[str, ...]]]:
+        namespace = self.load_supervisor_main(source_path)
+        class ControlledOS:
+            WNOHANG = 1
+
+            def __getattr__(self, name: str) -> object:
+                return getattr(os, name)
+
+            @staticmethod
+            def fork() -> int:
+                return 99999999
+
+            @staticmethod
+            def waitpid(_pid: int, _options: int) -> tuple[int, int]:
+                return (0, 0) if cleanup_start else (99999999, worker_status)
+
+            @staticmethod
+            def getpgrp() -> int:
+                return 1
+
+            @staticmethod
+            def kill(_pid: int, _signal: int) -> None:
+                raise ProcessLookupError
+
+            @staticmethod
+            def killpg(_group: int, _signal: int) -> None:
+                raise ProcessLookupError
+
+            @staticmethod
+            def WIFEXITED(status: int) -> bool:
+                return (status & 0x7F) == 0
+
+            @staticmethod
+            def WEXITSTATUS(status: int) -> int:
+                return status >> 8
+
+            @staticmethod
+            def _exit(code: int) -> None:
+                raise SystemExit(code)
+
+        class ControlledSignal:
+            SIG_BLOCK = 0
+            SIG_SETMASK = 1
+            SIGTERM = 15
+            SIGKILL = 9
+
+            @staticmethod
+            def pthread_sigmask(_how: int, mask: object) -> object:
+                return mask
+
+            @staticmethod
+            def signal(_number: int, _handler: object) -> None:
+                return None
+
+        class ControlledTime:
+            def __init__(self):
+                self.calls = 0
+
+            def monotonic(self) -> float:
+                self.calls += 1
+                return 58.0 if cleanup_start and self.calls >= 3 else 0.0
+
+            @staticmethod
+            def sleep(_seconds: float) -> None:
+                return None
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            stdout_path = temporary_path / "stdout"
+            stderr_path = temporary_path / "stderr"
+            state_path = temporary_path / "diagnostic-state"
+            decision_path = temporary_path / "decision"
+            commit_path = temporary_path / "commit"
+            interrupt_path = temporary_path / "interrupt"
+            stdout_path.write_bytes(b"hostile-stdout")
+            stderr_path.write_bytes(b"hostile-stderr")
+            state_path.write_bytes(state)
+            commit_path.write_bytes(b"commit")
+            interrupt_path.write_bytes(b"interrupt")
+            if interruption_wins:
+                os.link(interrupt_path, decision_path)
+            namespace.update(
+                {
+                    "os": ControlledOS(),
+                    "signal": ControlledSignal(),
+                    "time": ControlledTime(),
+                    "stdout_path": stdout_path,
+                    "stderr_path": stderr_path,
+                    "diagnostic_state_path": state_path,
+                    "decision_path": decision_path,
+                    "commit_source_path": commit_path,
+                    "interrupt_source_path": interrupt_path,
+                    "debug_level": debug_level,
+                    "descendant_snapshot": lambda _pid, _timeout: ({99999999}, {99999999}),
+                }
+            )
+            if not cleanup_confirmed:
+                namespace["cleanup_worker"] = lambda _deadline: False
+            stdout_capture = types.SimpleNamespace(buffer=types.SimpleNamespace())
+            stderr_capture = types.SimpleNamespace(buffer=types.SimpleNamespace())
+            written_stdout: list[bytes] = []
+            written_stderr: list[bytes] = []
+            stdout_capture.buffer.write = written_stdout.append
+            stdout_capture.buffer.flush = lambda: None
+            stderr_capture.buffer.write = written_stderr.append
+            stderr_capture.buffer.flush = lambda: None
+            namespace["sys"] = types.SimpleNamespace(
+                stdout=stdout_capture, stderr=stderr_capture
+            )
+            try:
+                namespace["production_supervisor_main"]()  # type: ignore[operator]
+            except SystemExit as exited:
+                return (
+                    int(exited.code), b"".join(written_stdout), b"".join(written_stderr),
+                    (
+                        state_path.exists(), stdout_path.exists(), stderr_path.exists(),
+                        tuple(sorted(path.name for path in temporary_path.iterdir())),
+                    ),
+                )
+        self.fail("production supervisor main did not terminate")
 
     @staticmethod
     def committed_enabled_false() -> bytes:
@@ -554,6 +713,115 @@ class MacOSAssistSupervisorSnapshotTests(unittest.TestCase):
         self.assertEqual(synthesized["response_bytes_final"], 0)
         self.assertEqual(synthesized["final_category"], "timeout")
         self.assertEqual(synthesized["final_cli_exit"], "timeout")
+
+    def test_cleanup_start_open_snapshots_are_rendered_after_confirmed_cleanup(self):
+        later_open = (
+            b"v1\t2\topen\t1\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t1\t0"
+            b"\t84\t84\t84\tenabled-false\t0\n"
+        )
+        for state, attempts in ((self.first_open(), b"1"), (later_open, b"2")):
+            with self.subTest(attempts=attempts):
+                code, stdout, stderr, probe = self.run_controlled_supervisor(
+                    state, worker_status=9 << 8, cleanup_start=True
+                )
+                self.assertEqual(code, 125)
+                self.assertEqual(stdout, b"")
+                self.assertIn(b"ASSIST_DIAGNOSTIC_ATTEMPTS=" + attempts + b"\n", stderr)
+                self.assertIn(b"ASSIST_DIAGNOSTIC_TIMEOUT_COUNT=1\n", stderr)
+                self.assertIn(b"ASSIST_DIAGNOSTIC_RESPONSE_BYTES_FINAL=0\n", stderr)
+                self.assertIn(b"ASSIST_DIAGNOSTIC_FINAL_CATEGORY=timeout\n", stderr)
+                self.assertIn(b"ASSIST_DIAGNOSTIC_FINAL_CLI_EXIT=timeout\n", stderr)
+                if attempts == b"2":
+                    self.assertIn(b"ASSIST_DIAGNOSTIC_ENABLED_FALSE_COUNT=1\n", stderr)
+                self.assertEqual(probe, (False, False, False, ("commit", "decision", "interrupt")))
+
+    def test_production_supervisor_main_enforces_cleanup_debug_success_and_interrupt_gates(self):
+        enabled_true = (
+            b"v1\t1\tcommitted\t1\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t1"
+            b"\t31\t31\t31\tenabled-true\t0\n"
+        )
+        failure = self.committed_enabled_false()
+        cases = (
+            (failure, 1 << 8, False, "0", True, False, 1, b"", b""),
+            (failure, 1 << 8, True, "1", False, False, 125, b"", b""),
+            (enabled_true, 0, False, "1", True, False, 0, b"ASSIST_STATE=enabled\n", b""),
+            (failure, 0, False, "1", True, False, 125, b"", b""),
+            (failure, 1 << 8, False, "1", True, True, 125, b"", b""),
+        )
+        for (
+            state, worker_status, cleanup_start, debug_level, cleanup_confirmed,
+            interruption_wins, expected_code, expected_stdout, expected_stderr,
+        ) in cases:
+            with self.subTest(
+                debug_level=debug_level,
+                cleanup_confirmed=cleanup_confirmed,
+                interruption_wins=interruption_wins,
+            ):
+                code, stdout, stderr, probe = self.run_controlled_supervisor(
+                    state,
+                    worker_status,
+                    cleanup_start=cleanup_start,
+                    debug_level=debug_level,
+                    cleanup_confirmed=cleanup_confirmed,
+                    interruption_wins=interruption_wins,
+                )
+                self.assertEqual((code, stdout, stderr), (expected_code, expected_stdout, expected_stderr))
+                if expected_code in (0, 1):
+                    self.assertEqual(
+                        probe, (False, False, False, ("commit", "decision", "interrupt"))
+                    )
+
+    def test_production_supervisor_main_fails_closed_when_state_deletion_or_atomic_ownership_is_mutated(self):
+        source = text(SCRIPT_PATH)
+        mutations = {
+            "cleanup": source.replace(
+                "                return observations_confirmed and signals_confirmed\n",
+                "                return False\n",
+                1,
+            ),
+            "deletion": source.replace("    state_path.unlink()\n", "    raise OSError\n", 1),
+            "atomic": source.replace(
+                "        os.link(commit_source_path, decision_path)\n", "        pass\n", 1
+            ),
+            "debug": source.replace(
+                'render_diagnostics(snapshot) if debug_level in ("1", "2", "3") else b""',
+                "render_diagnostics(snapshot)",
+                1,
+            ),
+        }
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            for name, mutated in mutations.items():
+                with self.subTest(name=name):
+                    subject = Path(temporary_directory) / f"{name}.sh"
+                    subject.write_text(mutated, encoding="utf-8")
+                    with self.assertRaises(AssertionError):
+                        if name == "cleanup":
+                            code, stdout, stderr, _ = self.run_controlled_supervisor(
+                                self.first_open(), 9 << 8, cleanup_start=True,
+                                source_path=subject,
+                            )
+                            self.assertEqual(code, 125)
+                            self.assertEqual(stdout, b"")
+                            self.assertIn(b"ASSIST_DIAGNOSTIC_FINAL_CATEGORY=timeout\n", stderr)
+                        elif name == "atomic":
+                            code, stdout, stderr, _ = self.run_controlled_supervisor(
+                                self.committed_enabled_false(), 1 << 8,
+                                interruption_wins=True, source_path=subject,
+                            )
+                            self.assertEqual((code, stdout, stderr), (125, b"", b""))
+                        elif name == "debug":
+                            code, stdout, stderr, _ = self.run_controlled_supervisor(
+                                self.committed_enabled_false(), 1 << 8,
+                                debug_level="0", source_path=subject,
+                            )
+                            self.assertEqual((code, stdout, stderr), (1, b"", b""))
+                        else:
+                            code, stdout, stderr, _ = self.run_controlled_supervisor(
+                                self.committed_enabled_false(), 1 << 8, source_path=subject,
+                            )
+                            self.assertEqual(code, 1)
+                            self.assertEqual(stdout, b"")
+                            self.assertIn(b"ASSIST_DIAGNOSTIC_ATTEMPTS=1\n", stderr)
 
     def test_supervisor_rejects_malformed_or_missing_state(self):
         helpers = self.load_snapshot_helpers()

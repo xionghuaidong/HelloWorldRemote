@@ -2237,14 +2237,16 @@ try:
             break
         time.sleep(min(0.01, remaining))
     if wait_status is None:
-        cleanup_worker(cleanup_deadline)
-        remove_capture_files()
-        raise SystemExit(125)
+        cleanup_confirmed = cleanup_worker(cleanup_deadline)
+        wait_status = reap_worker_nonblocking()
+        if not cleanup_confirmed or not recorded_owned_processes_absent():
+            remove_capture_files()
+            raise SystemExit(125)
     if time.monotonic() >= cleanup_deadline or not recorded_owned_processes_absent():
         cleanup_worker(cleanup_deadline)
         remove_capture_files()
         raise SystemExit(125)
-    exit_code = wait_status_to_exit_code(wait_status)
+    exit_code = 125 if wait_status is None else wait_status_to_exit_code(wait_status)
     if not remove_capture_files():
         raise SystemExit(125)
     try:
