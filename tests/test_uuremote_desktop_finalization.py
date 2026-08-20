@@ -1144,6 +1144,35 @@ class MacOSAssistAllowSignalFinalizationSourceTests(unittest.TestCase):
         self.assertNotIn("absolute-worker-summary", harness)
         self.assertNotIn("ASSIST_ALLOW_FINALIZATION_RESERVE_MILLISECONDS", script)
 
+    @unittest.skipUnless(MACOS_ASSIST_BASH_AVAILABLE, "requires Bash")
+    def test_native_mutation_transforms_are_syntax_valid_and_targeted_once(self):
+        for mutation in ("", "open", "atomic", "cleanup-bypass", "synthesis", "deletion"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temporary_directory:
+                temporary_path = Path(temporary_directory)
+                environment = os.environ.copy()
+                environment.update(
+                    {
+                        "TMPDIR": str(temporary_path),
+                        "UUREMOTE_TEST_NATIVE_MUTATION": mutation,
+                    }
+                )
+                result = subprocess.run(
+                    macos_assist_bash_command(
+                        str(MACOS_ASSIST_ALLOW_HARNESS_PATH),
+                        "native-transform-check",
+                        "first-open-timeout",
+                    ),
+                    cwd=ROOT,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                    env=environment,
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(result.stdout, "NATIVE_TRANSFORM=valid\n")
+                self.assertEqual(result.stderr, "")
+                self.assertEqual(list(temporary_path.iterdir()), [])
+
     def test_completed_failure_diagnostic_is_fixed_field_and_identifier_free(self):
         harness = text(MACOS_ASSIST_ALLOW_HARNESS_PATH)
         start = harness.index("emit_completed_failure_diagnostic()")
@@ -2195,17 +2224,25 @@ class MacOSAssistAtomicSnapshotNativeTests(unittest.TestCase):
 
     def run_native(
         self, scenario: str, mutation: str | None = None
-    ) -> tuple[subprocess.CompletedProcess[str], float, list[tuple[int, int]], str]:
+    ) -> tuple[
+        subprocess.CompletedProcess[str], float, list[tuple[int, int]], str, str, str, str
+    ]:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary_root = Path(temporary_directory)
             pid_path = temporary_root / "recorded-pids"
             mutation_path = temporary_root / "mutation-reached"
+            state_path = temporary_root / "state-observed"
+            route_path = temporary_root / "route-reached"
+            output_probe_path = temporary_root / "output-probe"
             environment = os.environ.copy()
             environment.update(
                 {
                     "TMPDIR": str(temporary_root),
                     "UUREMOTE_TEST_NATIVE_PID_PATH": str(pid_path),
                     "UUREMOTE_TEST_NATIVE_MUTATION_PATH": str(mutation_path),
+                    "UUREMOTE_TEST_NATIVE_STATE_PATH": str(state_path),
+                    "UUREMOTE_TEST_NATIVE_ROUTE_PATH": str(route_path),
+                    "UUREMOTE_TEST_NATIVE_OUTPUT_PROBE_PATH": str(output_probe_path),
                 }
             )
             if mutation is not None:
@@ -2231,8 +2268,20 @@ class MacOSAssistAtomicSnapshotNativeTests(unittest.TestCase):
             if mutation_path.exists():
                 marker = mutation_path.read_text(encoding="ascii")
                 mutation_path.unlink()
+            state = ""
+            if state_path.exists():
+                state = state_path.read_text(encoding="ascii")
+                state_path.unlink()
+            route = ""
+            if route_path.exists():
+                route = route_path.read_text(encoding="ascii")
+                route_path.unlink()
+            output_probe = ""
+            if output_probe_path.exists():
+                output_probe = output_probe_path.read_text(encoding="ascii")
+                output_probe_path.unlink()
             self.assertEqual(list(temporary_root.iterdir()), [])
-        return result, elapsed, records, marker
+        return result, elapsed, records, marker, state, route, output_probe
 
     def assert_native_release(self, records: list[tuple[int, int]]) -> None:
         self.assertTrue(records, "native fixture must record a PID and PGID")
@@ -2258,8 +2307,11 @@ class MacOSAssistAtomicSnapshotNativeTests(unittest.TestCase):
         )
 
     def test_native_first_open_timeout_is_reported_and_reaped(self):
-        result, elapsed, records, marker = self.run_native("first-open-timeout")
+        result, elapsed, records, marker, state, route, output_probe = self.run_native("first-open-timeout")
         self.assertEqual(marker, "")
+        self.assertEqual(state, "open\n")
+        self.assertEqual(route, "cli-blocking-path-entered\n")
+        self.assertEqual(output_probe, "absent")
         expected = "".join(
             (
                 "ASSIST_DIAGNOSTIC_ATTEMPTS=1\n",
@@ -2287,8 +2339,11 @@ class MacOSAssistAtomicSnapshotNativeTests(unittest.TestCase):
         self.assert_native_release(records)
 
     def test_native_committed_then_open_preserves_counts_and_adds_timeout(self):
-        result, elapsed, records, marker = self.run_native("committed-then-open")
+        result, elapsed, records, marker, state, route, output_probe = self.run_native("committed-then-open")
         self.assertEqual(marker, "")
+        self.assertEqual(state, "")
+        self.assertEqual(route, "")
+        self.assertEqual(output_probe, "absent")
         self.assert_failure_output(
             result,
             elapsed,
@@ -2303,8 +2358,11 @@ class MacOSAssistAtomicSnapshotNativeTests(unittest.TestCase):
         self.assert_native_release(records)
 
     def test_native_committed_failure_outputs_exact_19_fields(self):
-        result, elapsed, records, marker = self.run_native("committed-failure")
+        result, elapsed, records, marker, state, route, output_probe = self.run_native("committed-failure")
         self.assertEqual(marker, "")
+        self.assertEqual(state, "")
+        self.assertEqual(route, "")
+        self.assertEqual(output_probe, "absent")
         self.assert_failure_output(
             result,
             elapsed,
@@ -2319,8 +2377,13 @@ class MacOSAssistAtomicSnapshotNativeTests(unittest.TestCase):
         self.assert_native_release(records)
 
     def test_native_cleanup_unconfirmed_is_generic_only(self):
-        result, elapsed, records, marker = self.run_native("cleanup-unconfirmed", "cleanup")
-        self.assertEqual(marker, "cleanup-confirmation-bypassed\n")
+        result, elapsed, records, marker, state, route, output_probe = self.run_native(
+            "cleanup-unconfirmed", "cleanup-unconfirmed"
+        )
+        self.assertEqual(marker, "cleanup-confirmation-forced\n")
+        self.assertEqual(state, "open\n")
+        self.assertEqual(route, "cli-blocking-path-entered\n")
+        self.assertEqual(output_probe, "")
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertLess(elapsed, 7)
         self.assertEqual(result.stdout, "")
@@ -2328,35 +2391,75 @@ class MacOSAssistAtomicSnapshotNativeTests(unittest.TestCase):
         self.assert_native_release(records)
 
     def test_native_enabled_success_is_exact_and_clean(self):
-        result, elapsed, records, marker = self.run_native("enabled-success")
+        result, elapsed, records, marker, state, route, output_probe = self.run_native("enabled-success")
         self.assertEqual(marker, "")
+        self.assertEqual(state, "")
+        self.assertEqual(route, "")
+        self.assertEqual(output_probe, "absent")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertLess(elapsed, 7)
         self.assertEqual(result.stdout, "ASSIST_STATE=enabled\n")
         self.assertEqual(result.stderr, "")
         self.assert_native_release(records)
 
+    def assert_unmodified_native_baseline(self, scenario: str) -> None:
+        if scenario == "first-open-timeout":
+            self.test_native_first_open_timeout_is_reported_and_reaped()
+        elif scenario == "enabled-success":
+            self.test_native_enabled_success_is_exact_and_clean()
+        else:
+            self.fail(f"missing native baseline assertion for {scenario}")
+
     def test_native_causal_mutations_reach_the_real_supervisor_boundary(self):
-        expected_timeout = "ASSIST_DIAGNOSTIC_ATTEMPTS=1\n"
         cases = (
             ("open", "first-open-timeout", "open-commit-bypassed\n"),
-            ("atomic", "first-open-timeout", "atomic-replacement-bypassed\n"),
-            ("cleanup", "cleanup-unconfirmed", "cleanup-confirmation-bypassed\n"),
+            ("atomic", "enabled-success", "atomic-replacement-bypassed\n"),
+            ("cleanup-bypass", "first-open-timeout", "cleanup-confirmation-forced\n"),
             ("synthesis", "first-open-timeout", "open-timeout-synthesis-bypassed\n"),
             ("deletion", "enabled-success", "state-removal-bypassed\n"),
         )
         for mutation, scenario, expected_marker in cases:
             with self.subTest(mutation=mutation):
-                result, elapsed, records, marker = self.run_native(scenario, mutation)
+                self.assert_unmodified_native_baseline(scenario)
+                result, elapsed, records, marker, state, route, output_probe = self.run_native(
+                    scenario, mutation
+                )
                 self.assertLess(elapsed, 7)
                 self.assertEqual(marker, expected_marker)
-                with self.assertRaises(AssertionError):
-                    if mutation == "deletion":
-                        self.assertEqual(result.stdout, "")
-                    else:
-                        self.assertIn(expected_timeout, result.stderr)
-                if records:
+                if mutation == "open":
+                    self.assertEqual(state, "missing-or-invalid\n")
+                    self.assertEqual(route, "cli-blocking-path-entered\n")
                     self.assert_native_release(records)
+                    with self.assertRaises(AssertionError):
+                        self.assertIn("ASSIST_DIAGNOSTIC_TIMEOUT_COUNT=1\n", result.stderr)
+                elif mutation == "atomic":
+                    self.assertEqual(state, "")
+                    self.assertEqual(route, "")
+                    self.assertEqual(output_probe, "")
+                    self.assert_native_release(records)
+                    with self.assertRaises(AssertionError):
+                        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "ASSIST_STATE=enabled\n", ""))
+                elif mutation == "cleanup-bypass":
+                    self.assertEqual(state, "open\n")
+                    self.assertEqual(route, "cli-blocking-path-entered\n")
+                    self.assertEqual(output_probe, "absent")
+                    self.assert_native_release(records)
+                    with self.assertRaises(AssertionError):
+                        self.assertEqual(result.stderr, self.generic_failure)
+                elif mutation == "synthesis":
+                    self.assertEqual(state, "open\n")
+                    self.assertEqual(route, "cli-blocking-path-entered\n")
+                    self.assertEqual(output_probe, "")
+                    self.assert_native_release(records)
+                    with self.assertRaises(AssertionError):
+                        self.assertIn("ASSIST_DIAGNOSTIC_FINAL_CATEGORY=timeout\n", result.stderr)
+                else:
+                    self.assertEqual(state, "")
+                    self.assertEqual(route, "")
+                    self.assertEqual(output_probe, "present")
+                    self.assert_native_release(records)
+                    with self.assertRaises(AssertionError):
+                        self.assertEqual(output_probe, "absent")
 
 
 @unittest.skipUnless(MACOS_ASSIST_BASH_AVAILABLE, "requires Bash")

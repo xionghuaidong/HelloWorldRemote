@@ -970,7 +970,7 @@ if [ ! -x /usr/bin/python3 ]; then
 fi
 
 case "$mode" in
-    native-atomic)
+    native-atomic|native-transform-check)
         native_scenario="${2:?}"
         /usr/bin/sed 's/ASSIST_ALLOW_DEADLINE_MILLISECONDS=60000/ASSIST_ALLOW_DEADLINE_MILLISECONDS=4000/' \
             "$subject" >"$subject.native-deadline"
@@ -996,13 +996,21 @@ case "$mode" in
                 print "native_require_state() {"
                 print "    [ \"$(/bin/cat \"${UUREMOTE_ASSIST_INTERNAL_STATE_PATH:?}\")\" = \"$1\" ]"
                 print "}"
+                print "native_observe_first_open() {"
+                print "    if native_require_state $\047v1\\t1\\topen\\t0\\t0\\t0\\t0\\t0\\t0\\t0\\t0\\t0\\t0\\t0\\t0\\t0\\t0\\t0\\t0\\t0\\tunavailable\\tunavailable\047; then"
+                print "        printf \047open\\n\047 >\"${UUREMOTE_TEST_NATIVE_STATE_PATH:?}\""
+                print "    else"
+                print "        printf \047missing-or-invalid\\n\047 >\"${UUREMOTE_TEST_NATIVE_STATE_PATH:?}\""
+                print "    fi"
+                print "    printf \047cli-blocking-path-entered\\n\047 >\"${UUREMOTE_TEST_NATIVE_ROUTE_PATH:?}\""
+                print "}"
                 print "run_bounded_gui_cli_to_file() {"
                 print "    local output_path=\"$1\" status_path=\"$2\""
                 print "    native_attempt=\"${native_attempt:-0}\""
                 print "    native_attempt=\"$((native_attempt + 1))\""
                 print "    case \"${UUREMOTE_TEST_NATIVE_SCENARIO:?}:$native_attempt\" in"
                 print "        first-open-timeout:1|cleanup-unconfirmed:1)"
-                print "            native_require_state $\047v1\\t1\\topen\\t0\\t0\\t0\\t0\\t0\\t0\\t0\\t0\\t0\\t0\\t0\\t0\\t0\\t0\\t0\\t0\\t0\\tunavailable\\tunavailable\047 || return 125"
+                print "            native_observe_first_open"
                 print "            native_fixture_record"
                 print "            ;;"
                 print "        committed-then-open:1|committed-failure:1)"
@@ -1031,10 +1039,18 @@ case "$mode" in
                 print "PYTHON"
                 print "}"
                 print
+                next
             }
             { print }
         ' "$subject" >"$subject.native-fixture"
         mv "$subject.native-fixture" "$subject"
+        awk '
+            /^        stream = sys\.stdout\.buffer if output_stream == "stdout" else sys\.stderr\.buffer$/ {
+                print "        pathlib.Path(os.environ[\"UUREMOTE_TEST_NATIVE_OUTPUT_PROBE_PATH\"]).write_text(\"absent\" if not diagnostic_state_path.exists() else \"present\", encoding=\"ascii\")"
+            }
+            { print }
+        ' "$subject" >"$subject.native-output-probe"
+        mv "$subject.native-output-probe" "$subject"
         case "${UUREMOTE_TEST_NATIVE_MUTATION:-}" in
             '') ;;
             open)
@@ -1064,17 +1080,39 @@ case "$mode" in
                 mv "$subject.native-open" "$subject"
                 ;;
             atomic)
-                /usr/bin/sed \
-                    's#/bin/mv -f -- "\$temporary_path" "\$state_path"#printf '\''atomic-replacement-bypassed\\n'\'' >"${UUREMOTE_TEST_NATIVE_MUTATION_PATH:?}"; /bin/cat "\$temporary_path" >"\$state_path"; return 1#' \
-                    "$subject" >"$subject.native-atomic"
+                awk '
+                    /^[[:space:]]*\/bin\/mv -f -- "\$temporary_path" "\$state_path" \|\| \{$/ {
+                        print "    if ! /bin/mv -f -- \"$temporary_path\" \"$state_path\"; then"
+                        print "        /bin/rm -f -- \"$temporary_path\" 2>/dev/null"
+                        print "        return 1"
+                        print "    fi"
+                        print "    if [ \"$state\" = committed ]; then"
+                        print "        printf \047atomic-replacement-bypassed\\n\047 >\"${UUREMOTE_TEST_NATIVE_MUTATION_PATH:?}\""
+                        print "        printf \047\\tpartial\047 >>\"$state_path\" || return 1"
+                        print "    fi"
+                        skipping_move_failure = 1
+                        next
+                    }
+                    skipping_move_failure {
+                        if (/^    }$/) {
+                            skipping_move_failure = 0
+                        }
+                        next
+                    }
+                    { print }
+                ' "$subject" >"$subject.native-atomic"
                 mv "$subject.native-atomic" "$subject"
                 ;;
-            cleanup)
+            cleanup-unconfirmed|cleanup-bypass)
                 awk '
                     /cleanup_confirmed = cleanup_worker\(cleanup_deadline\)/ {
                         print
-                        print "        pathlib.Path(os.environ[\"UUREMOTE_TEST_NATIVE_MUTATION_PATH\"]).write_text(\"cleanup-confirmation-bypassed\\n\", encoding=\"ascii\")"
+                        print "        pathlib.Path(os.environ[\"UUREMOTE_TEST_NATIVE_MUTATION_PATH\"]).write_text(\"cleanup-confirmation-forced\\n\", encoding=\"ascii\")"
                         print "        cleanup_confirmed = False"
+                        next
+                    }
+                    /if not cleanup_confirmed or not recorded_owned_processes_absent\(\):/ && ENVIRON["UUREMOTE_TEST_NATIVE_MUTATION"] == "cleanup-bypass" {
+                        print "    if False:"
                         next
                     }
                     { print }
@@ -1099,6 +1137,36 @@ case "$mode" in
 esac
 
 scenario="${2:?}"
+
+if [ "$mode" = native-transform-check ]; then
+    /bin/bash -n "$subject"
+    for native_wiring in \
+        'native_observe_first_open()' \
+        'cli-blocking-path-entered' \
+        'UUREMOTE_TEST_NATIVE_OUTPUT_PROBE_PATH'
+    do
+        [ "$(/usr/bin/grep -F -c "$native_wiring" "$subject")" -eq 1 ] || exit 1
+    done
+    for native_marker in \
+        open-commit-bypassed \
+        atomic-replacement-bypassed \
+        cleanup-confirmation-forced \
+        open-timeout-synthesis-bypassed \
+        state-removal-bypassed
+    do
+        case "${UUREMOTE_TEST_NATIVE_MUTATION:-}" in
+            '') continue ;;
+            open) [ "$native_marker" = open-commit-bypassed ] || continue ;;
+            atomic) [ "$native_marker" = atomic-replacement-bypassed ] || continue ;;
+            cleanup-unconfirmed|cleanup-bypass) [ "$native_marker" = cleanup-confirmation-forced ] || continue ;;
+            synthesis) [ "$native_marker" = open-timeout-synthesis-bypassed ] || continue ;;
+            deletion) [ "$native_marker" = state-removal-bypassed ] || continue ;;
+        esac
+        [ "$(/usr/bin/grep -F -c "$native_marker" "$subject")" -eq 1 ] || exit 1
+    done
+    printf 'NATIVE_TRANSFORM=valid\n'
+    exit 0
+fi
 
 if [ "$mode" = native-atomic ]; then
     export UUREMOTE_TEST_NATIVE_SCENARIO="$scenario"
