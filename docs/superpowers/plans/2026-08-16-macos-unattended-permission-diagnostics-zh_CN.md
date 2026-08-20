@@ -1678,3 +1678,20 @@ UNATTENDED_ENABLED
 ```
 
 然后停止执行并向用户报告证据。如果结果为 `PARSER_SHAPE_EVIDENCE`，使用观察到的 safe shape 返回 TDD，并编写 root-cause-specific plan amendment。对于 `CLI_OR_ENVIRONMENT_EVIDENCE` 或 unexpected contract failure，在提出任何 recovery 前返回 `superpowers:brainstorming`。未经新的已批准 hypothesis 和明确授权，不得 merge、push `main`、删除 branch 或运行另一次 workflow。
+
+## 原子快照替代方案（2026-08-20）
+
+上述 timing-report 方法已由批准的 [macOS Assist 诊断原子快照计划](2026-08-20-macos-assist-diagnostic-atomic-snapshot-zh_CN.md)替代。本节是已完成 route 的 governing implementation contract；若与早期 implementation task 不同，以本节为准。
+
+- Supervisor 拥有 absolute 60-second deadline、私有 mode-`0700` directory、cleanup confirmation，以及由 supervisor 所有的 `v1` 原子状态记录。state 和 sibling replacement file 为 mode `0600`，且仅包含 ASCII tab-separated safe aggregate value。
+- `ensure_assist_allowed` 每次 attempt 前为 `open`，分类后为 `committed`。record 是 `v1<TAB>generation<TAB>state<TAB>19 values`；只有有效 committed `enabled-true` record 才能产生 `ASSIST_STATE=enabled`。
+- 单一 deadline 将 worker activity 为 58 秒、cleanup 为 1 秒、finalization 为 1 秒。每个 CLI attempt 仍以 3 秒和 cleanup 开始前剩余时间中的较小值为界。
+- 失败诊断保留不变且精确的 19 个 `ASSIST_DIAGNOSTIC_*` 字段、字段顺序和含义。worker 自身绝不发布 failure summary。
+- cleanup 已确认后，验证 `open` state 的 committed baseline，supervisor 必须恰好合成一次 `timeout` attempt，最终 response bytes 为 `0`；合成 aggregate 必须通过同一 validator 后才可 rendered。
+- cleanup 未确认的路径仅输出 generic failure，不发布 structured diagnostic。缺失、格式错误、不可读、不可删除或超出 deadline 的 state record 也同样 generic-only，后续 normal workflow step 不继续。
+- 外部输出前，state、worker 和 temporary data 均已删除；只允许保留 decision hard-link。atomic interruption/output decision 提交后，trap 删除 decision hard-link 和此时为空的私有目录。
+- 不得 rendered raw CLI response、credential、device ID、remote connection data、PID 或 PGID；diagnostic 仅保留在当前 step log。不授权变更 workflow YAML、Windows behavior 或 artifact schema。
+
+### 最终验证授权
+
+本地 portable test 和 syntax check 在 remote validation 前执行。targeted native validation 与完整 macOS workflow run 分别需要单独的明确授权。必须先报告并 review targeted native result，之后才可进行另行授权的完整 workflow run；本计划本身不授权 push、dispatch、retry 或 merge。

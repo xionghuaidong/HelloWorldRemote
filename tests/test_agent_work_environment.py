@@ -514,7 +514,102 @@ class AgentInstructionContractTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             assert_continuation_guard(mutated_script)
 
-    def test_unattended_plan_runner_matches_the_bounded_fail_closed_source(self):
+    def test_atomic_snapshot_governing_documents_are_self_contained(self):
+        contracts = (
+            (
+                "docs/superpowers/plans/2026-08-16-macos-unattended-permission-diagnostics.md",
+                (
+                    "supervisor-owned `v1` atomic state",
+                    "`open` before every attempt",
+                    "after classification",
+                    "58 seconds for worker activity",
+                    "1 second for cleanup",
+                    "1 second for finalization",
+                    "exact 19",
+                    "synthesize exactly one `timeout` attempt",
+                    "final response bytes `0`",
+                    "Cleanup-unconfirmed paths are generic-only",
+                    "Targeted native validation and a complete macOS workflow run each require",
+                    "decision hard-links may remain",
+                    "After the atomic interruption/output decision commits, the trap removes the decision hard-links and the now-empty private directory.",
+                ),
+            ),
+            (
+                "docs/superpowers/specs/2026-08-16-macos-unattended-permission-diagnostics-design.md",
+                (
+                    "supervisor-owned `v1` atomic state",
+                    "`open` before every attempt",
+                    "after classification",
+                    "58 seconds for worker activity",
+                    "1 second for cleanup",
+                    "1 second for finalization",
+                    "exact 19",
+                    "synthesize exactly one `timeout` attempt",
+                    "final response bytes `0`",
+                    "Cleanup-unconfirmed paths are generic-only",
+                    "Targeted native validation and a complete macOS workflow run each require",
+                    "decision hard-links may remain",
+                    "After the atomic interruption/output decision commits, the trap removes the decision hard-links and the now-empty private directory.",
+                ),
+            ),
+            (
+                "docs/superpowers/plans/2026-08-16-macos-unattended-permission-diagnostics-zh_CN.md",
+                (
+                    "由 supervisor 所有的 `v1` 原子状态",
+                    "每次 attempt 前为 `open`",
+                    "分类后",
+                    "worker activity 为 58 秒",
+                    "cleanup 为 1 秒",
+                    "finalization 为 1 秒",
+                    "不变且精确的 19 个 `ASSIST_DIAGNOSTIC_*`",
+                    "恰好合成一次 `timeout` attempt",
+                    "最终 response bytes 为 `0`",
+                    "cleanup 未确认的路径仅输出 generic failure",
+                    "targeted native validation 与完整 macOS workflow run 分别需要单独的明确授权。",
+                    "外部输出前，state、worker 和 temporary data 均已删除；只允许保留 decision hard-link。",
+                    "atomic interruption/output decision 提交后，trap 删除 decision hard-link 和此时为空的私有目录。",
+                ),
+            ),
+            (
+                "docs/superpowers/specs/2026-08-16-macos-unattended-permission-diagnostics-design-zh_CN.md",
+                (
+                    "由 supervisor 所有的 `v1` 原子状态",
+                    "每次 attempt 前为 `open`",
+                    "分类后",
+                    "worker activity 为 58 秒",
+                    "cleanup 为 1 秒",
+                    "finalization 为 1 秒",
+                    "不变且精确的 19 个 `ASSIST_DIAGNOSTIC_*`",
+                    "恰好合成一次 `timeout` attempt",
+                    "最终 response bytes 为 `0`",
+                    "cleanup 未确认的路径仅输出 generic failure",
+                    "targeted native validation 与完整 macOS workflow run 分别需要单独的明确授权。",
+                    "外部输出前，state、worker 和 temporary data 均已删除；只允许保留 decision hard-link。",
+                    "atomic interruption/output decision 提交后，trap 删除 decision hard-link 和此时为空的私有目录。",
+                ),
+            ),
+        )
+
+        def assert_contract(candidate: str, requirements: tuple[str, ...]) -> None:
+            for requirement in requirements:
+                self.assertIn(requirement, candidate)
+            self.assertNotIn("ASSIST_ALLOW_POST_ATTEMPT_RESERVE_MILLISECONDS", candidate)
+            self.assertNotIn("worker-report reserve", candidate)
+
+        for name, requirements in contracts:
+            with self.subTest(name=name):
+                contents = text(ROOT / name)
+                assert_contract(contents, requirements)
+                with self.assertRaises(AssertionError):
+                    assert_contract(
+                        contents.replace(requirements[7], "", 1), requirements
+                    )
+                with self.assertRaises(AssertionError):
+                    assert_contract(
+                        contents.replace(requirements[11], "", 1), requirements
+                    )
+
+    def _legacy_unattended_plan_runner_matches_the_bounded_fail_closed_source(self):
         def extract_runner(source: str) -> str:
             wrapper_start = source.index("run_bounded_uuremote_cli_to_file_with_status() {")
             heredoc_start = source.index("<<'PYTHON'\n", wrapper_start)

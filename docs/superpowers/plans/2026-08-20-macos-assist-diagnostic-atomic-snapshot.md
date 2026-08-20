@@ -285,11 +285,11 @@ Redirect worker stdout/stderr away from external logs. After worker exit or dead
 3. synthesize timeout only for `open`;
 4. validate worker success only with committed `enabled-true`;
 5. render failure bytes only for debug `1|2|3`;
-6. remove worker files and the diagnostic state file; retain only the supervisor's decision hard-links until the atomic interruption decision is complete;
+6. remove all state, worker, and temporary data before external output; retain only the supervisor's decision hard-links until the atomic interruption/output decision is complete;
 7. recheck the absolute deadline;
 8. atomically honor the existing interruption decision;
 9. print fixed success or diagnostic bytes;
-10. let the supervisor cleanup trap remove the decision hard-links and now-empty private directory before the shell helper returns.
+10. after output is atomically committed, let the supervisor cleanup trap remove the decision hard-links and the now-empty private directory before the shell helper returns.
 
 If any step fails, return `125` without structured output so `enable_assist_or_fail` prints only the generic failure.
 

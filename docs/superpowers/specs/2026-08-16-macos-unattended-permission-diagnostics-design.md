@@ -235,3 +235,31 @@ Expected implementation files are:
 - the later English implementation plan and its Simplified Chinese counterpart
 
 `.github/workflows/macos.yml` should remain unchanged because `UUREMOTE_DEBUG` already reaches the permission step at job scope. A minimal workflow change is allowed only if an executable contract demonstrates that the existing structure cannot enforce this design.
+
+## 11. Atomic Snapshot Supersession (2026-08-20)
+
+The earlier timing-report design is superseded by the approved [macOS Assist
+Diagnostic Atomic Snapshot Design](2026-08-20-macos-assist-diagnostic-atomic-snapshot-design.md).
+The following rules govern the completed implementation.
+
+The supervisor owns the single absolute 60-second deadline, its mode-`0700`
+private directory, worker cleanup, and a supervisor-owned `v1` atomic state
+record. State and sibling replacement files are mode `0600`; the record is
+strict ASCII `v1<TAB>generation<TAB>state<TAB>19 values` and never contains a
+raw response. The worker writes `open` before every attempt and `committed`
+after classification. Only a valid committed `enabled-true` record permits
+`ASSIST_STATE=enabled`.
+
+The deadline allocates 58 seconds for worker activity, 1 second for cleanup, and 1 second for finalization. The unchanged exact 19
+`ASSIST_DIAGNOSTIC_*` fields remain the only structured diagnostic. The worker
+does not print that summary. After confirmed cleanup, the supervisor must
+synthesize exactly one `timeout` attempt with final response bytes `0` from a
+valid `open` baseline and validate that synthesized result before rendering it.
+Cleanup-unconfirmed paths are generic-only and publish no structured
+diagnostic; so do missing, malformed, unreadable, undeletable, or
+deadline-late state paths.
+
+Before external output, state, worker, and temporary data are absent; only decision hard-links may remain. After the atomic interruption/output decision commits, the trap removes the decision hard-links and the now-empty private directory. No raw CLI output, credential, device ID, remote connection data,
+PID, PGID, command line, or new artifact field is published.
+
+Targeted native validation and a complete macOS workflow run each require separate explicit authorization. The targeted native result is reported and reviewed before any separately authorized full workflow run; the design does not authorize a push, dispatch, rerun, merge, or remote mutation.

@@ -1695,3 +1695,40 @@ UNATTENDED_ENABLED
 ```
 
 Then stop execution and report the evidence to the user. If the result is `PARSER_SHAPE_EVIDENCE`, return to TDD with the observed safe shape and write a root-cause-specific plan amendment. For `CLI_OR_ENVIRONMENT_EVIDENCE` or an unexpected contract failure, return to `superpowers:brainstorming` before proposing any recovery. Do not merge, push `main`, delete the branch, or run another workflow without a new approved hypothesis and explicit authorization.
+
+## Atomic Snapshot Supersession (2026-08-20)
+
+The timing-report approach above is superseded by the approved [macOS Assist
+Diagnostic Atomic Snapshot plan](2026-08-20-macos-assist-diagnostic-atomic-snapshot.md).
+This section is the governing implementation contract for the completed route;
+where it differs from an earlier implementation task, this section controls.
+
+- The supervisor owns the absolute 60-second deadline, the private mode-`0700`
+  directory, cleanup confirmation, and the supervisor-owned `v1` atomic state
+  record. State and sibling replacement files are mode `0600` and contain only
+  ASCII tab-separated safe aggregate values.
+- `ensure_assist_allowed` writes `open` before every attempt and `committed`
+  after classification. A record is `v1<TAB>generation<TAB>state<TAB>19
+  values`; only a valid committed `enabled-true` record can produce
+  `ASSIST_STATE=enabled`.
+- The one deadline reserves 58 seconds for worker activity, 1 second for cleanup, and 1 second for finalization. Each CLI attempt remains bounded by
+  the lesser of 3 seconds and the time before cleanup starts.
+- Failure diagnostics retain the unchanged exact 19 `ASSIST_DIAGNOSTIC_*`
+  fields, field order, and meanings. The worker never publishes the failure
+  summary itself.
+- After confirmed cleanup, an `open` state is validated against its committed
+  baseline and the supervisor must synthesize exactly one `timeout` attempt
+  with final response bytes `0`; the synthesized aggregate must pass the same
+  validator before it can be rendered.
+- Cleanup-unconfirmed paths are generic-only and publish no structured
+  diagnostic. The same generic-only outcome applies to a missing, malformed,
+  unreadable, undeletable, or deadline-late state record, and later normal
+  workflow steps do not continue.
+- Before external output, state, worker, and temporary data are absent; only decision hard-links may remain. After the atomic interruption/output decision commits, the trap removes the decision hard-links and the now-empty private directory.
+- No raw CLI response, credentials, device ID, remote connection data, PID or
+  PGID is rendered, and the diagnostic remains only in the current step log.
+  No workflow YAML, Windows behavior, or artifact schema change is authorized.
+
+### Final Validation Authorization
+
+Local portable tests and syntax checks precede remote validation. Targeted native validation and a complete macOS workflow run each require separate explicit authorization. A targeted native result must be reported and reviewed before any separately authorized complete workflow run; no push, dispatch, retry, or merge follows from this plan alone.

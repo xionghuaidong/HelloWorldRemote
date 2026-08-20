@@ -285,11 +285,11 @@ Parser 必须拒绝 non-ASCII、CR、NUL、额外 whitespace、leading-zero gene
 3. 只对 `open` 合成 timeout；
 4. 只有 committed `enabled-true` 才验证为 worker success；
 5. 只在 debug `1|2|3` 时 render failure bytes；
-6. 删除 worker 文件和诊断 state 文件；在 atomic interruption decision 完成前，只保留 supervisor decision hard-link；
+6. 在外部输出前删除全部 state、worker 和 temporary data；在 atomic interruption/output decision 完成前，只保留 supervisor decision hard-link；
 7. 重新检查 absolute deadline；
 8. 原子遵守现有 interruption decision；
 9. 打印固定 success 或 diagnostic bytes；
-10. 在 shell helper 返回前，由 supervisor cleanup trap 删除 decision hard-link 和此时为空的私有目录。
+10. 输出原子提交后，在 shell helper 返回前，由 supervisor cleanup trap 删除 decision hard-link 和此时为空的私有目录。
 
 任一步失败都返回 `125` 且不输出结构化内容，使 `enable_assist_or_fail` 只打印 generic failure。
 

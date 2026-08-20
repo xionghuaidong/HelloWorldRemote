@@ -225,3 +225,15 @@ branch 完成前，运行相关 macOS 与 Windows contract suites、双语文档
 - 后续 English implementation plan 及其简体中文 counterpart
 
 `.github/workflows/macos.yml` 应保持不变，因为 `UUREMOTE_DEBUG` 已在 job scope 到达权限 step。只有 executable contract 证明现有结构无法执行本设计时，才允许做最小 workflow change。
+
+## 11. 原子快照替代方案（2026-08-20）
+
+早期 timing-report design 已由批准的 [macOS Assist 诊断原子快照设计](2026-08-20-macos-assist-diagnostic-atomic-snapshot-design-zh_CN.md)替代。以下规则管理已完成的 implementation。
+
+Supervisor 拥有单一 absolute 60-second deadline、其 mode-`0700` 私有 directory、worker cleanup，以及由 supervisor 所有的 `v1` 原子状态记录。state 和 sibling replacement file 为 mode `0600`；record 是严格 ASCII `v1<TAB>generation<TAB>state<TAB>19 values`，绝不包含 raw response。worker 每次 attempt 前为 `open`，分类后为 `committed`。只有有效 committed `enabled-true` record 才允许 `ASSIST_STATE=enabled`。
+
+deadline 分配为 worker activity 为 58 秒、cleanup 为 1 秒、finalization 为 1 秒。不变且精确的 19 个 `ASSIST_DIAGNOSTIC_*` 字段仍是唯一 structured diagnostic。worker 不打印该 summary。cleanup 已确认后，supervisor 必须从有效 `open` baseline 恰好合成一次 `timeout` attempt，最终 response bytes 为 `0`，并在 rendered 前验证合成结果。cleanup 未确认的路径仅输出 generic failure，不发布 structured diagnostic；缺失、格式错误、不可读、不可删除或超出 deadline 的 state path 也相同。
+
+外部输出前，state、worker 和 temporary data 均已删除；只允许保留 decision hard-link。atomic interruption/output decision 提交后，trap 删除 decision hard-link 和此时为空的私有目录。不得发布 raw CLI output、credential、device ID、remote connection data、PID、PGID、command line 或 new artifact field。
+
+targeted native validation 与完整 macOS workflow run 分别需要单独的明确授权。必须先报告并 review targeted native result，之后才可进行另行授权的完整 workflow run；本设计不授权 push、dispatch、rerun、merge 或 remote mutation。
