@@ -2041,12 +2041,35 @@ case "$mode" in
             1 0 0 0 0 0 0 0 0 0 0 0 1 0 84 84 84 enabled-false 0
         )
         case "$scenario" in
-            first-open|hostile-payload)
-                hostile_payload='device-id-fixture CustomCodeFixture FORGED_OUTPUT'
+            first-open)
                 write_assist_diagnostic_state \
                     "$state_path" 1 open \
                     0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 unavailable unavailable
                 exit "$?"
+                ;;
+            hostile-rejected)
+                fixture_payload=(device-id-fixture CustomCodeFixture FORGED_OUTPUT)
+                write_assist_diagnostic_state \
+                    "$state_path" 1 committed "${baseline_values[@]}" || exit "$?"
+                for fixture_marker in "${fixture_payload[@]}"; do
+                    if write_assist_diagnostic_state \
+                        "$state_path" "$fixture_marker" committed "${baseline_values[@]}"
+                    then
+                        exit 1
+                    fi
+                    if write_assist_diagnostic_state \
+                        "$state_path" 1 "$fixture_marker" "${baseline_values[@]}"
+                    then
+                        exit 1
+                    fi
+                    if write_assist_diagnostic_state \
+                        "$state_path" 1 committed \
+                        1 0 0 0 0 0 0 0 0 0 0 0 1 0 84 84 84 "$fixture_marker" 0
+                    then
+                        exit 1
+                    fi
+                done
+                exit 1
                 ;;
             committed)
                 write_assist_diagnostic_state \

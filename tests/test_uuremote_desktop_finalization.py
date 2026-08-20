@@ -18,6 +18,21 @@ MACOS_READINESS_HARNESS_PATH = ROOT / "tests/macos_readiness_harness.sh"
 MACOS_ASSIST_ALLOW_HARNESS_PATH = ROOT / "tests/macos_assist_allow_harness.sh"
 BASH_AVAILABLE = Path("/bin/bash").exists()
 NATIVE_MACOS_BASH_AVAILABLE = BASH_AVAILABLE and sys.platform == "darwin"
+GIT_BASH_PATH = Path(r"C:\Program Files\Git\bin\bash.exe")
+MACOS_ASSIST_BASH_AVAILABLE = BASH_AVAILABLE or GIT_BASH_PATH.exists()
+
+
+def macos_assist_bash_command(*arguments: str) -> list[str]:
+    if BASH_AVAILABLE:
+        return ["/bin/bash", *arguments]
+    return [
+        str(GIT_BASH_PATH),
+        "-c",
+        'PATH=/usr/bin:/bin:$PATH; export PATH; exec "$@"',
+        "bash",
+        "/bin/bash",
+        *arguments,
+    ]
 
 
 def text(path: Path) -> str:
@@ -222,49 +237,70 @@ class MacOSCliOutputRedactionEntrypointTests(unittest.TestCase):
         self.assertEqual(result.stderr, "")
 
 
-@unittest.skipUnless(BASH_AVAILABLE, "requires /bin/bash")
+@unittest.skipUnless(MACOS_ASSIST_BASH_AVAILABLE, "requires Bash")
 class MacOSAssistAllowClassifierTests(unittest.TestCase):
-    def run_scenario(self, scenario: str) -> subprocess.CompletedProcess[str]:
+    def run_harness(
+        self,
+        mode: str,
+        scenario: str,
+        state_path: Path | None = None,
+        subject_source: Path | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        environment = os.environ.copy()
+        if subject_source is not None:
+            environment["MACOS_ASSIST_ALLOW_SUBJECT_SOURCE"] = str(subject_source)
+        arguments = [str(MACOS_ASSIST_ALLOW_HARNESS_PATH), mode, scenario]
+        if state_path is not None:
+            arguments.append(str(state_path))
         return subprocess.run(
-            ["/bin/bash", str(MACOS_ASSIST_ALLOW_HARNESS_PATH), "classify", scenario],
+            macos_assist_bash_command(*arguments),
             cwd=ROOT,
             text=True,
             capture_output=True,
             check=False,
+            env=environment,
         )
+
+    def run_scenario(self, scenario: str) -> subprocess.CompletedProcess[str]:
+        return self.run_harness("classify", scenario)
 
     def run_state_scenario(
         self, scenario: str, state_path: Path
     ) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            [
-                "/bin/bash",
-                str(MACOS_ASSIST_ALLOW_HARNESS_PATH),
-                "state",
-                scenario,
-                str(state_path),
-            ],
-            cwd=ROOT,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
+        return self.run_harness("state", scenario, state_path)
 
     def run_state_fault(
         self, fault: str, state_path: Path
     ) -> subprocess.CompletedProcess[str]:
+        return self.run_harness(f"state-fault-{fault}", "baseline", state_path)
+
+    def mutated_source(
+        self, temporary_directory: str, old: str, new: str
+    ) -> Path:
+        source = text(SCRIPT_PATH)
+        self.assertIn(old, source)
+        mutated_source = Path(temporary_directory) / "apple.sh"
+        mutated_source.write_text(source.replace(old, new, 1), encoding="utf-8")
+        return mutated_source
+
+    def run_nested_state_test(
+        self, test_name: str, subject_source: Path
+    ) -> subprocess.CompletedProcess[str]:
+        environment = os.environ.copy()
+        environment["MACOS_ASSIST_ALLOW_SUBJECT_SOURCE"] = str(subject_source)
         return subprocess.run(
             [
-                "/bin/bash",
-                str(MACOS_ASSIST_ALLOW_HARNESS_PATH),
-                f"state-fault-{fault}",
-                "baseline",
-                str(state_path),
+                sys.executable,
+                "-m",
+                "unittest",
+                f"tests.test_uuremote_desktop_finalization."
+                f"MacOSAssistAllowClassifierTests.{test_name}",
             ],
             cwd=ROOT,
             text=True,
             capture_output=True,
             check=False,
+            env=environment,
         )
 
     @staticmethod
@@ -277,20 +313,22 @@ class MacOSAssistAllowClassifierTests(unittest.TestCase):
     def test_first_open_state_is_atomic_private_and_strict(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             state_path = Path(temporary_directory) / "diagnostic-state"
+            if BASH_AVAILABLE:
+                os.chmod(temporary_directory, 0o700)
             result = self.run_state_scenario("first-open", state_path)
 
             self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
             expected = (
-                b"v1\t1\topen\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0"
-                b"\t0\t0\tunavailable\tunavailable\n"
+                b"v1\t1\topen" + (b"\t0" * 17) + b"\tunavailable\tunavailable\n"
             )
             state = state_path.read_bytes()
             self.assertEqual(state, expected)
             self.assertTrue(state.endswith(b"\n"))
             self.assertEqual(state.count(b"\n"), 1)
             self.assertEqual(len(state.rstrip(b"\n").split(b"\t")), 22)
-            self.assertEqual(os.stat(state_path.parent).st_mode & 0o777, 0o700)
-            self.assertEqual(os.stat(state_path).st_mode & 0o777, 0o600)
+            if BASH_AVAILABLE:
+                self.assertEqual(os.stat(state_path.parent).st_mode & 0o777, 0o700)
+                self.assertEqual(os.stat(state_path).st_mode & 0o777, 0o600)
             self.assertFalse(state_path.with_name("diagnostic-state.tmp").exists())
 
     def test_committed_state_preserves_the_exact_19_value_order(self):
@@ -340,14 +378,61 @@ class MacOSAssistAllowClassifierTests(unittest.TestCase):
     def test_hostile_payload_markers_never_enter_state_or_output(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             state_path = Path(temporary_directory) / "diagnostic-state"
-            result = self.run_state_scenario("hostile-payload", state_path)
+            result = self.run_state_scenario("hostile-rejected", state_path)
 
-            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertNotEqual(result.returncode, 0, result.stderr + result.stdout)
             output = result.stdout + result.stderr
             state = state_path.read_bytes().decode("ascii")
+            self.assertEqual(state_path.read_bytes(), self.baseline_state_bytes())
+            self.assertFalse(state_path.with_name("diagnostic-state.tmp").exists())
             for marker in ("device-id-fixture", "CustomCodeFixture", "FORGED_OUTPUT"):
                 self.assertNotIn(marker, state)
                 self.assertNotIn(marker, output)
+
+    def test_atomic_move_mutation_fails_the_existing_fault_test(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            subject_source = self.mutated_source(
+                temporary_directory,
+                '/bin/mv -f -- "$temporary_path" "$state_path"',
+                '/bin/cat "$temporary_path" >"$state_path"',
+            )
+            result = self.run_nested_state_test(
+                "test_state_writer_failure_leaves_no_partial_record", subject_source
+            )
+
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_hostile_leakage_mutation_fails_the_existing_redaction_test(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            subject_source = self.mutated_source(
+                temporary_directory,
+                "        printf '\\n'\n    } >\"$temporary_path\" || {",
+                "        printf '\\n'\n"
+                "        printf 'FORGED_OUTPUT=true\\n'\n"
+                "    } >\"$temporary_path\" || {",
+            )
+            result = self.run_nested_state_test(
+                "test_hostile_payload_markers_never_enter_state_or_output", subject_source
+            )
+
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    @unittest.skipUnless(BASH_AVAILABLE, "requires POSIX mode semantics")
+    def test_chmod_mutation_fails_the_existing_fault_test(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            subject_source = self.mutated_source(
+                temporary_directory,
+                "    /bin/chmod 0600 \"$temporary_path\" || {\n"
+                "        /bin/rm -f -- \"$temporary_path\" 2>/dev/null\n"
+                "        return 1\n"
+                "    }\n",
+                "",
+            )
+            result = self.run_nested_state_test(
+                "test_state_writer_failure_leaves_no_partial_record", subject_source
+            )
+
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_every_response_shape_has_one_safe_category(self):
         cases = {
