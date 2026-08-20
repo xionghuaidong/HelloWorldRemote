@@ -472,6 +472,186 @@ class MacOSAssistAllowClassifierTests(unittest.TestCase):
         self.assertNotIn("FORGED_OUTPUT", result.stdout + result.stderr)
 
 
+class MacOSAssistSupervisorSnapshotTests(unittest.TestCase):
+    @staticmethod
+    def load_snapshot_helpers(source_path: Path = SCRIPT_PATH) -> dict[str, object]:
+        script = text(source_path)
+        runner_start = script.index("run_assist_allow_with_absolute_deadline() (")
+        python_start = script.index("<<'PYTHON' &\n", runner_start) + len("<<'PYTHON' &\n")
+        python_end = script.index("\nPYTHON\n", python_start)
+        supervisor = script[python_start:python_end]
+        definitions_end = supervisor.rfind("\ntry:\n")
+        namespace: dict[str, object] = {"__name__": "snapshot_probe"}
+        original_argv = sys.argv
+        try:
+            sys.argv = [
+                "snapshot_probe", "/tmp/stdout", "/tmp/stderr", "/tmp/decision",
+                "/tmp/commit", "/tmp/interrupt", "60000", "1000", "bash",
+                "script", "1", "501",
+            ]
+            exec(compile(supervisor[:definitions_end], "snapshot_probe", "exec"), namespace)
+        finally:
+            sys.argv = original_argv
+        return namespace
+
+    @staticmethod
+    def committed_enabled_false() -> bytes:
+        return (
+            b"v1\t1\tcommitted\t1\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t1\t0"
+            b"\t84\t84\t84\tenabled-false\t0\n"
+        )
+
+    @staticmethod
+    def first_open() -> bytes:
+        return b"v1\t1\topen" + (b"\t0" * 17) + b"\tunavailable\tunavailable\n"
+
+    def parse(self, payload: bytes) -> dict[str, object]:
+        helpers = self.load_snapshot_helpers()
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            state_path = Path(temporary_directory) / "diagnostic-state"
+            state_path.write_bytes(payload)
+            return helpers["parse_diagnostic_state"](state_path)  # type: ignore[operator]
+
+    def test_supervisor_renders_committed_failure_from_state(self):
+        helpers = self.load_snapshot_helpers()
+        snapshot = self.parse(self.committed_enabled_false())
+        rendered = helpers["render_diagnostics"](snapshot)  # type: ignore[operator]
+
+        expected = b"".join(
+            (
+                b"ASSIST_DIAGNOSTIC_ATTEMPTS=1\n",
+                b"ASSIST_DIAGNOSTIC_TIMEOUT_COUNT=0\n",
+                b"ASSIST_DIAGNOSTIC_CLI_NONZERO_COUNT=0\n",
+                b"ASSIST_DIAGNOSTIC_EMPTY_COUNT=0\n",
+                b"ASSIST_DIAGNOSTIC_INVALID_UTF8_COUNT=0\n",
+                b"ASSIST_DIAGNOSTIC_INVALID_JSON_COUNT=0\n",
+                b"ASSIST_DIAGNOSTIC_NOT_OBJECT_COUNT=0\n",
+                b"ASSIST_DIAGNOSTIC_SUCCESS_MISSING_COUNT=0\n",
+                b"ASSIST_DIAGNOSTIC_SUCCESS_WRONG_TYPE_COUNT=0\n",
+                b"ASSIST_DIAGNOSTIC_SUCCESS_FALSE_COUNT=0\n",
+                b"ASSIST_DIAGNOSTIC_ENABLED_MISSING_COUNT=0\n",
+                b"ASSIST_DIAGNOSTIC_ENABLED_WRONG_TYPE_COUNT=0\n",
+                b"ASSIST_DIAGNOSTIC_ENABLED_FALSE_COUNT=1\n",
+                b"ASSIST_DIAGNOSTIC_ENABLED_TRUE_COUNT=0\n",
+                b"ASSIST_DIAGNOSTIC_RESPONSE_BYTES_MIN=84\n",
+                b"ASSIST_DIAGNOSTIC_RESPONSE_BYTES_MAX=84\n",
+                b"ASSIST_DIAGNOSTIC_RESPONSE_BYTES_FINAL=84\n",
+                b"ASSIST_DIAGNOSTIC_FINAL_CATEGORY=enabled-false\n",
+                b"ASSIST_DIAGNOSTIC_FINAL_CLI_EXIT=0\n",
+            )
+        )
+        self.assertEqual(rendered, expected)
+
+    def test_supervisor_synthesizes_first_open_as_timeout(self):
+        helpers = self.load_snapshot_helpers()
+        synthesized = helpers["synthesize_open_timeout"](self.parse(self.first_open()))  # type: ignore[operator]
+
+        self.assertEqual(synthesized["state"], "committed")
+        self.assertEqual(synthesized["attempts"], 1)
+        self.assertEqual(synthesized["timeout_count"], 1)
+        self.assertEqual(synthesized["response_bytes_min"], 0)
+        self.assertEqual(synthesized["response_bytes_max"], 0)
+        self.assertEqual(synthesized["response_bytes_final"], 0)
+        self.assertEqual(synthesized["final_category"], "timeout")
+        self.assertEqual(synthesized["final_cli_exit"], "timeout")
+
+    def test_supervisor_rejects_malformed_or_missing_state(self):
+        helpers = self.load_snapshot_helpers()
+        malformed = (
+            b"",
+            self.committed_enabled_false() + b"\n",
+            self.committed_enabled_false().replace(b"\n", b"\r\n"),
+            self.committed_enabled_false().replace(b"v1", b"v\x001"),
+            self.committed_enabled_false().replace(b"v1", b"v\xff"),
+            self.committed_enabled_false().replace(b"\t1\tcommitted", b"\t01\tcommitted"),
+            self.committed_enabled_false().replace(b"\tcommitted\t", b"\tpending\t"),
+            self.committed_enabled_false().replace(b"\n", b"\tunused\n"),
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            missing_path = Path(temporary_directory) / "missing"
+            with self.assertRaises(ValueError):
+                helpers["parse_diagnostic_state"](missing_path)  # type: ignore[operator]
+            for payload in malformed:
+                with self.subTest(payload=payload):
+                    state_path = Path(temporary_directory) / "diagnostic-state"
+                    state_path.write_bytes(payload)
+                    with self.assertRaises(ValueError):
+                        helpers["parse_diagnostic_state"](state_path)  # type: ignore[operator]
+
+    def test_supervisor_debug_gate_and_success_require_committed_enabled_true(self):
+        helpers = self.load_snapshot_helpers()
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            state_path = Path(temporary_directory) / "diagnostic-state"
+            state_path.write_bytes(self.committed_enabled_false())
+            self.assertEqual(
+                helpers["prepare_diagnostic_output"](state_path, 1, "0"),  # type: ignore[operator]
+                ("stderr", b""),
+            )
+            self.assertEqual(
+                helpers["prepare_diagnostic_output"](state_path, 1, "1")[0],  # type: ignore[operator]
+                "stderr",
+            )
+            with self.assertRaises(ValueError):
+                helpers["prepare_diagnostic_output"](state_path, 0, "1")  # type: ignore[operator]
+
+    def test_supervisor_removes_state_before_external_output(self):
+        helpers = self.load_snapshot_helpers()
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            state_path = Path(temporary_directory) / "diagnostic-state"
+            temporary_state_path = state_path.with_name("diagnostic-state.tmp")
+            state_path.write_bytes(self.committed_enabled_false())
+            temporary_state_path.write_bytes(b"partial")
+            helpers["remove_diagnostic_state"](state_path)  # type: ignore[operator]
+            self.assertFalse(state_path.exists())
+            self.assertFalse(temporary_state_path.exists())
+
+    def test_snapshot_causal_mutations_break_parser_cleanup_and_debug_gates(self):
+        source = text(SCRIPT_PATH)
+        mutations = {
+            "parser": source.replace(
+                "    return validate_diagnostic_snapshot(snapshot)\n\n\ndef synthesize_open_timeout",
+                "    return snapshot\n\n\ndef synthesize_open_timeout",
+                1,
+            ),
+            "cleanup": source.replace(
+                "def remove_diagnostic_state(path):\n    state_path = pathlib.Path(path)\n    state_path.unlink()",
+                "def remove_diagnostic_state(path):\n    return",
+                1,
+            ),
+            "debug": source.replace(
+                'render_diagnostics(snapshot) if debug_level in ("1", "2", "3") else b""',
+                "render_diagnostics(snapshot)",
+                1,
+            ),
+        }
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            for name, mutated in mutations.items():
+                with self.subTest(name=name):
+                    subject = Path(temporary_directory) / f"{name}.sh"
+                    subject.write_text(mutated, encoding="utf-8")
+                    helpers = self.load_snapshot_helpers(subject)
+                    state_path = Path(temporary_directory) / f"{name}-state"
+                    state_path.write_bytes(self.committed_enabled_false())
+                    with self.assertRaises(AssertionError):
+                        if name == "parser":
+                            invalid = state_path.with_name(f"{name}-invalid")
+                            invalid.write_bytes(
+                                self.committed_enabled_false().replace(
+                                    b"\t1\t0\t84", b"\t0\t0\t84", 1
+                                )
+                            )
+                            with self.assertRaises(ValueError):
+                                helpers["parse_diagnostic_state"](invalid)  # type: ignore[operator]
+                        elif name == "cleanup":
+                            helpers["remove_diagnostic_state"](state_path)  # type: ignore[operator]
+                            self.assertFalse(state_path.exists())
+                        else:
+                            self.assertEqual(
+                                helpers["prepare_diagnostic_output"](state_path, 1, "0"),  # type: ignore[operator]
+                                ("stderr", b""),
+                            )
+
+
 class MacOSAssistAllowSignalFinalizationSourceTests(unittest.TestCase):
     @staticmethod
     def assert_guarded_handler_precedes_only_after_mask_restore(runner: str) -> None:
@@ -553,7 +733,7 @@ class MacOSAssistAllowSignalFinalizationSourceTests(unittest.TestCase):
             route,
         )
 
-    def test_worker_summary_budget_outlives_the_fixed_finalization_reserve(self):
+    def test_supervisor_uses_the_fixed_cleanup_and_finalization_phases(self):
         harness = text(MACOS_ASSIST_ALLOW_HARNESS_PATH)
         deadline_rewrite_start = harness.index(
             "sed 's/ASSIST_ALLOW_DEADLINE_MILLISECONDS=60000/"
@@ -588,16 +768,12 @@ class MacOSAssistAllowSignalFinalizationSourceTests(unittest.TestCase):
             "ASSIST_ALLOW_DEADLINE_MILLISECONDS=12000",
             deadline_rewrite,
         )
-        self.assertIn(
-            "startup-preexec-block|absolute-clock-block|absolute-poll-block|"
-            "absolute-root-reap|absolute-precommit-signal)",
-            deadline_rewrite,
-        )
-        self.assertIn(
-            "ASSIST_ALLOW_FINALIZATION_RESERVE_MILLISECONDS=4000/"
-            "ASSIST_ALLOW_FINALIZATION_RESERVE_MILLISECONDS=1500",
-            deadline_rewrite,
-        )
+        script = text(SCRIPT_PATH)
+        self.assertIn("cleanup_start = deadline - 2.0", script)
+        self.assertIn("cleanup_deadline = deadline - 1.0", script)
+        self.assertIn("finalization_deadline = deadline", script)
+        self.assertNotIn("ASSIST_ALLOW_FINALIZATION_RESERVE_MILLISECONDS", script)
+        self.assertNotIn("ASSIST_ALLOW_FINALIZATION_RESERVE_MILLISECONDS", harness)
         finalization_barrier_start = harness.index(
             'if [ "$mode" = "absolute-real-poll-summary" ]; then',
             deadline_rewrite_start,

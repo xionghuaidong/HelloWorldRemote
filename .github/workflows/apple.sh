@@ -8,7 +8,6 @@ KEY_REPEAT_VALUE=2
 INITIAL_KEY_REPEAT_VALUE=15
 ASSIST_ID_TIMEOUT_MILLISECONDS=3000
 ASSIST_ALLOW_DEADLINE_MILLISECONDS=60000
-ASSIST_ALLOW_FINALIZATION_RESERVE_MILLISECONDS=4000
 
 validate_uuremote_custom_code() {
     local custom_code="${1:-}"
@@ -1712,6 +1711,7 @@ self_test_diagnostic_redaction() {
 
 run_assist_allow_with_absolute_deadline() (
     local supervisor_temp_dir="" worker_stdout="" worker_stderr=""
+    local diagnostic_state_path=""
     local supervisor_decision_path="" supervisor_commit_source=""
     local supervisor_interrupt_source=""
     local worker_script worker_bash supervisor_pid="" supervisor_status=125
@@ -1727,6 +1727,10 @@ run_assist_allow_with_absolute_deadline() (
         /bin/rm -f -- "$supervisor_decision_path" \
             "$supervisor_commit_source" "$supervisor_interrupt_source" \
             2>/dev/null || true
+        if [ -n "$diagnostic_state_path" ]; then
+            /bin/rm -f -- "$diagnostic_state_path" "${diagnostic_state_path}.tmp" \
+                2>/dev/null || true
+        fi
         if [ -n "$supervisor_temp_dir" ]; then
             /bin/rmdir "$supervisor_temp_dir" 2>/dev/null || true
         fi
@@ -1761,6 +1765,7 @@ run_assist_allow_with_absolute_deadline() (
     /bin/chmod 0700 "$supervisor_temp_dir" || return 1
     worker_stdout="$supervisor_temp_dir/stdout"
     worker_stderr="$supervisor_temp_dir/stderr"
+    diagnostic_state_path="$supervisor_temp_dir/diagnostic-state"
     supervisor_decision_path="$supervisor_temp_dir/decision"
     supervisor_commit_source="$supervisor_temp_dir/commit-source"
     supervisor_interrupt_source="$supervisor_temp_dir/interrupt-source"
@@ -1779,8 +1784,8 @@ run_assist_allow_with_absolute_deadline() (
         "$worker_stdout" "$worker_stderr" "$supervisor_decision_path" \
         "$supervisor_commit_source" "$supervisor_interrupt_source" \
         "$ASSIST_ALLOW_DEADLINE_MILLISECONDS" \
-        "$ASSIST_ALLOW_FINALIZATION_RESERVE_MILLISECONDS" \
-        "$worker_bash" "$worker_script" "$debug_level" "$console_uid" <<'PYTHON' &
+        "$worker_bash" "$worker_script" "$debug_level" "$console_uid" \
+        "$diagnostic_state_path" <<'PYTHON' &
 import os
 import pathlib
 import signal
@@ -1794,11 +1799,11 @@ decision_path = pathlib.Path(sys.argv[3])
 commit_source_path = pathlib.Path(sys.argv[4])
 interrupt_source_path = pathlib.Path(sys.argv[5])
 timeout_seconds = int(sys.argv[6]) / 1000
-finalization_reserve_milliseconds = int(sys.argv[7])
-worker_bash = sys.argv[8]
-worker_script = str(pathlib.Path(sys.argv[9]).resolve())
-debug_level = sys.argv[10]
-console_uid = sys.argv[11]
+worker_bash = sys.argv[7]
+worker_script = str(pathlib.Path(sys.argv[8]).resolve())
+debug_level = sys.argv[9]
+console_uid = sys.argv[10]
+diagnostic_state_path = pathlib.Path(sys.argv[11])
 worker_pid = None
 worker_reaped = False
 recorded_pids = set()
@@ -2007,17 +2012,182 @@ def recorded_owned_processes_absent():
     )
 
 
+DIAGNOSTIC_VALUE_NAMES = (
+    "attempts", "timeout_count", "cli_nonzero_count", "empty_count",
+    "invalid_utf8_count", "invalid_json_count", "not_object_count",
+    "success_missing_count", "success_wrong_type_count", "success_false_count",
+    "enabled_missing_count", "enabled_wrong_type_count", "enabled_false_count",
+    "enabled_true_count", "response_bytes_min", "response_bytes_max",
+    "response_bytes_final", "final_category", "final_cli_exit",
+)
+DIAGNOSTIC_CATEGORY_NAMES = (
+    "timeout", "cli-nonzero", "empty", "invalid-utf8", "invalid-json",
+    "not-object", "success-missing", "success-wrong-type", "success-false",
+    "enabled-missing", "enabled-wrong-type", "enabled-false", "enabled-true",
+)
+DIAGNOSTIC_COUNT_NAMES = tuple(
+    name.replace("-", "_") + "_count" for name in DIAGNOSTIC_CATEGORY_NAMES
+)
+DIAGNOSTIC_OUTPUT_NAMES = (
+    "ASSIST_DIAGNOSTIC_ATTEMPTS", "ASSIST_DIAGNOSTIC_TIMEOUT_COUNT",
+    "ASSIST_DIAGNOSTIC_CLI_NONZERO_COUNT", "ASSIST_DIAGNOSTIC_EMPTY_COUNT",
+    "ASSIST_DIAGNOSTIC_INVALID_UTF8_COUNT", "ASSIST_DIAGNOSTIC_INVALID_JSON_COUNT",
+    "ASSIST_DIAGNOSTIC_NOT_OBJECT_COUNT", "ASSIST_DIAGNOSTIC_SUCCESS_MISSING_COUNT",
+    "ASSIST_DIAGNOSTIC_SUCCESS_WRONG_TYPE_COUNT", "ASSIST_DIAGNOSTIC_SUCCESS_FALSE_COUNT",
+    "ASSIST_DIAGNOSTIC_ENABLED_MISSING_COUNT", "ASSIST_DIAGNOSTIC_ENABLED_WRONG_TYPE_COUNT",
+    "ASSIST_DIAGNOSTIC_ENABLED_FALSE_COUNT", "ASSIST_DIAGNOSTIC_ENABLED_TRUE_COUNT",
+    "ASSIST_DIAGNOSTIC_RESPONSE_BYTES_MIN", "ASSIST_DIAGNOSTIC_RESPONSE_BYTES_MAX",
+    "ASSIST_DIAGNOSTIC_RESPONSE_BYTES_FINAL", "ASSIST_DIAGNOSTIC_FINAL_CATEGORY",
+    "ASSIST_DIAGNOSTIC_FINAL_CLI_EXIT",
+)
+
+def require_decimal(value, positive=False):
+    if not value or not value.isascii() or not value.isdecimal():
+        raise ValueError
+    if positive and (value[0] == "0" or int(value) == 0):
+        raise ValueError
+    return int(value)
+
+
+def validate_diagnostic_snapshot(snapshot):
+    generation = snapshot["generation"]
+    state = snapshot["state"]
+    if not isinstance(generation, int) or generation < 1:
+        raise ValueError
+    if state not in ("open", "committed"):
+        raise ValueError
+    attempts = snapshot["attempts"]
+    if not isinstance(attempts, int) or attempts < 0:
+        raise ValueError
+    if attempts == 0:
+        if state != "open" or generation != 1:
+            raise ValueError
+        if any(snapshot[name] != 0 for name in DIAGNOSTIC_VALUE_NAMES[:-2]):
+            raise ValueError
+        if snapshot["final_category"] != "unavailable" or snapshot["final_cli_exit"] != "unavailable":
+            raise ValueError
+        return snapshot
+    if generation != attempts + (state == "open"):
+        raise ValueError
+    for name in DIAGNOSTIC_COUNT_NAMES + (
+        "response_bytes_min", "response_bytes_max", "response_bytes_final",
+    ):
+        if not isinstance(snapshot[name], int) or snapshot[name] < 0:
+            raise ValueError
+    if any(snapshot[name] > attempts for name in DIAGNOSTIC_COUNT_NAMES):
+        raise ValueError
+    if sum(snapshot[name] for name in DIAGNOSTIC_COUNT_NAMES) != attempts:
+        raise ValueError
+    if not snapshot["response_bytes_min"] <= snapshot["response_bytes_final"] <= snapshot["response_bytes_max"]:
+        raise ValueError
+    category = snapshot["final_category"]
+    exit_value = snapshot["final_cli_exit"]
+    if category not in DIAGNOSTIC_CATEGORY_NAMES:
+        raise ValueError
+    if category == "timeout":
+        if snapshot["timeout_count"] == 0 or exit_value != "timeout":
+            raise ValueError
+    elif category == "cli-nonzero":
+        if snapshot["cli_nonzero_count"] == 0:
+            raise ValueError
+        if exit_value != "unavailable" and (not isinstance(exit_value, int) or exit_value < 1):
+            raise ValueError
+    else:
+        if snapshot[category.replace("-", "_") + "_count"] == 0 or exit_value != 0:
+            raise ValueError
+    return snapshot
+
+
+def parse_diagnostic_state(path):
+    try:
+        payload = pathlib.Path(path).read_bytes()
+    except OSError as error:
+        raise ValueError from error
+    if payload.count(b"\n") != 1 or not payload.endswith(b"\n") or b"\r" in payload or b"\x00" in payload:
+        raise ValueError
+    try:
+        fields = payload[:-1].split(b"\t")
+        if len(fields) != 22:
+            raise ValueError
+        decoded = [field.decode("ascii") for field in fields]
+    except (UnicodeDecodeError, ValueError):
+        raise ValueError
+    if decoded[0] != "v1" or decoded[2] not in ("open", "committed"):
+        raise ValueError
+    snapshot = {
+        "generation": require_decimal(decoded[1], positive=True),
+        "state": decoded[2],
+    }
+    for name, value in zip(DIAGNOSTIC_VALUE_NAMES[:-2], decoded[3:20]):
+        snapshot[name] = require_decimal(value)
+    snapshot["final_category"] = decoded[20]
+    exit_value = decoded[21]
+    if exit_value in ("timeout", "unavailable"):
+        snapshot["final_cli_exit"] = exit_value
+    else:
+        snapshot["final_cli_exit"] = require_decimal(exit_value)
+        if snapshot["final_cli_exit"] > 255:
+            raise ValueError
+    return validate_diagnostic_snapshot(snapshot)
+
+
+def synthesize_open_timeout(snapshot):
+    if snapshot.get("state") != "open":
+        raise ValueError
+    synthesized = dict(snapshot)
+    synthesized["state"] = "committed"
+    synthesized["attempts"] += 1
+    synthesized["timeout_count"] += 1
+    synthesized["response_bytes_min"] = min(synthesized["response_bytes_min"], 0)
+    synthesized["response_bytes_max"] = max(synthesized["response_bytes_max"], 0)
+    synthesized["response_bytes_final"] = 0
+    synthesized["final_category"] = "timeout"
+    synthesized["final_cli_exit"] = "timeout"
+    return validate_diagnostic_snapshot(synthesized)
+
+
+def render_diagnostics(snapshot):
+    validate_diagnostic_snapshot(snapshot)
+    if snapshot["state"] != "committed":
+        raise ValueError
+    values = [str(snapshot[name]) for name in DIAGNOSTIC_VALUE_NAMES]
+    return ("".join(
+        f"{name}={value}\n" for name, value in zip(DIAGNOSTIC_OUTPUT_NAMES, values)
+    )).encode("ascii")
+
+
+def prepare_diagnostic_output(path, exit_code, debug_level):
+    snapshot = parse_diagnostic_state(path)
+    if snapshot["state"] == "open":
+        snapshot = synthesize_open_timeout(snapshot)
+    if snapshot["state"] != "committed":
+        raise ValueError
+    if exit_code == 0:
+        if snapshot["final_category"] != "enabled-true":
+            raise ValueError
+        return "stdout", b"ASSIST_STATE=enabled\n"
+    return "stderr", (
+        render_diagnostics(snapshot) if debug_level in ("1", "2", "3") else b""
+    )
+
+
+def remove_diagnostic_state(path):
+    state_path = pathlib.Path(path)
+    state_path.unlink()
+    try:
+        state_path.with_name(state_path.name + ".tmp").unlink()
+    except FileNotFoundError:
+        pass
+
+
 try:
     previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, handled_signals)
     deadline = time.monotonic() + timeout_seconds
-    deadline_milliseconds = int(deadline * 1000)
-    worker_deadline_milliseconds = (
-        deadline_milliseconds - finalization_reserve_milliseconds
-    )
-    if worker_deadline_milliseconds <= int(time.monotonic() * 1000):
-        raise RuntimeError
-    cleanup_start = deadline - 1.0
-    if cleanup_start <= time.monotonic():
+    cleanup_start = deadline - 2.0
+    cleanup_deadline = deadline - 1.0
+    finalization_deadline = deadline
+    worker_deadline_milliseconds = int(cleanup_start * 1000)
+    if cleanup_start <= time.monotonic() or cleanup_deadline <= cleanup_start:
         raise RuntimeError
     for handled_signal_number in handled_signals:
         signal.signal(handled_signal_number, handled_signal)
@@ -2042,6 +2212,7 @@ try:
                 "UUREMOTE_ASSIST_INTERNAL_DEADLINE_MILLISECONDS": str(
                     worker_deadline_milliseconds
                 ),
+                "UUREMOTE_ASSIST_INTERNAL_STATE_PATH": str(diagnostic_state_path),
             }
             os.execve(
                 worker_bash,
@@ -2066,19 +2237,24 @@ try:
             break
         time.sleep(min(0.01, remaining))
     if wait_status is None:
-        cleanup_worker(deadline)
+        cleanup_worker(cleanup_deadline)
         remove_capture_files()
         raise SystemExit(125)
-    if time.monotonic() >= deadline or not recorded_owned_processes_absent():
-        cleanup_worker(min(deadline, time.monotonic() + 1.0))
+    if time.monotonic() >= cleanup_deadline or not recorded_owned_processes_absent():
+        cleanup_worker(cleanup_deadline)
         remove_capture_files()
         raise SystemExit(125)
     exit_code = wait_status_to_exit_code(wait_status)
-    stdout_bytes = stdout_path.read_bytes()
-    stderr_bytes = stderr_path.read_bytes()
     if not remove_capture_files():
         raise SystemExit(125)
-    if time.monotonic() >= deadline:
+    try:
+        output_stream, output_bytes = prepare_diagnostic_output(
+            diagnostic_state_path, exit_code, debug_level
+        )
+        remove_diagnostic_state(diagnostic_state_path)
+    except (OSError, ValueError):
+        raise SystemExit(125)
+    if time.monotonic() >= finalization_deadline:
         raise SystemExit(125)
     precommit_mask = signal.pthread_sigmask(signal.SIG_BLOCK, handled_signals)
     signal.pthread_sigmask(signal.SIG_SETMASK, precommit_mask)
@@ -2090,10 +2266,9 @@ try:
     except OSError:
         raise HandledSignal
     try:
-        sys.stdout.buffer.write(stdout_bytes)
-        sys.stdout.buffer.flush()
-        sys.stderr.buffer.write(stderr_bytes)
-        sys.stderr.buffer.flush()
+        stream = sys.stdout.buffer if output_stream == "stdout" else sys.stderr.buffer
+        stream.write(output_bytes)
+        stream.flush()
     except BaseException:
         pass
     os._exit(exit_code)

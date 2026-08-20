@@ -793,13 +793,6 @@ case "$mode" in
         mv "$subject.short-deadline" "$subject"
         ;;
 esac
-case "$mode" in
-    startup-preexec-block|absolute-clock-block|absolute-poll-block|absolute-root-reap|absolute-precommit-signal)
-        sed 's/ASSIST_ALLOW_FINALIZATION_RESERVE_MILLISECONDS=4000/ASSIST_ALLOW_FINALIZATION_RESERVE_MILLISECONDS=1500/' \
-            "$subject" >"$subject.short-reserve"
-        mv "$subject.short-reserve" "$subject"
-        ;;
-esac
 if [ "$mode" = "absolute-worker-summary" ] ||
     [ "$mode" = "absolute-real-poll-summary" ] ||
     [ "$mode" = "absolute-shell-signal-relay" ]; then
