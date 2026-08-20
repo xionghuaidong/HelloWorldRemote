@@ -994,7 +994,7 @@ case "$mode" in
                 print "    wait \"$child_pid\""
                 print "}"
                 print "native_require_state() {"
-                print "    [ \"$(/bin/cat \"${UUREMOTE_ASSIST_INTERNAL_STATE_PATH:?}\")\" = \"$1\" ]"
+                print "    [ \"$(/bin/cat \"${assist_diagnostic_state_path:?}\")\" = \"$1\" ]"
                 print "}"
                 print "native_observe_first_open() {"
                 print "    if native_require_state $\047v1\\t1\\topen\\t0\\t0\\t0\\t0\\t0\\t0\\t0\\t0\\t0\\t0\\t0\\t0\\t0\\t0\\t0\\t0\\t0\\tunavailable\\tunavailable\047; then"
@@ -1142,6 +1142,11 @@ if [ "$mode" = native-transform-check ]; then
     do
         [ "$(/usr/bin/grep -F -c "$native_wiring" "$subject")" -eq 1 ] || exit 1
     done
+    native_fixture_region="$(/usr/bin/sed -n '/^native_require_state() {$/,/^if \[ "\$mode" = "assist-allow-worker" \]; then$/p' "$subject")"
+    [ "$(printf '%s\n' "$native_fixture_region" | /usr/bin/grep -F -c 'assist_diagnostic_state_path')" -eq 1 ] || exit 1
+    if printf '%s\n' "$native_fixture_region" | /usr/bin/grep -F 'UUREMOTE_ASSIST_INTERNAL_STATE_PATH' >/dev/null; then
+        exit 1
+    fi
     for native_marker in \
         open-commit-bypassed \
         committed-replacement-reached \

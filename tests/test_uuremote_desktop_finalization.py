@@ -1001,139 +1001,6 @@ class MacOSAssistAllowSignalFinalizationSourceTests(unittest.TestCase):
             route,
         )
 
-    def _superseded_timing_route_contract(self):
-        harness = text(MACOS_ASSIST_ALLOW_HARNESS_PATH)
-        deadline_rewrite_start = harness.index(
-            "sed 's/ASSIST_ALLOW_DEADLINE_MILLISECONDS=60000/"
-        )
-        deadline_rewrite_end = harness.index(
-            'if [ "$mode" = "absolute-worker-summary" ]; then',
-            deadline_rewrite_start,
-        )
-        deadline_rewrite = harness[
-            deadline_rewrite_start:deadline_rewrite_end
-        ]
-        self.assertIn(
-            'if [ "$mode" = "absolute-worker-summary" ] ||\n'
-            '    [ "$mode" = "absolute-real-poll-summary" ] ||\n'
-            '    [ "$mode" = "absolute-shell-signal-relay" ]; then',
-            deadline_rewrite,
-        )
-        self.assertIn(
-            "ASSIST_ALLOW_DEADLINE_MILLISECONDS=6000",
-            deadline_rewrite,
-        )
-        self.assertIn(
-            'if [ "$mode" = "absolute-real-poll-summary" ]; then',
-            deadline_rewrite,
-        )
-        self.assertIn(
-            "ASSIST_ALLOW_DEADLINE_MILLISECONDS=12000",
-            deadline_rewrite,
-        )
-        self.assertIn(
-            "ASSIST_ALLOW_DEADLINE_MILLISECONDS=6000/"
-            "ASSIST_ALLOW_DEADLINE_MILLISECONDS=12000",
-            deadline_rewrite,
-        )
-        script = text(SCRIPT_PATH)
-        self.assertIn("cleanup_start = deadline - 2.0", script)
-        self.assertIn("cleanup_deadline = deadline - 1.0", script)
-        self.assertIn("finalization_deadline = deadline", script)
-        self.assertNotIn("ASSIST_ALLOW_FINALIZATION_RESERVE_MILLISECONDS", script)
-        self.assertNotIn("ASSIST_ALLOW_FINALIZATION_RESERVE_MILLISECONDS", harness)
-        finalization_barrier_start = harness.index(
-            'if [ "$mode" = "absolute-real-poll-summary" ]; then',
-            deadline_rewrite_start,
-        )
-        finalization_barrier_end = harness.index(
-            'if [ "$mode" = "absolute-worker-summary" ]; then',
-            finalization_barrier_start,
-        )
-        finalization_barrier = harness[
-            finalization_barrier_start:finalization_barrier_end
-        ]
-        self.assertIn(
-            'index($0, "ASSIST_DIAGNOSTIC_FINAL_CLI_EXIT")',
-            finalization_barrier,
-        )
-        self.assertIn(
-            'wait_uuremote_poll 1000 || return 1',
-            finalization_barrier,
-        )
-        self.assertIn("finalization-started", finalization_barrier)
-        self.assertIn("finalization-completed", finalization_barrier)
-        for stage in (
-            "status-read",
-            "post-boundary-clock",
-            "classified",
-            "post-classification-clock",
-            "report-started",
-        ):
-            self.assertIn(stage, finalization_barrier)
-        self.assertIn(
-            'in_ensure && index($0, "status_record=\\\"") {',
-            finalization_barrier,
-        )
-        self.assertIn(
-            "UUREMOTE_TEST_REAL_POLL_CLOCK_PATH",
-            finalization_barrier,
-        )
-        self.assertNotIn("sleep ", finalization_barrier)
-        summary_clock_start = harness.index(
-            'if [ "$mode" = "absolute-worker-summary" ]; then',
-            deadline_rewrite_start,
-        )
-        summary_clock_end = harness.index(
-            'case "$mode" in', summary_clock_start
-        )
-        summary_clock = harness[summary_clock_start:summary_clock_end]
-        self.assertIn("UUREMOTE_TEST_SUMMARY_CLOCK_PATH", summary_clock)
-        self.assertIn(
-            "assist_allow_absolute_deadline_milliseconds - 1000",
-            summary_clock,
-        )
-        self.assertIn(
-            r'print "        printf \047%s\\n\047 '
-            r'\"$assist_allow_absolute_deadline_milliseconds\""',
-            summary_clock,
-        )
-        self.assertNotIn("uuremote_python3", summary_clock)
-        self.assertIn(r'[ \"$1\" -eq 500 ] || return 1', summary_clock)
-        summary_boundary_start = harness.index(
-            'case "$mode" in\n'
-            '    startup-preexec-block|absolute-poll-block|absolute-worker-summary',
-            summary_clock_end,
-        )
-        summary_boundary_end = harness.index(
-            "esac", summary_boundary_start
-        )
-        summary_boundary = harness[
-            summary_boundary_start:summary_boundary_end
-        ]
-        self.assertIn(
-            'boundary_mode == "absolute-worker-summary"',
-            summary_boundary,
-        )
-        self.assertIn(r'[ \"$3\" -eq 1000 ] || return 1', summary_boundary)
-        real_boundary_start = harness.index(
-            'case "$mode" in\n'
-            '    startup-preexec-block|absolute-poll-block|absolute-worker-summary',
-            summary_clock_end,
-        )
-        real_boundary_end = harness.index(
-            '\n        \' "$subject" >"$subject.absolute-boundary"',
-            real_boundary_start,
-        )
-        real_boundary = harness[real_boundary_start:real_boundary_end]
-        self.assertIn(
-            'boundary_mode == "absolute-real-poll-summary"',
-            real_boundary,
-        )
-        self.assertIn("UUREMOTE_TEST_REAL_POLL_ATTEMPT_PATH", real_boundary)
-        self.assertIn("attempt-started", real_boundary)
-        self.assertIn("boundary-returned", real_boundary)
-
     def test_supervisor_uses_fixed_phases_without_timing_report_routes(self):
         script = text(SCRIPT_PATH)
         harness = text(MACOS_ASSIST_ALLOW_HARNESS_PATH)
@@ -1143,6 +1010,16 @@ class MacOSAssistAllowSignalFinalizationSourceTests(unittest.TestCase):
         self.assertNotIn("absolute-real-poll-summary", harness)
         self.assertNotIn("absolute-worker-summary", harness)
         self.assertNotIn("ASSIST_ALLOW_FINALIZATION_RESERVE_MILLISECONDS", script)
+
+    def test_native_fixture_uses_captured_worker_state_path(self):
+        harness = text(MACOS_ASSIST_ALLOW_HARNESS_PATH)
+        fixture_start = harness.index('print "native_require_state() {"')
+        fixture_end = harness.index(
+            'print "native_observe_first_open() {"', fixture_start
+        )
+        fixture = harness[fixture_start:fixture_end]
+        self.assertIn("${assist_diagnostic_state_path:?}", fixture)
+        self.assertNotIn("UUREMOTE_ASSIST_INTERNAL_STATE_PATH", fixture)
 
     @unittest.skipUnless(MACOS_ASSIST_BASH_AVAILABLE, "requires Bash")
     def test_native_mutation_transforms_are_syntax_valid_and_targeted_once(self):
@@ -1939,11 +1816,6 @@ class MacOSAssistAbsoluteDeadlineBoundaryTests(unittest.TestCase):
             supervisor_pid_path = temporary_root / "supervisor-pid"
             blocker_ready_path = temporary_root / "blocker-ready"
             relay_ready_path = temporary_root / "relay-ready"
-            summary_clock_path = temporary_root / "summary-clock"
-            real_poll_attempt_path = temporary_root / "real-poll-attempt-count"
-            real_poll_clock_path = temporary_root / "real-poll-clock-count"
-            if mode == "absolute-worker-summary":
-                summary_clock_path.write_text("0\n", encoding="ascii")
             environment = os.environ.copy()
             environment.update(
                 {
@@ -1957,15 +1829,6 @@ class MacOSAssistAbsoluteDeadlineBoundaryTests(unittest.TestCase):
                         blocker_ready_path
                     ),
                     "UUREMOTE_TEST_RELAY_READY_PATH": str(relay_ready_path),
-                    "UUREMOTE_TEST_SUMMARY_CLOCK_PATH": str(
-                        summary_clock_path
-                    ),
-                    "UUREMOTE_TEST_REAL_POLL_ATTEMPT_PATH": str(
-                        real_poll_attempt_path
-                    ),
-                    "UUREMOTE_TEST_REAL_POLL_CLOCK_PATH": str(
-                        real_poll_clock_path
-                    ),
                 }
             )
             popen_options = {
@@ -2026,14 +1889,8 @@ class MacOSAssistAbsoluteDeadlineBoundaryTests(unittest.TestCase):
                     except (OSError, ValueError):
                         relay_metadata_confirmed = False
                 try:
-                    if mode == "absolute-real-poll-summary":
-                        communicate_timeout = 13
-                    elif mode == "absolute-worker-summary":
-                        communicate_timeout = 7
-                    else:
-                        communicate_timeout = 3
                     stdout, stderr = process.communicate(
-                        timeout=communicate_timeout
+                        timeout=3
                     )
                     supervisor_state = "completed"
                 except subprocess.TimeoutExpired:
@@ -2098,22 +1955,6 @@ class MacOSAssistAbsoluteDeadlineBoundaryTests(unittest.TestCase):
                 metadata_confirmed,
                 "validated runner and fixture PID/PGID metadata is required",
             )
-            if mode == "absolute-worker-summary":
-                self.assertEqual(
-                    summary_clock_path.read_text(encoding="ascii"),
-                    "5\n",
-                )
-            real_poll_attempts = "unavailable"
-            real_poll_clocks = "unavailable"
-            if mode == "absolute-real-poll-summary":
-                real_poll_attempts = real_poll_attempt_path.read_text(
-                    encoding="ascii"
-                ).strip()
-                real_poll_clocks = real_poll_clock_path.read_text(
-                    encoding="ascii"
-                ).strip()
-                self.assertGreaterEqual(int(real_poll_attempts), 1)
-                self.assertGreaterEqual(int(real_poll_clocks), 1)
             if supervisor_state == "completed":
                 self.assertEqual(process.returncode, 1, stdout + stderr)
             else:
@@ -2123,15 +1964,8 @@ class MacOSAssistAbsoluteDeadlineBoundaryTests(unittest.TestCase):
                 if stage_path.exists()
                 else "unavailable"
             )
-            diagnostic_counters = (
-                f"BOUNDARY_ATTEMPTS={real_poll_attempts}\n"
-                f"CLOCK_PROBES={real_poll_clocks}\n"
-                if mode == "absolute-real-poll-summary"
-                else ""
-            )
             diagnostic = (
                 f"BOUNDARY_STAGE={stage}\n"
-                f"{diagnostic_counters}"
                 f"SUPERVISOR_STATE={supervisor_state}\n"
                 f"PROCESS_CLEANUP={'released' if cleanup_released else 'unconfirmed'}\n"
             )
