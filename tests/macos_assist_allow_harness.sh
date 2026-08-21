@@ -960,6 +960,33 @@ case "$mode" in
         mv "$subject.absolute-metadata" "$subject"
         ;;
 esac
+case "$mode" in
+    outer-cleanup-false|outer-cleanup-raises|outer-post-unmask|outer-first-wait|outer-block-false|outer-block-raises)
+        /usr/bin/sed 's/ASSIST_ALLOW_DEADLINE_MILLISECONDS=60000/ASSIST_ALLOW_DEADLINE_MILLISECONDS=4000/' \
+            "$subject" >"$subject.outer-deadline"
+        mv "$subject.outer-deadline" "$subject"
+        awk '
+            /^if \[ "\$mode" = "assist-allow-worker" \]; then$/ {
+                print "run_bounded_gui_cli_to_file() {"
+                print "    local output_path=\"$1\" status_path=\"$2\" timeout_milliseconds=\"$3\""
+                print "    local bounded_exit"
+                print "    if run_bounded_uuremote_cli_to_file_with_status \"$output_path\" \"$status_path\" \"$timeout_milliseconds\" /bin/bash \"${UUREMOTE_TEST_OUTER_HARNESS_PATH:?}\" fixture-hang \"${UUREMOTE_TEST_OUTER_PARENT_PID_PATH:?}\" \"${UUREMOTE_TEST_OUTER_CHILD_PID_PATH:?}\"; then"
+                print "        bounded_exit=0"
+                print "    else"
+                print "        bounded_exit=\"$?\""
+                print "    fi"
+                print "    [ ! -s \"$status_path\" ] || return 124"
+                print "    [ \"$bounded_exit\" -eq 125 ] || return 124"
+                print "    : >\"${UUREMOTE_TEST_OUTER_TEARDOWN_PATH:?}\""
+                print "    return 125"
+                print "}"
+                print ""
+            }
+            { print }
+        ' "$subject" >"$subject.outer-worker-fixture"
+        mv "$subject.outer-worker-fixture" "$subject"
+        ;;
+esac
 if [ ! -x /usr/bin/python3 ]; then
     python_command="$(command -v python3 || command -v python)"
     python_wrapper="$temporary_directory/python3"
@@ -1722,9 +1749,11 @@ case "$mode" in
     *) false ;;
 esac && {
     . "$subject"
-    run_assist_allow_with_absolute_deadline() {
-        ensure_assist_allowed
-    }
+    if [ "$mode" = aggregate ]; then
+        run_assist_allow_with_absolute_deadline() {
+            ensure_assist_allowed
+        }
+    fi
 
     debug_level=0
     console_uid=501
@@ -1745,6 +1774,10 @@ esac && {
         child_pid_path="$temporary_directory/outer-child.pid"
         outer_teardown_marker="$temporary_directory/outer-teardown-confirmed"
         fixture_pid_paths="$parent_pid_path $child_pid_path"
+        export UUREMOTE_TEST_OUTER_HARNESS_PATH="$0"
+        export UUREMOTE_TEST_OUTER_PARENT_PID_PATH="$parent_pid_path"
+        export UUREMOTE_TEST_OUTER_CHILD_PID_PATH="$child_pid_path"
+        export UUREMOTE_TEST_OUTER_TEARDOWN_PATH="$outer_teardown_marker"
     fi
 
     uuremote_now_milliseconds() {
