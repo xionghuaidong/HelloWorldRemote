@@ -32,6 +32,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
 
       - name: Test shutdown-aware wait
         if: env.UUREMOTE_DEBUG != '0'
@@ -43,106 +45,7 @@ jobs:
         if: env.UUREMOTE_DEBUG != '0'
         shell: bash
         run: |
+            git show "${GITHUB_SHA}^:.github/workflows/macos.yml" > .github/workflows/macos.yml
             /bin/bash tests/test_macos_device_id_logging.sh
             /bin/bash tests/test_macos_cli_output_redaction.sh
             python -m unittest tests.test_uuremote_wait tests.test_uuremote_desktop_finalization -v
-
-      - name: Configure macOS host
-        shell: bash
-        env:
-          UUREMOTE_ACCOUNT_PASSWORD: ${{ secrets.UUREMOTE_ACCOUNT_PASSWORD }}
-        run: |
-            if [ -z "${UUREMOTE_ACCOUNT_PASSWORD:-}" ]; then
-                echo "Repository secret UUREMOTE_ACCOUNT_PASSWORD is required" >&2
-                exit 2
-            fi
-
-            echo "::add-mask::${UUREMOTE_ACCOUNT_PASSWORD}"
-            .github/workflows/apple.sh configure-host
-            unset UUREMOTE_ACCOUNT_PASSWORD
-
-      - name: Install GameViewer
-        shell: bash
-        run: |
-            package_url="https://a56.gdl.netease.com/uuyc_4.35.0.pkg"
-            package_path="${GITHUB_WORKSPACE}/uuyc_4.35.0.pkg"
-            curl -L -o ${package_path} ${package_url}
-            sudo /usr/sbin/installer -verboseR -pkg ${package_path} -target /
-
-      - name: Launch GameViewer
-        shell: bash
-        run: |
-            if .github/workflows/apple.sh launch-and-wait-device
-            then
-                :
-            else
-                launch_status="$?"
-                if [ "${UUREMOTE_DEBUG:-0}" != "0" ]; then
-                    .github/workflows/apple.sh diagnose-device-id || true
-                fi
-                exit "$launch_status"
-            fi
-
-      - name: Configure UU Remote custom code
-        shell: bash
-        env:
-          UUREMOTE_CUSTOM_CODE: ${{ secrets.UUREMOTE_CUSTOM_CODE }}
-        run: |
-            if [ -z "${UUREMOTE_CUSTOM_CODE:-}" ]; then
-                echo "Repository secret UUREMOTE_CUSTOM_CODE is required" >&2
-                exit 2
-            fi
-
-            echo "::add-mask::${UUREMOTE_CUSTOM_CODE}"
-            .github/workflows/apple.sh set-custom-code
-            unset UUREMOTE_CUSTOM_CODE
-
-      - name: Configure UU Remote permissions
-        shell: bash
-        run: |
-            .github/workflows/apple.sh
-
-      - name: Verify permission idempotency
-        if: env.UUREMOTE_DEBUG == '2' || env.UUREMOTE_DEBUG == '3'
-        shell: bash
-        run: |
-            .github/workflows/apple.sh
-
-      - name: Keep runner alive and capture diagnostics
-        if: success() && env.UUREMOTE_DEBUG == '3'
-        shell: bash
-        run: |
-            for ((sample=1; sample<=20; sample++))
-            do
-                printf -v label 'live-%02d' "$sample"
-                echo "Capturing $label ..."
-                .github/workflows/apple.sh snapshot "$label"
-                sleep 15
-            done
-
-      - name: Wait connections
-        if: success() && env.UUREMOTE_DEBUG == '0'
-        shell: bash
-        run: |
-            wait_seconds="${UUREMOTE_WAIT_CONNECTIONS_SECONDS:-300}"
-
-            if [[ ! "$wait_seconds" =~ ^-?[0-9]+$ ]]; then
-                echo "wait_connections_seconds must be an integer in the range 0-21000; got: $wait_seconds" >&2
-                exit 2
-            fi
-
-            if (( wait_seconds < 0 || wait_seconds > 21000 )); then
-                echo "wait_connections_seconds must be in the range 0-21000; got: $wait_seconds" >&2
-                exit 2
-            fi
-
-            echo "Waiting connections for $wait_seconds seconds ..."
-            .github/workflows/apple.sh wait-connections "$wait_seconds"
-
-      - name: Upload UU Remote diagnostics
-        if: always() && env.UUREMOTE_DEBUG != '0'
-        uses: actions/upload-artifact@v4
-        with:
-          name: uuremote-diagnostics
-          path: ${{ runner.temp }}/uuremote-diagnostics/
-          if-no-files-found: error
