@@ -2355,6 +2355,8 @@ class MacOSAssistAllowAggregationTests(unittest.TestCase):
     @staticmethod
     def git_bash_environment_path(path: Path) -> str:
         value = path.absolute().as_posix()
+        if sys.platform == "darwin" and (value == "/var" or value.startswith("/var/")):
+            value = f"/private{value}"
         if len(value) >= 3 and value[1:3] == ":/":
             return f"/{value[0].lower()}{value[2:]}"
         return value
